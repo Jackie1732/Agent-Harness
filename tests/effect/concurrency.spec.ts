@@ -11,14 +11,12 @@ import { createDeferred, drainMicrotasks } from '../helpers/deferred.js'
  */
 function findReentrantCode(candidate: unknown): string | undefined {
   if (candidate === undefined || candidate === null) return undefined
-  const direct = (candidate as { code?: string }).code
-  if (direct !== undefined) return direct
   const failures = (candidate as { cleanupFailures?: readonly { reason: unknown }[] }).cleanupFailures
   for (const failure of failures ?? []) {
     const code = findReentrantCode(failure.reason)
     if (code !== undefined) return code
   }
-  return undefined
+  return (candidate as { code?: string }).code
 }
 
 describe('effect disposal idempotence and races', () => {
@@ -219,6 +217,39 @@ describe('effect disposal idempotence and races', () => {
     expect(trace).toEqual(['revert:accepted'])
   })
 
+  it('tracks an operation that setup started without awaiting', async () => {
+    const operationGate = createDeferred<string>()
+    const operationStarted = createDeferred<void>()
+    const trace: string[] = []
+    const owner = new EffectOwner('unawaited-operation')
+
+    const running = owner.run('effect', effect => {
+      void effect.apply('op', () => {
+        operationStarted.resolve()
+        return operationGate.promise
+      }, value => {
+        trace.push(`revert:${value}`)
+      })
+      return 'setup-finished'
+    })
+    await operationStarted.promise
+
+    let runSettled = false
+    void running.then(
+      () => { runSettled = true },
+      () => { runSettled = true },
+    )
+    await drainMicrotasks()
+    expect(runSettled).toBe(false)
+
+    const disposal = owner.dispose()
+    operationGate.resolve('accepted')
+
+    await expect(running).rejects.toMatchObject({ code: 'EFFECT_START_INTERRUPTED' })
+    await disposal
+    expect(trace).toEqual(['revert:accepted'])
+  })
+
   it('rejects a lease release awaited from inside its own inverse', async () => {
     const owner = new EffectOwner('lease-self-wait')
     let armed = false
@@ -242,7 +273,7 @@ describe('effect disposal idempotence and races', () => {
     expect(owner.status).toBe('accepting')
   })
 
-  it('rejects an owner release awaited from inside an inverse', async () => {
+  it('rejects re-entering an owner release from its own inverse', async () => {
     const owner = new EffectOwner('owner-self-wait')
     let armed = false
     let captured: unknown
@@ -262,6 +293,53 @@ describe('effect disposal idempotence and races', () => {
     await lease.dispose().catch(() => undefined)
 
     expect(findReentrantCode(captured)).toBe('EFFECT_REENTRANT_DISPOSE')
+    expect(owner.status).toBe('disposed')
+  })
+
+  it('rejects an owner release that would wait for the current lease release', async () => {
+    const owner = new EffectOwner('lease-owner-wait')
+    let captured: unknown
+
+    const lease = await owner.run('effect', async effect =>
+      effect.apply('op', () => 'value', async () => {
+        try {
+          await owner.dispose()
+        } catch (caught) {
+          captured = caught
+        }
+      }))
+
+    await lease.dispose()
+
+    expect(findReentrantCode(captured)).toBe('EFFECT_REENTRANT_DISPOSE')
+    expect(owner.status).toBe('accepting')
+    await owner.dispose()
+    expect(owner.status).toBe('disposed')
+  })
+
+  it('rejects a sibling lease release that would wait for the current owner release', async () => {
+    const order: string[] = []
+    const owner = new EffectOwner('owner-sibling-wait')
+    let captured: unknown
+
+    const older = await owner.run('older', async effect =>
+      effect.apply('older-op', () => 'older', value => {
+        order.push(value)
+      }))
+    await owner.run('newer', async effect =>
+      effect.apply('newer-op', () => 'newer', async value => {
+        order.push(value)
+        try {
+          await older.dispose()
+        } catch (caught) {
+          captured = caught
+        }
+      }))
+
+    await owner.dispose()
+
+    expect(findReentrantCode(captured)).toBe('EFFECT_REENTRANT_DISPOSE')
+    expect(order).toEqual(['newer', 'older'])
     expect(owner.status).toBe('disposed')
   })
 
@@ -287,6 +365,33 @@ describe('effect disposal idempotence and races', () => {
 
     await outerLease.dispose()
     expect(order).toEqual(['inner-revert:inner', 'outer-revert:outer'])
+  })
+
+  it('rejects a release cycle inherited across two owners', async () => {
+    const first = new EffectOwner('first-owner')
+    const second = new EffectOwner('second-owner')
+    let captured: unknown
+
+    await first.run('first-effect', async effect => {
+      await effect.apply('first-op', () => 'first', async () => {
+        await second.dispose()
+      })
+    })
+    await second.run('second-effect', async effect => {
+      await effect.apply('second-op', () => 'second', async () => {
+        try {
+          await first.dispose()
+        } catch (caught) {
+          captured = caught
+        }
+      })
+    })
+
+    await first.dispose()
+
+    expect(findReentrantCode(captured)).toBe('EFFECT_REENTRANT_DISPOSE')
+    expect(first.status).toBe('disposed')
+    expect(second.status).toBe('disposed')
   })
 
   it('does not start a second release task when the target release is already active', async () => {

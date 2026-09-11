@@ -57,6 +57,43 @@ describe('EffectOwner basic lifecycle', () => {
     expect(trace).toEqual(['third', 'second', 'first'])
   })
 
+  it('waits for each asynchronous inverse before starting the next one', async () => {
+    const trace: string[] = []
+    const third = createDeferred<void>()
+    const second = createDeferred<void>()
+    const thirdStarted = createDeferred<void>()
+    const secondStarted = createDeferred<void>()
+    const owner = new EffectOwner('serial-lifo')
+
+    const lease = await owner.run('effect', async effect => {
+      await effect.apply('first', () => 'first', value => {
+        trace.push(value)
+      })
+      await effect.apply('second', () => 'second', async value => {
+        trace.push(value)
+        secondStarted.resolve()
+        await second.promise
+      })
+      await effect.apply('third', () => 'third', async value => {
+        trace.push(value)
+        thirdStarted.resolve()
+        await third.promise
+      })
+    })
+
+    const disposal = lease.dispose()
+    await thirdStarted.promise
+    expect(trace).toEqual(['third'])
+
+    third.resolve()
+    await secondStarted.promise
+    expect(trace).toEqual(['third', 'second'])
+
+    second.resolve()
+    await disposal
+    expect(trace).toEqual(['third', 'second', 'first'])
+  })
+
   it('orders a global batch by acceptance order, not by effect creation order', async () => {
     const trace: string[] = []
     let accepted = 0

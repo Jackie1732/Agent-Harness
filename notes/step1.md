@@ -197,7 +197,7 @@ Effect 内部状态服务于实现和状态机测试，不在 Step 1 暴露为�
 
 1. `run()` 在执行用户 `setup` 前登记 Effect 记录，使重入的 Owner 释放能够看到正在启动的 Effect。
 2. `setup` 可以进行普通计算，并通过同一个 `EffectContext` 执行零个或多个 `apply()`。
-3. `setup` 结算成功后，Runtime 在构造和返回 Lease 前检查一次 Owner 状态；这是决定本次 `run()` 能否成功的最终检查点。
+3. `setup` 结算后，Runtime 关闭该 Effect 的操作入口，等待 setup 已经启动但没有等待的 `apply()` 完成登记，再在构造和返回 Lease 前检查一次 Owner 状态；这是决定本次 `run()` 能否成功的最终检查点。
 4. `setup` 抛出或拒绝时，Runtime 关闭该 Effect 的接纳入口并回滚其已接受逆操作。
 5. 最终检查点仍为 `accepting` 时，`run()` 返回活动 Lease。Owner 已进入 `disposing` 时，Runtime 复用局部回滚路径清理该 Effect；回滚成功后 `run()` 以 `EFFECT_START_INTERRUPTED` 拒绝，回滚失败时以 `EFFECT_ROLLBACK_FAILED` 拒绝并把启动中断错误作为 cause。
 
@@ -589,9 +589,11 @@ DeepSeek 实现了 `src/effect/` 与 `tests/effect/`，并在 Windows Node v22.1
 
 一处审计结论在本阶段被修正：DS-03 关于 `AsyncLocalStorage` 在嵌套 `run()` 中丢失外层标识的说法只对传入裸标识的情况成立。实现改为传递累计的标识集合，因此嵌套释放保留继承链，`A → B → A` 这类保持同一继承链的重入能够被检出，独立异步根之间的互等仍然不检测，与计划一致。
 
-规划阶段的记录保留如下。
+Codex 在 Claude 修订提交 `14b764f` 上复核实现后修正了三项可观察行为：异步逆操作此前会按 LIFO 顺序启动、但不会等待上一项结算，现改为先发布整批共享任务再严格串行执行；原有 operation 竞争测试在 operation 实际开始前就触发 Owner 释放，现用 Deferred 明确确认 operation 已进入，并证明成功结果先登记再恢复；setup 启动但未等待的 `apply()` 现会延迟 `run()` 的最终检查点，避免 Lease 返回或 Owner 清理漏过随后登记的资源。释放入口也会拒绝等待当前异步继承链已经拥有的 Cleanup record，覆盖 Lease 清理调用 Owner 释放和 Owner 清理调用兄弟 Lease 释放的等待环。
 
-规划提交、Claude 审计整合与 DeepSeek 审计整合各自执行过门禁，结果都是 Step 0 的 6 个测试文件和 24 项测试通过，加 Lint、类型检查、构建与普通 Node Smoke Test 通过，以及 Markdown 围栏、相对链接和 `git diff --check` 通过。这些结果只证明当时的变更没有破坏既有基线，不是 Step 1 行为的实现证据。
+本次修订在 Windows Node v22.14.0 分别执行 `npm run lint`、`npm run typecheck`、`npm run test`、`npm run build` 与 `npm run test:built`：Lint、类型检查与构建通过，11 个测试文件中的 79 项测试通过，普通 Node 成功加载并执行 `dist/index.js` 生命周期 smoke；`git diff --check` 通过。
+
+规划阶段的记录保留如下。
 
 规划提交、Claude 审计整合与 DeepSeek 审计整合各自执行过门禁，结果都是 Step 0 的 6 个测试文件和 24 项测试通过，加 Lint、类型检查、构建与普通 Node Smoke Test 通过，以及 Markdown 围栏、相对链接和 `git diff --check` 通过。DeepSeek 审计整合另用当前 Node 实测累计 `AsyncLocalStorage` store 的嵌套轨迹为 `A → A,B → A`。这些结果只证明当时的变更没有破坏既有基线，不是 Step 1 行为的实现证据。
 

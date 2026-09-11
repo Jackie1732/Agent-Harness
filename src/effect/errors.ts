@@ -67,26 +67,24 @@ function describeCleanupCounts(failures: readonly EffectCleanupFailure[]): strin
     + `${failures.length} failed`
 }
 
-/**
- * The owner no longer accepts new work because it already started or finished releasing.
- */
+/** The Owner or Effect no longer accepts new work. */
 export class EffectOwnerInactiveError extends HarnessError<'EFFECT_OWNER_INACTIVE'> {
   /** Label of the Effect or operation that requested the rejected work. */
   readonly requestLabel: string
-  /** Owner status at the moment the request was rejected. */
+  /** Lifecycle status at the moment the request was rejected. */
   readonly ownerStatus: string
 
   /**
-   * Create the error for work requested from a releasing or released owner.
+   * Create the error for work requested from a releasing Owner or Effect.
    *
    * @param requestLabel - Label of the Effect or operation that requested work.
-   * @param ownerStatus - Owner status at the moment the request was rejected.
+   * @param ownerStatus - Lifecycle status at the moment the request was rejected.
    */
   constructor(requestLabel: string, ownerStatus: string) {
-    const statusDesc = ownerStatus === 'disposing' ? 'currently releasing' : ownerStatus === 'disposed' ? 'already released' : `in state "${ownerStatus}"`
+    const target = ownerStatus === 'effect-released' ? 'effect' : 'owner'
     super(
       'EFFECT_OWNER_INACTIVE',
-      `owner rejected "${requestLabel}" because it is ${statusDesc}`,
+      `${target} rejected "${requestLabel}" because its status is "${ownerStatus}"`,
       { details: { requestLabel, ownerStatus } },
     )
     this.name = 'EffectOwnerInactiveError'
@@ -132,23 +130,21 @@ export class EffectStartInterruptedError extends HarnessError<'EFFECT_START_INTE
   }
 }
 
-/**
- * Setup failed and one or more inverses accepted by that Effect also failed.
- */
+/** An Effect could not start and one or more of its accepted inverses also failed. */
 export class EffectRollbackFailedError extends HarnessError<'EFFECT_ROLLBACK_FAILED'> {
   /** Label of the Effect whose rollback failed. */
   readonly effectLabel: string
-  /** Original setup failure, preserved for programmatic inspection. */
+  /** Setup failure, or the startup interruption when setup itself succeeded. */
   readonly setupReason: unknown
   /** Cleanup failures in the order the attempts were made. */
   readonly cleanupFailures: readonly EffectCleanupFailure[]
 
   /**
-   * Create the combined error for a failed startup and a failed rollback.
+   * Create the combined error for an unsuccessful startup and failed rollback.
    *
    * @param effectLabel - Label of the Effect whose rollback failed.
-   * @param setupReason - Original reason setup failed.
-   * @param cause - Reason the startup ended, which is the interrupt when setup reported none.
+   * @param setupReason - Setup failure, or the interruption when setup itself succeeded.
+   * @param cause - Reason the startup ended.
    * @param cleanupFailures - Cleanup failures in attempt order.
    */
   constructor(
