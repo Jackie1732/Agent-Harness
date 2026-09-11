@@ -206,15 +206,20 @@ describe('effect startup failure and rollback', () => {
   it('does not settle owner disposal while a forward operation is still unsettled', async () => {
     const trace: string[] = []
     const gate = createDeferred<string>()
+    const started = createDeferred<void>()
     const owner = new EffectOwner('in-flight')
     let disposalSettled = false
 
     const running = owner.run('effect', async effect => {
-      return await effect.apply('slow', () => gate.promise, value => {
+      return await effect.apply('slow', () => {
+        started.resolve()
+        return gate.promise
+      }, value => {
         trace.push(`revert:${value}`)
       })
     })
-    // The ownership shutdown arrives while the forward operation is still pending.
+    await started.promise
+
     const disposal = owner.dispose().then(() => {
       disposalSettled = true
     })
@@ -228,12 +233,10 @@ describe('effect startup failure and rollback', () => {
       (reason: unknown) => reason,
     )
 
-    // The operation settled after the owner stopped accepting work, so its result is not
-    // handed to the caller and no inverse is accepted for it.
-    expect((outcome as { code?: string }).code).toBe('EFFECT_OWNER_INACTIVE')
+    expect((outcome as { code?: string }).code).toBe('EFFECT_START_INTERRUPTED')
     await disposal
     expect(disposalSettled).toBe(true)
-    expect(trace).toEqual([])
+    expect(trace).toEqual(['revert:value'])
   })
 
   it('recovers an acquired resource when setup finishes after the owner started releasing', async () => {

@@ -4,26 +4,13 @@ export type Awaitable<T> = T | PromiseLike<T>
 /** Lifecycle state of an `EffectOwner`. */
 export type EffectOwnerStatus = 'accepting' | 'disposing' | 'disposed'
 
-/**
- * Forward operation that acquires a resource or transforms internal state.
- *
- * @template T - The type of value produced by this operation
- *
- * @example
- * const openFile: EffectOperation<FileHandle> = () => fs.open('data.txt', 'r')
- */
+/** Forward operation that returns the value needed by its inverse. */
 export type EffectOperation<T> = () => Awaitable<T>
 
 /**
  * Inverse of one forward operation, applied to the value that operation returned.
  *
- * The reverter receives the exact value produced by the forward operation and should
- * undo its effects. Called at most once per successful operation during cleanup.
- *
- * @template T - The type of value to revert
- *
- * @example
- * const closeFile: EffectReverter<FileHandle> = (handle) => handle.close()
+ * The runtime calls it at most once with the exact value returned by the operation.
  */
 export type EffectReverter<T> = (value: T) => Awaitable<void>
 
@@ -31,52 +18,31 @@ export type EffectReverter<T> = (value: T) => Awaitable<void>
  * Acquisition context of a single Effect.
  *
  * The context belongs to one `run()` call and is the only way that Effect acquires
- * tracked resources. All cleanup is automatic when the Effect or Owner releases.
- *
- * @example
- * await owner.run('database', async (ctx) => {
- *   const conn = await ctx.apply(
- *     'connect',
- *     () => db.connect(),
- *     (conn) => conn.close()
- *   )
- *   return conn
- * })
+ * tracked resources. Releasing the Effect or Owner runs every accepted inverse.
  */
 export interface EffectContext {
   /**
    * Aborted once the owning Effect or its Owner begins releasing.
    *
-   * User code should check this signal periodically during long operations
-   * and exit early when aborted to enable faster cleanup.
-   *
-   * @example
-   * while (!ctx.signal.aborted && hasWork()) {
-   *   await processNextItem()
-   * }
+   * Operations may observe it for cooperative cancellation. Release still waits for an
+   * operation that ignores the signal until that operation settles.
    */
   readonly signal: AbortSignal
 
   /**
    * Run one forward operation and register its inverse before returning the value.
    *
-   * The inverse is registered atomically after the operation succeeds, ensuring
-   * cleanup runs for every acquired resource. If the operation fails, no inverse
-   * is registered.
+   * A fulfilled operation is added to the Effect and Owner cleanup stacks before this
+   * promise fulfills. A rejected operation has no returned value, so the runtime does
+   * not call its inverse. The operation remains responsible for partial work created
+   * before it rejects.
    *
-   * @template T - The type of value produced by the operation
-   * @param label - Diagnostic label for the operation; may repeat across operations
-   * @param operation - Forward operation that produces the value
-   * @param revert - Inverse applied to the produced value during cleanup
-   * @returns The value produced by `operation`
-   * @throws {EffectOwnerInactiveError} if the Effect or Owner is already releasing
-   *
-   * @example
-   * const server = await ctx.apply(
-   *   'http-server',
-   *   () => createServer().listen(8080),
-   *   (server) => server.close()
-   * )
+   * @param label - Non-empty diagnostic label; labels may repeat.
+   * @param operation - Forward operation that produces the value.
+   * @param revert - Inverse applied to the produced value during cleanup.
+   * @returns The value produced by `operation`.
+   * @throws {TypeError} If `label` is empty.
+   * @throws {EffectOwnerInactiveError} If the Effect or Owner is already releasing.
    */
   apply<T>(label: string, operation: EffectOperation<T>, revert: EffectReverter<T>): Promise<T>
 }
@@ -84,8 +50,7 @@ export interface EffectContext {
 /**
  * Releasable handle for one started Effect.
  *
- * Returned by `owner.run()` after the Effect's setup completes successfully.
- * The lease provides access to the Effect's value and allows manual disposal.
+ * Returned by `EffectOwner.run()` after setup and all operations it started have settled.
  */
 export interface EffectLease<T> {
   /** Diagnostic label of the Effect; not a stable identifier. */
@@ -96,27 +61,18 @@ export interface EffectLease<T> {
    *
    * The owning Effect or Owner beginning release stops this value from being a
    * guaranteed active resource; the runtime neither clears nor proxies it.
-   *
-   * @example
-   * const lease = await owner.run('db', async (ctx) => {
-   *   return await ctx.apply('connect', () => db.connect(), (c) => c.close())
-   * })
-   * console.log(lease.value) // the database connection
    */
   readonly value: T
 
   /**
    * Release this Effect and wait until every inverse it accepted has settled.
    *
-   * Idempotent: multiple calls return the same Promise. If the Owner is also
-   * disposing, both disposal tasks coordinate to run each cleanup exactly once.
+   * Calls outside this release's own cleanup chain return one shared promise. A concurrent
+   * Owner release joins the same inverse tasks, so every inverse still runs at most once.
    *
-   * @returns A promise that settles after this Effect reaches its terminal state
-   * @throws {EffectDisposalFailedError} if any cleanup operation fails
-   *
-   * @example
-   * const lease = await owner.run('resource', setup)
-   * await lease.dispose() // manually release this Effect
+   * @returns A promise that settles after this Effect reaches its terminal state.
+   * @throws {EffectDisposalFailedError} If an inverse fails or cleanup detects a wait cycle.
+   * @throws {EffectReentrantDisposeError} If cleanup directly awaits this same release.
    */
   dispose(): Promise<void>
 }

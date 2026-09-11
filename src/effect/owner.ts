@@ -16,17 +16,17 @@ import type {
   EffectReverter,
 } from './types.js'
 
-/**
- * One inverse accepted by an Effect, run at most once.
- *
- * The record captures the revert function and ensures single execution through
- * the execution field, which serves as both the shared task and the claimed marker.
- */
+/** One inverse accepted by an Effect, run at most once. */
 interface CleanupRecord {
   readonly operationLabel: string
   readonly revert: () => Promise<void>
-  /** Published shared task; its presence is what marks the record as claimed. */
-  execution?: Promise<EffectCleanupFailure | undefined>
+  /** Published task and the release chain that owns its single execution. */
+  execution?: CleanupExecution
+}
+
+interface CleanupExecution {
+  readonly token: number
+  readonly task: Promise<EffectCleanupFailure | undefined>
 }
 
 /** One started Effect and the ownership state the runtime keeps for it. */
@@ -42,10 +42,10 @@ interface EffectRecord {
   readonly operations: Set<Promise<unknown>>
   /** Inverses of this Effect, in acceptance order. */
   readonly local: CleanupRecord[]
-  /** Settles when the user `setup` call settles. */
-  readonly runEntry: Promise<void>
-  /** Resolves `runEntry` once setup has settled. */
-  readonly resolveRunEntry: () => void
+  /** Settles after forward work is closed and rollback tasks, if any, are published. */
+  readonly ownerReady: Promise<void>
+  /** Resolves `ownerReady` at the owner release handoff point. */
+  readonly resolveOwnerReady: () => void
   /** Shared release task of this Effect, created by its first release request. */
   leaseDisposal?: Promise<void>
   /** Private token identifying this Effect's release task. */
@@ -147,23 +147,38 @@ function runWithDisposalToken<T>(token: number, task: () => Promise<T>): Promise
  * @param labels - Labels of the ownership scopes involved, most specific first.
  */
 function assertNotReentrant(token: number, labels: readonly string[]): void {
-  const inherited = disposalContext.getStore()
-  if (inherited !== undefined && inherited.has(token) && runningDisposals.has(token)) {
+  if (wouldWaitForInheritedDisposal(token)) {
     throw new EffectReentrantDisposeError(labels)
   }
 }
 
 /**
- * Validate and normalize a label for an owner or effect.
+ * Validate a diagnostic label.
  *
- * @param label - The label to validate
- * @param kind - Type of entity being labeled (for error messages)
- * @returns The validated label
- * @throws {TypeError} if the label is empty
+ * @param label - Label to validate.
+ * @param kind - Subject named by the label.
+ * @returns The unchanged label.
+ * @throws {TypeError} If the label is empty.
  */
 function requireLabel(label: string, kind: string): string {
   if (label.length === 0) throw new TypeError(`${kind} label must not be empty`)
   return label
+}
+
+function wouldWaitForInheritedDisposal(token: number): boolean {
+  const inherited = disposalContext.getStore()
+  return inherited !== undefined && inherited.has(token) && runningDisposals.has(token)
+}
+
+/** Reject joining cleanup owned by an active release in the current asynchronous chain. */
+function assertNoInheritedCleanup(
+  records: readonly CleanupRecord[],
+  labels: readonly string[],
+): void {
+  if (records.some(record =>
+    record.execution !== undefined && wouldWaitForInheritedDisposal(record.execution.token))) {
+    throw new EffectReentrantDisposeError(labels)
+  }
 }
 
 /**
@@ -186,37 +201,45 @@ async function callRevert(
 }
 
 /**
- * Publish the shared task of one record before the inverse it wraps runs.
+ * Publish a serial cleanup chain before its first inverse can run.
  *
- * The published task is the record's only observable execution, so the scope that creates
- * it owns the single run of that inverse and every later caller joins it. Publishing
- * without awaiting anything is what keeps a re-entrant caller from observing a record
- * whose task is still unassigned. The inverse itself is deferred by one microtask so that
- * publication precedes the user call and a synchronous throw inside the inverse is
- * reported as a failure rather than escaping the publishing call.
- *
- * @param record - Record whose task to publish, or whose published task to join.
- * @returns The shared task of the record.
- */
-function cleanupRecord(record: CleanupRecord): Promise<EffectCleanupFailure | undefined> {
-  if (record.execution !== undefined) return record.execution
-  const execution = Promise.resolve().then(() => callRevert(record.operationLabel, record.revert))
-  record.execution = execution
-  return execution
-}
-
-/**
- * Publish the task of every record, newest first, without awaiting any of them.
- *
- * Publishing the whole batch in one synchronous section means a scope sweeping the same
- * records afterwards waits for these tasks instead of running any inverse a second time,
- * and the newest-first order gives the batch its reverse acceptance order.
+ * Every newly claimed record receives its shared task in one synchronous pass. Each task
+ * waits for the newer record before invoking user code, which preserves strict LIFO even
+ * when an inverse is asynchronous. A nested release that would join an inherited active
+ * chain records a wait failure instead of deadlocking that chain.
  *
  * @param records - Records in acceptance order.
- * @returns Published tasks in the order the inverses will run.
+ * @param token - Token of the release chain claiming new records.
+ * @param labels - Labels reported if joining a record would create a wait cycle.
+ * @returns Tasks in cleanup order.
  */
-function publishRecords(records: readonly CleanupRecord[]): Promise<EffectCleanupFailure | undefined>[] {
-  return [...records].reverse().map(record => cleanupRecord(record))
+function publishRecords(
+  records: readonly CleanupRecord[],
+  token: number,
+  labels: readonly string[],
+): Promise<EffectCleanupFailure | undefined>[] {
+  let previous = Promise.resolve()
+  const published: Promise<EffectCleanupFailure | undefined>[] = []
+
+  for (const record of [...records].reverse()) {
+    let task: Promise<EffectCleanupFailure | undefined>
+    if (record.execution === undefined) {
+      task = previous.then(() => callRevert(record.operationLabel, record.revert))
+      record.execution = { token, task }
+    } else if (wouldWaitForInheritedDisposal(record.execution.token)) {
+      task = Promise.resolve({
+        operationLabel: record.operationLabel,
+        stage: 'wait',
+        reason: new EffectReentrantDisposeError(labels),
+      })
+    } else {
+      task = record.execution.task
+    }
+    published.push(task)
+    previous = task.then(() => undefined)
+  }
+
+  return published
 }
 
 /**
@@ -236,24 +259,16 @@ async function collectFailures(
  * Run cleanup records in reverse acceptance order and collect every failure.
  *
  * @param records - Records in acceptance order.
+ * @param token - Token of the release chain claiming new records.
+ * @param labels - Labels reported if joining a record would create a wait cycle.
  * @returns Failures in the order the attempts were made.
  */
 async function runCleanupBatch(
   records: readonly CleanupRecord[],
+  token: number,
+  labels: readonly string[],
 ): Promise<EffectCleanupFailure[]> {
-  return collectFailures(publishRecords(records))
-}
-
-/**
- * Wait for the records another scope already published a task for.
- *
- * @param records - Records in acceptance order.
- */
-async function awaitClaimedRecords(records: readonly CleanupRecord[]): Promise<void> {
-  const started = records
-    .filter(record => record.execution !== undefined)
-    .map(record => record.execution as Promise<EffectCleanupFailure | undefined>)
-  await Promise.all(started)
+  return collectFailures(publishRecords(records, token, labels))
 }
 
 /**
@@ -295,29 +310,26 @@ class EffectContextImpl implements EffectContext {
       throw new EffectOwnerInactiveError(operationLabel, 'effect-released')
     }
 
-    const task = (async () => {
-      await Promise.resolve()
-      return await operation()
-    })()
-    effect.operations.add(task)
-    let value: T
+    const completed = deferred<void>()
+    effect.operations.add(completed.promise)
     try {
-      value = await task
-    } finally {
-      effect.operations.delete(task)
-    }
+      const value = await Promise.resolve().then(operation)
 
-    // Synchronous critical section: the record reaches both stacks before the value is
-    // handed to the caller, with no await, user callback, or re-entrant call between.
-    const record: CleanupRecord = {
-      operationLabel,
-      revert: async () => {
-        await revert(value)
-      },
+      // Both stacks receive the inverse before this task is marked complete or the value
+      // reaches setup, so a concurrent release cannot miss the acquired resource.
+      const record: CleanupRecord = {
+        operationLabel,
+        revert: async () => {
+          await revert(value)
+        },
+      }
+      effect.local.push(record)
+      owner.global.push(record)
+      return value
+    } finally {
+      effect.operations.delete(completed.promise)
+      completed.resolve(undefined)
     }
-    effect.local.push(record)
-    owner.global.push(record)
-    return value
   }
 }
 
@@ -325,8 +337,8 @@ class EffectContextImpl implements EffectContext {
  * Ownership scope for Effects that acquire revertible resources.
  *
  * Every inverse accepted through one of its Effects is registered before the acquired
- * value reaches the caller, is applied at most once, and is applied in the reverse of
- * the order it was accepted.
+ * value reaches the caller, is applied at most once, and is applied serially in the
+ * reverse of the order it was accepted.
  */
 export class EffectOwner {
   readonly #record: EffectOwnerRecord
@@ -335,6 +347,7 @@ export class EffectOwner {
    * Create an owner that accepts Effects until it is released.
    *
    * @param label - Diagnostic label for the owner.
+   * @throws {TypeError} If `label` is empty.
    */
   constructor(label = 'owner') {
     this.#record = {
@@ -356,7 +369,11 @@ export class EffectOwner {
    *
    * @param label - Diagnostic label for the Effect; labels may repeat.
    * @param setup - Work that acquires resources through the supplied context.
-   * @returns A lease holding the setup result once the final owner check passes.
+   * @returns A lease after setup and all operations it started have settled.
+   * @throws {TypeError} If `label` is empty.
+   * @throws {EffectOwnerInactiveError} If the Owner is already releasing.
+   * @throws {EffectStartInterruptedError} If release begins before startup completes.
+   * @throws {EffectRollbackFailedError} If startup fails and an inverse also fails.
    */
   run<T>(label: string, setup: (context: EffectContext) => Awaitable<T>): Promise<EffectLease<T>> {
     const owner = this.#record
@@ -366,7 +383,7 @@ export class EffectOwner {
         throw new EffectOwnerInactiveError(effectLabel, owner.state)
       }
 
-      const entry = deferred<void>()
+      const ownerReady = deferred<void>()
       const effect: EffectRecord = {
         owner,
         label: effectLabel,
@@ -375,8 +392,8 @@ export class EffectOwner {
         interrupted: false,
         operations: new Set(),
         local: [],
-        runEntry: entry.promise,
-        resolveRunEntry: () => entry.resolve(undefined),
+        ownerReady: ownerReady.promise,
+        resolveOwnerReady: () => ownerReady.resolve(undefined),
         token: nextDisposalToken++,
       }
       owner.effects.add(effect)
@@ -385,11 +402,6 @@ export class EffectOwner {
         await Promise.resolve()
         return await setup(new EffectContextImpl(effect))
       })()
-      void task.then(
-        () => entry.resolve(undefined),
-        () => entry.resolve(undefined),
-      )
-
       return await startEffect(effect, task)
     })()
   }
@@ -398,9 +410,13 @@ export class EffectOwner {
    * Release every Effect this owner still holds and wait for tracked work to settle.
    *
    * @returns A promise that settles after the owner reaches its terminal state.
+   * @throws {EffectDisposalFailedError} If an inverse fails or cleanup detects a wait cycle.
+   * @throws {EffectReentrantDisposeError} If cleanup directly awaits this same release.
    */
   dispose(): Promise<void> {
     const owner = this.#record
+    assertNotReentrant(owner.token, [owner.label])
+    assertNoInheritedCleanup(owner.global, [owner.label])
     if (owner.state === 'accepting') {
       owner.state = 'disposing'
       for (const effect of owner.effects) {
@@ -408,7 +424,6 @@ export class EffectOwner {
         abortEffect(effect)
       }
     }
-    assertNotReentrant(owner.token, [owner.label])
     if (owner.disposalTask === undefined) {
       // Release tasks are created inside their own token context so that every
       // continuation they reach inherits the token and can be detected as re-entrant.
@@ -426,18 +441,23 @@ async function startEffect<T>(effect: EffectRecord, task: Promise<T>): Promise<E
   const owner = effect.owner
   const outcome = await settleTask(task)
 
-  // Final checkpoint: the only place that decides whether this "run" succeeds. Setup has
-  // settled here, so the owner may stop waiting for this effect while its rollback runs.
+  // Closing acceptance before waiting also covers apply() calls that setup started without
+  // awaiting: no later operation can enter, and every admitted operation reaches its record.
   effect.accept = false
+  await waitForOperations(effect)
+
+  // Final checkpoint: the only place that decides whether this run returns a lease.
   if (outcome.status === 'fulfilled' && owner.state === 'accepting') {
-    effect.resolveRunEntry()
+    effect.resolveOwnerReady()
     return makeLease(effect, outcome.value)
   }
 
   effect.interrupted = outcome.status === 'fulfilled'
-  effect.resolveRunEntry()
   const reason = outcome.status === 'rejected' ? outcome.reason : undefined
-  const failures = await cleanupEffect(effect)
+  const cleanup = runWithDisposalToken(effect.token, () => cleanupEffect(effect))
+  effect.resolveOwnerReady()
+  const failures = await cleanup
+  owner.effects.delete(effect)
   if (failures.length === 0) {
     if (outcome.status === 'rejected') throw outcome.reason
     throw new EffectStartInterruptedError(effect.label, effect.local.length, failures)
@@ -462,6 +482,7 @@ function disposeLease(effect: EffectRecord): Promise<void> {
   // The guard runs before joining an existing task: a release reached from inside its own
   // cleanup would otherwise wait for itself and never settle.
   assertNotReentrant(effect.token, [effect.label, effect.owner.label])
+  assertNoInheritedCleanup(effect.local, [effect.label, effect.owner.label])
   effect.accept = false
   abortEffect(effect)
   effect.leaseDisposal ??= runWithDisposalToken(effect.token, () => releaseLease(effect))
@@ -469,23 +490,23 @@ function disposeLease(effect: EffectRecord): Promise<void> {
 }
 
 /**
- * Wait for tracked forward work, then apply this Effect's own inverses in reverse order.
+ * Publish and await this Effect's own inverses in reverse acceptance order.
  *
  * @param effect - Effect being released.
  * @returns Failures in the order the attempts were made.
  */
-async function cleanupEffect(effect: EffectRecord): Promise<EffectCleanupFailure[]> {
-  // Publishing before waiting gives this effect priority over an owner sweep that starts
-  // while its forward work is still settling.
-  const published = publishRecords(effect.local)
-  await waitForForwardWork(effect)
-  return collectFailures(published)
+function cleanupEffect(effect: EffectRecord): Promise<EffectCleanupFailure[]> {
+  return runCleanupBatch(
+    effect.local,
+    effect.token,
+    [effect.label, effect.owner.label],
+  )
 }
 
 async function releaseOwner(owner: EffectOwnerRecord): Promise<void> {
   try {
     await Promise.all([...owner.effects].map(effect => waitForForwardWork(effect)))
-    const failures = await runCleanupBatch(owner.global)
+    const failures = await runCleanupBatch(owner.global, owner.token, [owner.label])
     if (failures.length > 0) {
       throw new EffectDisposalFailedError('owner', undefined, failures)
     }
@@ -495,25 +516,28 @@ async function releaseOwner(owner: EffectOwnerRecord): Promise<void> {
 }
 
 async function releaseLease(effect: EffectRecord): Promise<void> {
-  const failures = await cleanupEffect(effect)
-  if (failures.length > 0) {
-    throw new EffectDisposalFailedError('lease', effect.label, failures)
+  try {
+    const failures = await cleanupEffect(effect)
+    if (failures.length > 0) {
+      throw new EffectDisposalFailedError('lease', effect.label, failures)
+    }
+  } finally {
+    effect.owner.effects.delete(effect)
   }
 }
 
 /**
  * Wait for the forward work the runtime tracks for one Effect.
  *
- * Settling the setup entry covers every operation awaited before setup settled, and the
- * residual operations loop covers operations still awaited when the entry settles.
+ * `ownerReady` settles only after setup has closed its acceptance entry, every admitted
+ * operation has settled, and any startup rollback tasks are visible to the owner.
  *
  * @param effect - Effect whose forward work is awaited.
  */
 async function waitForForwardWork(effect: EffectRecord): Promise<void> {
   await Promise.all([
-    resolveAsSettled(effect.runEntry),
+    resolveAsSettled(effect.ownerReady),
     waitForOperations(effect),
-    awaitClaimedRecords(effect.local),
   ])
 }
 

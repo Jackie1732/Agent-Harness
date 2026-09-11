@@ -39,6 +39,8 @@
 | C-0004 | Codex | `step1` | `e253063` | `pushed` | 审查并整合 Claude 对 Step 1 规划的审计意见 | `pnpm run check`; Markdown 围栏与链接检查; `git diff --check` | 采纳登记临界区、任务发布顺序和可复现竞争测试；删除错误示例与无依据的性能、调试和兼容性扩展；随 `origin/step1` 发布 |
 | C-0005 | Codex | `step1` | `c4f657e` | `pushed` | 审查并整合 DeepSeek 对 Step 1 规划的审计意见 | Windows Node 下分别运行 `lint`、`typecheck`、`test`、`build`、`test:built`; Markdown 围栏与链接检查; `git diff --check` | 补全 Signal、启动检查点、Lease value、静止范围和标签语义；Provider 延后到 Step 2；修正重入检测范围；随 `origin/step1` 发布 |
 | D-0006 | DeepSeek | `step1` | `dbf92b4` | `pushed` | 按 Step 1 计划实现 Revertible Effect 生命周期内核：`src/effect/` 的类型、错误、EffectOwner 与 Cleanup record，`tests/effect/` 的行为、回滚、竞争、错误与模型测试 | Windows Node v22.14.0 下分别运行 `npm run lint`、`npm run typecheck`、`npm run test`、`npm run build`、`npm run test:built`，11 个测试文件 74 项测试通过；README 最小示例用构建产物单独执行 | 修正三处认领与等待顺序缺陷和一处审计结论；偏离计划两处已记录在 `step1.md` 的执行证据；三次提交 `5853fca`、`efe3c64`、`50d9f5c` 已推送到 `origin/step1` 并校验远端等于本地 HEAD；等 Codex 审查后交接 Step 2 |
+| CL-0007 | Claude | `step1` | `fcfb27e` | `landed` | 补充 Effect 公共类型与内部记录的 JSDoc，并调整非活动错误文案 | Claude 提交说明只记录预期命令；Codex 接手后实际运行 `npm run test`，观察到 74 项中 1 项失败 | 提交 `14b764f` 保留有用的 API 说明；Codex 后续收敛过强承诺并修复错误消息测试回归；提交身份已按协作约定修正为 Claude |
+| C-0008 | Codex | `step1` | `14b764f` | `pushed` | 审查 DeepSeek 实现和 Claude 修订，修复异步串行 LIFO、已开始 operation 的接纳时序与嵌套释放等待环，并补充确定性竞争测试 | Windows Node 下分别运行 `npm run lint`、`npm run typecheck`、`npm run test`、`npm run build`、`npm run test:built`；11 个测试文件 79 项测试通过；`git diff --check` | 清理任务先整体发布再串行执行；`run()` 等待 setup 已启动的 operation 完成登记；释放入口拒绝加入当前异步继承链正在执行的清理任务；远端校验记录在推送结果中 |
 
 ## 工作规则
 
