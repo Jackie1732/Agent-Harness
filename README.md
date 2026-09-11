@@ -65,7 +65,7 @@ npm run test:built
 - `src/` 和 `tests/` 不导入父目录中的 DSH 或 Cordis 包。
 - `pnpm-lock.yaml` 保存在本目录并用于可复现安装。
 - `node_modules/`、`dist/` 和覆盖率结果是本地生成物。
-- 仓库只使用 `step<number>` 阶段分支；Codex、DeepSeek 和 Claude 通过提交作者、`Agent:` trailer 和提交队列区分贡献。
+- 持久分支分两类：阶段分支 `step<number>` 与集成分支 `main`。阶段分支从 `main` 顶端开始，阶段结束后保留在远端；`main` 汇总每个阶段的归档提交；`step0` 冻结在基线，不再接收工作。Codex、DeepSeek 和 Claude 通过提交作者、`Agent:` trailer 和提交队列区分贡献。
 
 ## 下一阶段
 

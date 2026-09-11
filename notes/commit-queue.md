@@ -54,6 +54,7 @@
 | C-0015 | Codex | `step2` | `81195f8` | `landed` | 补两处审计遗留：自环在 `mount()` 处拒绝，收敛守卫改用稳定错误码 | Windows Node v22.14.0 下 `lint`、`typecheck`、`test`（15 文件 164 项）、`build`、`test:built`；`git diff --check` 通过；构建产物探针确认自环挂载被拒绝 | 自环原先只在快照里报告而组件永远 `unsatisfied`，与计划「拒绝」的要求不符；收敛守卫原抛裸 `Error`，改为 `REGISTRY_NOT_CONVERGED` 并携带步数预算与各组件状态投影；同时开 PR #3 |
 | CL-0016 | Claude | `step2` | `81195f8` | `landed` | Step 2 归档后审查：`src/capability/types.ts` 的 JSDoc 增强（CapabilityKey/ComponentDefinition/ComponentContext 示例与语义说明） | Claude 侧记录 15 文件 164 项测试通过；docs-only 变更 | 提交身份为 GAiLO + Co-Authored-By Claude，缺 `Agent:` trailer，且未登记队列行（本行由 Codex 补记）；`require()` 文档误用「committed view」、示例绕过 `createCapabilityKey()` 工厂，由 C-0017 修正 |
 | C-0017 | Codex | `step2` | `1aab5e8` | `landed` | 审查 CL-0016 并修正两处文档错误：`require()` 的 committed view 误称改回 attempt view；CapabilityKey 示例改用工厂函数 | Windows Node v22.14.0 下 `lint`、`typecheck`、`test`（15 文件 164 项）、`build`、`test:built`；`git diff --check` 通过 | 同时把 D-0012/C-0013/D-0014/C-0015 四行同步为 step0 上的 landed 版本，消除 step2 与基线的队列漂移 |
+| D-0018 | DeepSeek | `main` | `9dfeb38` | `landed` | 分支模型重构：阶段分支互不合并、`main` 为集成分支并设为远端默认、`step0` 冻结在基线；同步 AGENTS.md 与队列规则 | `git diff --check` | 提交 `d4cbc30`；step0 指针回退到 `d8d162a`（Step 2 分叉前的基线），重构提交本身未登记队列行，本行由 Codex 补记 |
 
 ## 工作规则
 
