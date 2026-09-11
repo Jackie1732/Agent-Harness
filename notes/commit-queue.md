@@ -38,6 +38,7 @@
 | C-0003 | Codex | `step1` | `ce54eb2` | `committed-local` | Step 1 Revertible Effect 生命周期内核完整规划与文档入口 | `pnpm run check`; Markdown 链接检查; `git diff --check` | 规划固定可观察行为、竞争决策和验收矩阵；纯 Markdown 贡献保留在本地，不单独推送 |
 | C-0004 | Codex | `step1` | `e253063` | `committed-local` | 审查并整合 Claude 对 Step 1 规划的审计意见 | `pnpm run check`; Markdown 围栏与链接检查; `git diff --check` | 采纳登记临界区、任务发布顺序和可复现竞争测试；删除错误示例与无依据的性能、调试和兼容性扩展；纯 Markdown 贡献不推送 |
 | C-0005 | Codex | `step1` | `c4f657e` | `committed-local` | 审查并整合 DeepSeek 对 Step 1 规划的审计意见 | Windows Node 下分别运行 `lint`、`typecheck`、`test`、`build`、`test:built`; Markdown 围栏与链接检查; `git diff --check` | 补全 Signal、启动检查点、Lease value、静止范围和标签语义；Provider 延后到 Step 2；修正重入检测范围；纯 Markdown 贡献不推送 |
+| D-0006 | DeepSeek | `step1` | `dbf92b4` | `committed-local` | 按 Step 1 计划实现 Revertible Effect 生命周期内核：`src/effect/` 的类型、错误、EffectOwner 与 Cleanup record，`tests/effect/` 的行为、回滚、竞争、错误与模型测试 | Windows Node v22.14.0 下分别运行 `npm run lint`、`npm run typecheck`、`npm run test`、`npm run build`、`npm run test:built`，11 个测试文件 74 项测试通过；README 最小示例用构建产物单独执行 | 修正三处认领与等待顺序缺陷和一处审计结论；偏离计划两处已记录在 `step1.md` 的执行证据；实现与文档已分两次提交（`5853fca`、`efe3c64`）；等 Codex 审查后推送并交接 Step 2 |
 
 ## 工作规则
 

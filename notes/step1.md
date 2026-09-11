@@ -2,7 +2,7 @@
 
 | 字段 | 值 |
 |---|---|
-| 状态 | `planned` |
+| 状态 | `complete` |
 | 开发分支 | `step1` |
 | 接受基线 | `step0` 的 `ce54eb276093b03556487ca6b0679df602b87e66` |
 | 目标范围 | Effect 获取、逆操作所有权、LIFO 恢复、异步收敛、失败回滚和幂等释放 |
@@ -458,45 +458,45 @@ git diff --check
 
 ### API 与所有权
 
-- [ ] 根入口导出可用的 `EffectOwner`、`EffectContext` 和 `EffectLease` 类型。
-- [ ] 每个逆操作有且只有一个 Effect 所有者。
-- [ ] Lease 可以独立释放，Owner 可以释放全部剩余 Effect。
-- [ ] 标签允许重复，只用于诊断，不充当查找键或持久 ID。
-- [ ] `EffectLease.value` 是原始 setup 返回值，释放开始后不再承诺表示活动资源。
+- [x] 根入口导出可用的 `EffectOwner`、`EffectContext` 和 `EffectLease` 类型。
+- [x] 每个逆操作有且只有一个 Effect 所有者。
+- [x] Lease 可以独立释放，Owner 可以释放全部剩余 Effect。
+- [x] 标签允许重复，只用于诊断，不充当查找键或持久 ID。
+- [x] `EffectLease.value` 是原始 setup 返回值，释放开始后不再承诺表示活动资源。
 
 ### 恢复行为
 
-- [ ] 局部与全局清理均按实际接受栈的反向顺序执行严格 LIFO。
-- [ ] 启动失败只回滚当前 Effect 已接受的逆操作。
-- [ ] 逆操作失败不会阻止其余逆操作。
-- [ ] 清理失败后不自动重试可能已部分执行的逆操作。
+- [x] 局部与全局清理均按实际接受栈的反向顺序执行严格 LIFO。
+- [x] 启动失败只回滚当前 Effect 已接受的逆操作。
+- [x] 逆操作失败不会阻止其余逆操作。
+- [x] 清理失败后不自动重试可能已部分执行的逆操作。
 
 ### 异步生命周期
 
-- [ ] 每个 Effect 使用同一个 Signal；Owner 与成功返回后的 Lease 释放都能中止相应 Signal。
-- [ ] 释放阻止新工作，Abort 不改变已开始 operation 的结算约定。
-- [ ] 已开始的正向操作结算后才进入对应清理。
-- [ ] `run()` 在 setup 成功后、返回 Lease 前执行最终 Owner 状态检查。
-- [ ] `dispose()` 等待 Runtime 跟踪的 setup、operation 与清理任务全部结算。
-- [ ] 重复和并发释放共享同一 Promise，且不重复清理。
-- [ ] 直接自等待和保持同一异步继承链的释放环得到明确错误而不是挂起。
-- [ ] 重入清理始终能观察到已经发布的共享执行 Promise。
+- [x] 每个 Effect 使用同一个 Signal；Owner 与成功返回后的 Lease 释放都能中止相应 Signal。
+- [x] 释放阻止新工作，Abort 不改变已开始 operation 的结算约定。
+- [x] 已开始的正向操作结算后才进入对应清理。
+- [x] `run()` 在 setup 成功后、返回 Lease 前执行最终 Owner 状态检查。
+- [x] `dispose()` 等待 Runtime 跟踪的 setup、operation 与清理任务全部结算。
+- [x] 重复和并发释放共享同一 Promise，且不重复清理。
+- [x] 直接自等待和保持同一异步继承链的释放环得到明确错误而不是挂起。
+- [x] 重入清理始终能观察到已经发布的共享执行 Promise。
 
 ### 错误与诊断
 
-- [ ] 启动中断、回滚失败、显式释放失败和非活动 Owner 可以区分。
-- [ ] 组合错误保留原始 setup 原因与全部清理失败。
-- [ ] JSON 诊断不包含不可序列化值。
-- [ ] 错误中的失败顺序与实际清理尝试顺序一致。
-- [ ] 清理失败时，错误和可观察资源状态不会暗示已经完整恢复。
+- [x] 启动中断、回滚失败、显式释放失败和非活动 Owner 可以区分。
+- [x] 组合错误保留原始 setup 原因与全部清理失败。
+- [x] JSON 诊断不包含不可序列化值。
+- [x] 错误中的失败顺序与实际清理尝试顺序一致。
+- [x] 清理失败时，错误和可观察资源状态不会暗示已经完整恢复。
 
 ### 测试与独立性
 
-- [ ] 基本、失败、竞争、状态机和类型测试全部通过。
-- [ ] 普通 Node 可以从构建产物导入 Step 1 API。
-- [ ] 源码与 Lockfile 不引入 DSH、Cordis 或父工作区依赖。
-- [ ] Windows Node 环境中的 `lint`、`typecheck`、`test`、`build`、`test:built` 和 `git diff --check` 通过。
-- [ ] 本页记录最终 API、偏离计划的原因和实际执行证据。
+- [x] 基本、失败、竞争、状态机和类型测试全部通过。
+- [x] 普通 Node 可以从构建产物导入 Step 1 API。
+- [x] 源码与 Lockfile 不引入 DSH、Cordis 或父工作区依赖。
+- [x] Windows Node 环境中的 `lint`、`typecheck`、`test`、`build`、`test:built` 和 `git diff --check` 通过。
+- [x] 本页记录最终 API、偏离计划的原因和实际执行证据。
 
 ## 风险与验证点
 
@@ -572,13 +572,28 @@ DeepSeek 的审计按 Step 1 的实际 API 和阶段边界重新核对。原始�
 
 ## 执行证据
 
-本页当前只完成规划，尚未开始 Step 1 代码实现。验收项保持未勾选；实现阶段只记录实际执行的命令、测试数量、偏离计划的设计及其原因。
+本节的规划阶段证据保留在下方。实现阶段的实际结果如下。
 
-规划提交执行了 `pnpm run check`，Step 0 的 6 个测试文件和 24 项测试继续通过，Lint、类型检查、构建与普通 Node Smoke Test 通过；本地 Markdown 链接检查和 `git diff --check` 也通过。这些结果只证明规划变更没有破坏现有基线，不是 Step 1 行为的实现证据。
+DeepSeek 实现了 `src/effect/` 与 `tests/effect/`，并在 Windows Node v22.14.0 分别执行 `npm run lint`、`npm run typecheck`、`npm run test`、`npm run build` 与 `npm run test:built`：Lint 通过（26 个文件、90 条规则、0 warning 0 error），类型检查通过，11 个测试文件中的 74 项测试通过，构建通过，普通 Node 从 `dist/index.js` 加载并成功执行一次完整生命周期。README 中的最小示例用构建产物单独执行过，观测到 `active` 从 `['listener']` 变为空且 `owner.status` 为 `disposed`。
 
-Claude 审计整合执行了 `pnpm run check`，同一组 6 个测试文件和 24 项测试继续通过；Markdown 围栏、相对链接和 `git diff --check` 通过。审计修订仍属于规划证据，不表示 Effect Runtime 已实现。
+实现过程中由测试暴露并修正了三处设计缺陷，都属于同一主题——清理任务的认领与等待顺序：
 
-DeepSeek 审计整合按当前协作规则在 Windows Node 环境分别执行了 `npm run lint`、`npm run typecheck`、`npm run test`、`npm run build` 和 `npm run test:built`，6 个测试文件中的 24 项测试通过，普通 Node 成功加载构建产物。Markdown 围栏、相对链接和 `git diff --check` 通过。另用当前 Node 实测累计 `AsyncLocalStorage` store 的嵌套轨迹为 `A → A,B → A`。这些仍是规划与现有基线证据，不是 Step 1 Runtime 的实现证据。
+1. 启动中断路径没有解析 Effect 的启动 entry，导致 `owner.dispose()` 永远等待一个已经不再推进的任务。
+2. 重入守卫位于「加入已有清理任务」的提前返回之后，因此重入调用从不触发检测，最终形成真实的互等（逆操作等待正在运行它的那次释放）。守卫现在先于提前返回执行，并且只在该任务确实仍在运行时拒绝，使已结算释放的重复调用保持幂等。
+3. Effect 的局部回滚与 Owner 的全局清扫会并行认领同一条记录。现在认领与执行分离：局部回滚先认领自己的全部记录，使 Owner 清扫等待它们结算，而执行顺序仍由运行记录的那个批次按接受顺序的反向决定。
+
+实现相对计划有两处偏离，均由计划自身的错误模型与状态模型推出：
+
+- `EffectRollbackFailedError` 新增独立的 `cause` 参数。启动失败时 cause 是原始 setup 原因；启动中断时 cause 是 `EffectStartInterruptedError`，因为此时 setup 没有报告失败。构造成员 `setupReason`、`cleanupFailures` 与错误码不变。
+- `EffectContext.apply()` 在一个已被最终检查点判定中断的 Effect 上抛出 `EFFECT_START_INTERRUPTED`，其他已关闭状态仍抛出 `EFFECT_OWNER_INACTIVE`。这样中断后不再有新的 operation 被接受，而 setup 即使吞掉该异常也仍会在最终检查点以 `EFFECT_START_INTERRUPTED` 结束。
+
+一处审计结论在本阶段被修正：DS-03 关于 `AsyncLocalStorage` 在嵌套 `run()` 中丢失外层标识的说法只对传入裸标识的情况成立。实现改为传递累计的标识集合，因此嵌套释放保留继承链，`A → B → A` 这类保持同一继承链的重入能够被检出，独立异步根之间的互等仍然不检测，与计划一致。
+
+规划阶段的记录保留如下。
+
+规划提交、Claude 审计整合与 DeepSeek 审计整合各自执行过门禁，结果都是 Step 0 的 6 个测试文件和 24 项测试通过，加 Lint、类型检查、构建与普通 Node Smoke Test 通过，以及 Markdown 围栏、相对链接和 `git diff --check` 通过。这些结果只证明当时的变更没有破坏既有基线，不是 Step 1 行为的实现证据。
+
+规划提交、Claude 审计整合与 DeepSeek 审计整合各自执行过门禁，结果都是 Step 0 的 6 个测试文件和 24 项测试通过，加 Lint、类型检查、构建与普通 Node Smoke Test 通过，以及 Markdown 围栏、相对链接和 `git diff --check` 通过。DeepSeek 审计整合另用当前 Node 实测累计 `AsyncLocalStorage` store 的嵌套轨迹为 `A → A,B → A`。这些结果只证明当时的变更没有破坏既有基线，不是 Step 1 行为的实现证据。
 
 ## 完成后的下一步
 
