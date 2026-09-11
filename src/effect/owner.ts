@@ -248,6 +248,14 @@ function publishRecords(
   return published
 }
 
+/** Failures of one cleanup scope together with the inverses that scope ran itself. */
+interface CleanupOutcome {
+  /** Failures in the order the attempts were made. */
+  readonly failures: EffectCleanupFailure[]
+  /** Inverses this scope published and ran, excluding records another scope owned. */
+  readonly attempted: number
+}
+
 /**
  * Await published tasks and keep only the failures, in the order the attempts were made.
  *
@@ -267,14 +275,15 @@ async function collectFailures(
  * @param records - Records in acceptance order.
  * @param token - Token of the release chain claiming new records.
  * @param labels - Labels reported if joining a record would create a wait cycle.
- * @returns Failures in the order the attempts were made.
+ * @returns Failures in the order the attempts were made, with the count this scope ran.
  */
 async function runCleanupBatch(
   records: readonly CleanupRecord[],
   token: number,
   labels: readonly string[],
-): Promise<EffectCleanupFailure[]> {
-  return collectFailures(publishRecords(records, token, labels))
+): Promise<CleanupOutcome> {
+  const owned = records.filter(record => record.execution === undefined).length
+  return { failures: await collectFailures(publishRecords(records, token, labels)), attempted: owned }
 }
 
 /**
@@ -462,17 +471,17 @@ async function startEffect<T>(effect: EffectRecord, task: Promise<T>): Promise<E
   const reason = outcome.status === 'rejected' ? outcome.reason : undefined
   const cleanup = runWithDisposalToken(effect.token, () => cleanupEffect(effect))
   effect.resolveOwnerReady()
-  const failures = await cleanup
+  const { attempted, failures } = await cleanup
   owner.effects.delete(effect)
   if (failures.length === 0) {
     if (outcome.status === 'rejected') throw outcome.reason
-    throw new EffectStartInterruptedError(effect.label, effect.local.length, failures)
+    throw new EffectStartInterruptedError(effect.label, attempted, failures)
   }
   // The cause is the reason the startup ended: the setup failure when setup reported one,
   // otherwise the interrupt that replaced a successful setup.
   const cause = outcome.status === 'rejected'
     ? outcome.reason
-    : new EffectStartInterruptedError(effect.label, effect.local.length, [])
+    : new EffectStartInterruptedError(effect.label, attempted, [])
   throw new EffectRollbackFailedError(effect.label, reason ?? cause, cause, failures)
 }
 
@@ -501,7 +510,7 @@ function disposeLease(effect: EffectRecord): Promise<void> {
  * @param effect - Effect being released.
  * @returns Failures in the order the attempts were made.
  */
-function cleanupEffect(effect: EffectRecord): Promise<EffectCleanupFailure[]> {
+function cleanupEffect(effect: EffectRecord): Promise<CleanupOutcome> {
   return runCleanupBatch(
     effect.local,
     effect.token,
@@ -512,7 +521,7 @@ function cleanupEffect(effect: EffectRecord): Promise<EffectCleanupFailure[]> {
 async function releaseOwner(owner: EffectOwnerRecord): Promise<void> {
   try {
     await Promise.all([...owner.effects].map(effect => waitForForwardWork(effect)))
-    const failures = await runCleanupBatch(owner.global, owner.token, [owner.label])
+    const { failures } = await runCleanupBatch(owner.global, owner.token, [owner.label])
     if (failures.length > 0) {
       throw new EffectDisposalFailedError('owner', undefined, failures)
     }
@@ -523,7 +532,7 @@ async function releaseOwner(owner: EffectOwnerRecord): Promise<void> {
 
 async function releaseLease(effect: EffectRecord): Promise<void> {
   try {
-    const failures = await cleanupEffect(effect)
+    const { failures } = await cleanupEffect(effect)
     if (failures.length > 0) {
       throw new EffectDisposalFailedError('lease', effect.label, failures)
     }

@@ -302,4 +302,42 @@ describe('effect startup failure and rollback', () => {
     expect(trace).toEqual(['revert:kept'])
     expect(owner.status).toBe('disposed')
   })
+
+  it('waits for a failing effect rollback before the owner sweep runs its records', async () => {
+    const trace: string[] = []
+    const gate = createDeferred<void>()
+    const rollbackStarted = createDeferred<void>()
+    const owner = new EffectOwner('rollback-handoff')
+    let attempts = 0
+
+    const failing = owner.run('failing', async effect => {
+      await effect.apply('op', () => 'value', async () => {
+        attempts += 1
+        trace.push('rollback:start')
+        rollbackStarted.resolve()
+        await gate.promise
+        trace.push('rollback:end')
+      })
+      throw new Error('setup failed')
+    }).catch(() => undefined)
+
+    await rollbackStarted.promise
+    let settled = false
+    const disposal = owner.dispose().then(() => {
+      settled = true
+    })
+    await drainMicrotasks()
+
+    // The owner release waits for the effect's own rollback instead of starting it again.
+    expect(settled).toBe(false)
+    expect(trace).toEqual(['rollback:start'])
+
+    gate.resolve()
+    await failing
+    await disposal
+
+    expect(trace).toEqual(['rollback:start', 'rollback:end'])
+    expect(attempts).toBe(1)
+    expect(owner.status).toBe('disposed')
+  })
 })

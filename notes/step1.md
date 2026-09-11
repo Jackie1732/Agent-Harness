@@ -591,7 +591,9 @@ DeepSeek 实现了 `src/effect/` 与 `tests/effect/`，并在 Windows Node v22.1
 
 Codex 在 Claude 修订提交 `14b764f` 上复核实现后修正了三项可观察行为：异步逆操作此前会按 LIFO 顺序启动、但不会等待上一项结算，现改为先发布整批共享任务再严格串行执行；原有 operation 竞争测试在 operation 实际开始前就触发 Owner 释放，现用 Deferred 明确确认 operation 已进入，并证明成功结果先登记再恢复；setup 启动但未等待的 `apply()` 现会延迟 `run()` 的最终检查点，避免 Lease 返回或 Owner 清理漏过随后登记的资源。释放入口也会拒绝等待当前异步继承链已经拥有的 Cleanup record，覆盖 Lease 清理调用 Owner 释放和 Owner 清理调用兄弟 Lease 释放的等待环。
 
-本次修订在 Windows Node v22.14.0 分别执行 `npm run lint`、`npm run typecheck`、`npm run test`、`npm run build` 与 `npm run test:built`：Lint、类型检查与构建通过，11 个测试文件中的 79 项测试通过，普通 Node 成功加载并执行 `dist/index.js` 生命周期 smoke；`git diff --check` 通过。
+本次修订在 Windows Node v22.14.0 分别执行 `npm run lint`、`npm run typecheck`、`npm run test`、`npm run build` 与 `npm run test:built`：Lint、类型检查与构建通过，11 个测试文件中的 86 项测试通过，普通 Node 成功加载并执行 `dist/index.js` 生命周期 smoke；`git diff --check` 通过。
+
+DeepSeek 随后做了一次计划与实现的逐条核对，确认第 15、49、54、59、63-68、200-237、262-271 行的可验证断言全部成立，并把五条此前没有直接测试的语义补进测试套件：Owner 释放会等待失败 Effect 的本地回滚且不重跑其记录；同一次全局清扫中不同 Effect 的异步逆操作严格串行；成功启动的最终检查点会等待 setup 已接纳但未结算的 operation；Owner 在检查点之前释放时该 operation 仍被恢复；setup 失败原因经 Owner 释放后保持原始身份。核对同时修正两处诊断不准确：`EffectStartInterruptedError.attempted` 之前记录 Effect 的全部记录数，现只计本次作用域真正执行的逆操作数；`CleanupFailureStage` 的 `wait` 变体在当前守卫下不可达，已注明它是防御分支而非正常产出。
 
 规划阶段的记录保留如下。
 

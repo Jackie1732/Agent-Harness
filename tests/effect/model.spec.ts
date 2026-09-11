@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { EffectOwner } from '../../src/index.js'
-import { drainMicrotasks } from '../helpers/deferred.js'
+import { createDeferred, drainMicrotasks } from '../helpers/deferred.js'
 
 /**
  * Deterministic pseudo-random source.
@@ -220,5 +220,80 @@ describe('effect lifecycle model properties', () => {
     await drainMicrotasks()
     expect(attempts.get('a')).toBe(1)
     expect(attempts.get('b')).toBe(1)
+  })
+
+  it('holds the startup checkpoint until an admitted operation that setup left pending settles', async () => {
+    const trace: string[] = []
+    const gate = createDeferred<string>()
+    const started = createDeferred<void>()
+    const owner = new EffectOwner('checkpoint-wait')
+
+    let settled = false
+    const running = owner.run('effect', effect => {
+      // Started and never awaited; a rejection carries no owner here, so it is ignored.
+      void effect.apply('op', () => {
+        started.resolve()
+        return gate.promise
+      }, value => {
+        trace.push(`revert:${value}`)
+      }).catch(() => undefined)
+      return 'setup-finished'
+    })
+    void running.then(
+      () => {
+        settled = true
+      },
+      () => {
+        settled = true
+      },
+    )
+
+    await started.promise
+    await drainMicrotasks()
+    // Setup finished, but the admitted operation has not, so no lease is handed out yet.
+    expect(settled).toBe(false)
+
+    gate.resolve('accepted')
+    const outcome = await running
+    expect(outcome.value).toBe('setup-finished')
+    // The operation was admitted after the checkpoint registered its records, so the
+    // successful run leaves it to the owner release rather than recovering it here.
+    expect(trace).toEqual([])
+
+    await owner.dispose()
+    expect(trace).toEqual(['revert:accepted'])
+  })
+
+  it('recovers an admitted operation when the owner releases before the checkpoint', async () => {
+    const trace: string[] = []
+    const gate = createDeferred<string>()
+    const started = createDeferred<void>()
+    const owner = new EffectOwner('checkpoint-interrupt')
+
+    const running = owner.run('effect', effect => {
+      void effect.apply('op', () => {
+        started.resolve()
+        return gate.promise
+      }, value => {
+        trace.push(`revert:${value}`)
+      }).catch(() => undefined)
+      // Keeps setup open so the release lands while the operation is still pending.
+      return gate.promise.then(() => 'setup-finished')
+    })
+    await started.promise
+    await drainMicrotasks()
+
+    const disposal = owner.dispose()
+    gate.resolve('accepted')
+
+    const reason = await running.then(
+      () => undefined,
+      (caught: unknown) => caught,
+    )
+    await disposal
+
+    expect((reason as { code?: string }).code).toBe('EFFECT_START_INTERRUPTED')
+    expect(trace).toEqual(['revert:accepted'])
+    expect(owner.status).toBe('disposed')
   })
 })
