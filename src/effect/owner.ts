@@ -16,7 +16,12 @@ import type {
   EffectReverter,
 } from './types.js'
 
-/** One inverse accepted by an Effect, run at most once. */
+/**
+ * One inverse accepted by an Effect, run at most once.
+ *
+ * The record captures the revert function and ensures single execution through
+ * the execution field, which serves as both the shared task and the claimed marker.
+ */
 interface CleanupRecord {
   readonly operationLabel: string
   readonly revert: () => Promise<void>
@@ -148,6 +153,14 @@ function assertNotReentrant(token: number, labels: readonly string[]): void {
   }
 }
 
+/**
+ * Validate and normalize a label for an owner or effect.
+ *
+ * @param label - The label to validate
+ * @param kind - Type of entity being labeled (for error messages)
+ * @returns The validated label
+ * @throws {TypeError} if the label is empty
+ */
 function requireLabel(label: string, kind: string): string {
   if (label.length === 0) throw new TypeError(`${kind} label must not be empty`)
   return label
