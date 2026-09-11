@@ -310,4 +310,73 @@ describe('capability registry edge cases', () => {
     expect(registry.snapshot().providers).toEqual([])
     await registry.dispose()
   })
+
+  it('retries a failed activation once its requirements are satisfied', async () => {
+    const capability = key('retry-success')
+    const registry = new CapabilityRegistry()
+    let attempts = 0
+
+    const provider = registry.mount({
+      label: 'flaky',
+      requires: [capability],
+      provides: [],
+      setup: () => {
+        attempts += 1
+        if (attempts === 1) throw new Error('first attempt fails')
+      },
+    })
+    const holder = registry.mount({
+      label: 'holder',
+      requires: [],
+      provides: [capability],
+      setup: context => {
+        context.provide(capability, 'value')
+      },
+    })
+
+    await registry.whenQuiescent()
+    expect(provider.status).toBe('failed')
+    expect(attempts).toBe(1)
+
+    // The dependency is still satisfied, so an explicit retry is allowed and succeeds.
+    await provider.retry()
+
+    expect(provider.status).toBe('active')
+    expect(attempts).toBe(2)
+    expect(provider.error).toBeUndefined()
+    await holder.dispose()
+    await registry.dispose()
+  })
+
+  it('keeps a failed component failed when its requirement is still missing', async () => {
+    const capability = key('retry-blocked')
+    const registry = new CapabilityRegistry()
+
+    const provider = registry.mount({
+      label: 'failing',
+      requires: [capability],
+      provides: [],
+      setup: () => {
+        throw new Error('never succeeds')
+      },
+    })
+    const holder = registry.mount({
+      label: 'holder',
+      requires: [],
+      provides: [capability],
+      setup: context => {
+        context.provide(capability, 'value')
+      },
+    })
+
+    await registry.whenQuiescent()
+    expect(provider.status).toBe('failed')
+
+    // Remove the requirement's provider, then retry: it must be refused, not attempted.
+    await holder.dispose()
+
+    await expect(provider.retry()).rejects.toMatchObject({ code: 'CAPABILITY_UNSATISFIED' })
+    expect(provider.status).toBe('failed')
+    await registry.dispose()
+  })
 })

@@ -470,6 +470,11 @@ export class CapabilityRegistry {
           record.failurePhase = undefined
         } else {
           await rollbackActivation(record, record.failure)
+          // rollbackActivation clears the attempt, but it only runs when the commit failed
+          // after publishing started; clear the staging here as well so a retry never
+          // compares a drift check against a resolution that is already gone.
+          record.attemptView = undefined
+          record.staged = undefined
           record.status = 'failed'
           record.failurePhase = 'activation'
         }
