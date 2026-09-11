@@ -10,7 +10,7 @@ declare const capabilityValue: unique symbol
  * @template T - The type of value this key resolves to
  *
  * @example
- * const DatabaseKey: CapabilityKey<Database> = { name: 'core:database' }
+ * const DatabaseKey = createCapabilityKey<Database>('core:database')
  */
 export interface CapabilityKey<T> {
   /** Name used in diagnostics and conflict messages; never an identity. */
@@ -113,7 +113,7 @@ export interface ComponentDefinition {
  *
  * @example
  * setup: async (ctx) => {
- *   // Read requirements from the committed view
+ *   // Read requirements from the attempt view captured at activation start
  *   const db = ctx.require(DatabaseKey)
  *
  *   // Acquire resources with automatic cleanup
@@ -134,12 +134,12 @@ export interface ComponentContext extends EffectContext {
   /**
    * Read a declared requirement from the attempt view captured for this activation.
    *
-   * The value comes from the committed view snapshot taken when this activation started.
+   * The value comes from the attempt view captured when this activation started.
    * If the provider is replaced during activation, this method continues returning the
-   * original value until setup completes.
+   * original value until setup completes; the final checkpoint then abandons the attempt.
    *
    * @param key - Key declared in `requires`.
-   * @returns The bound value from the committed view.
+   * @returns The bound value from the attempt view.
    * @throws {ComponentInactiveError} if called after setup settles.
    */
   require<T>(key: CapabilityKey<T>): T
