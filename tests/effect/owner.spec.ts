@@ -234,4 +234,56 @@ describe('EffectOwner basic lifecycle', () => {
     await owner.dispose()
     expect(owner.status).toBe('disposed')
   })
+
+  it('runs asynchronous inverses of different effects strictly serially in one sweep', async () => {
+    const trace: string[] = []
+    const owner = new EffectOwner('global-serial')
+    const gate = createDeferred<void>()
+    const newestStarted = createDeferred<void>()
+
+    await owner.run('older', async effect => {
+      await effect.apply('older-op', () => 'older', async () => {
+        trace.push('older:start')
+        newestStarted.resolve()
+        await gate.promise
+        trace.push('older:end')
+      })
+    })
+    // Accepted last, so this inverse runs first in the sweep.
+    await owner.run('newest', async effect => {
+      await effect.apply('newest-op', () => 'newest', async () => {
+        trace.push('newest:start')
+        await Promise.resolve()
+        trace.push('newest:end')
+      })
+    })
+
+    const disposal = owner.dispose()
+    await newestStarted.promise
+    await drainMicrotasks()
+
+    // The first inverse is still unsettled, so no later inverse has started.
+    expect(trace).toEqual(['newest:start', 'newest:end', 'older:start'])
+
+    gate.resolve()
+    await disposal
+    expect(trace).toEqual(['newest:start', 'newest:end', 'older:start', 'older:end'])
+  })
+
+  it('keeps the original setup failure identity when the owner releases afterwards', async () => {
+    const owner = new EffectOwner('failure-identity')
+    const failure = new RangeError('original failure')
+
+    const reason = await owner.run('effect', async effect => {
+      await effect.apply('accepted', () => 'value', () => {})
+      throw failure
+    }).then(
+      () => undefined,
+      (caught: unknown) => caught,
+    )
+
+    expect(reason).toBe(failure)
+    await owner.dispose()
+    expect(owner.status).toBe('disposed')
+  })
 })

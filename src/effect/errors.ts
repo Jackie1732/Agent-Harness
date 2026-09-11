@@ -9,7 +9,14 @@ export type EffectErrorCode =
   | 'EFFECT_DISPOSAL_FAILED'
   | 'EFFECT_REENTRANT_DISPOSE'
 
-/** Stage of one cleanup attempt that produced a failure. */
+/**
+ * Stage of one cleanup attempt that produced a failure.
+ *
+ * `revert` is the stage a failing inverse reports and the only one the current release
+ * paths emit. `wait` is reported by the defence that keeps a release from joining cleanup
+ * already owned by an active release in the same asynchronous chain; the release guards
+ * reject that request before it reaches the record, so no current test reaches this stage.
+ */
 export type CleanupFailureStage = 'revert' | 'wait'
 
 /** One cleanup attempt that failed, in the order the attempt was made. */
