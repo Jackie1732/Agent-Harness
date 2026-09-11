@@ -37,6 +37,7 @@
 | CL-0002 | Claude | `step0` | `origin/step0` | `landed` | 拆分 JSON 校验器、保留嵌套错误原因、补充公共 JSDoc 和错误边界测试 | `pnpm run check`; `git diff --check`; Markdown 链接检查 | Codex 审查修复了类型错误，为 Error cause 增加循环与深度限制，并移除重复的提交说明文件 |
 | C-0003 | Codex | `step1` | `ce54eb2` | `committed-local` | Step 1 Revertible Effect 生命周期内核完整规划与文档入口 | `pnpm run check`; Markdown 链接检查; `git diff --check` | 规划固定可观察行为、竞争决策和验收矩阵；纯 Markdown 贡献保留在本地，不单独推送 |
 | C-0004 | Codex | `step1` | `e253063` | `committed-local` | 审查并整合 Claude 对 Step 1 规划的审计意见 | `pnpm run check`; Markdown 围栏与链接检查; `git diff --check` | 采纳登记临界区、任务发布顺序和可复现竞争测试；删除错误示例与无依据的性能、调试和兼容性扩展；纯 Markdown 贡献不推送 |
+| C-0005 | Codex | `step1` | `c4f657e` | `committed-local` | 审查并整合 DeepSeek 对 Step 1 规划的审计意见 | Windows Node 下分别运行 `lint`、`typecheck`、`test`、`build`、`test:built`; Markdown 围栏与链接检查; `git diff --check` | 补全 Signal、启动检查点、Lease value、静止范围和标签语义；Provider 延后到 Step 2；修正重入检测范围；纯 Markdown 贡献不推送 |
 
 ## 工作规则
 
