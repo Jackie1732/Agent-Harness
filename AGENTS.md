@@ -27,8 +27,9 @@ These instructions apply to the entire autonomous Agent Harness repository.
 
 ## Validation
 
-- Run `pnpm install --frozen-lockfile` when dependencies or the Lockfile change.
-- Run `pnpm run check` before every commit and push.
+- Run the gate with `npm run <script>` from Windows Node, not with Linux `pnpm`. Installed dependencies carry Windows native bindings only, so `lint` and `test` cannot load under the WSL Linux runtime, and the `check` script calls `pnpm`, which is not on the Windows PATH. Run `lint`, `typecheck`, `test`, `build`, and `test:built` individually; together they equal `check`.
+- Cross into Windows with the working directory inherited from WSL and relative paths. A non-ASCII path passed as a Windows argument is corrupted by ANSI codepage conversion, so never pass one.
+- Run `npm install --frozen-lockfile` only when a dependency or the Lockfile changes.
 - Record only commands actually executed. A passing unit test does not prove a real model, network, or external-system path.
 
 ## Commits and pushes
