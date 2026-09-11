@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import {
   CapabilityRegistry,
+  ComponentDeactivationFailedError,
   createCapabilityKey,
 } from '../../src/index.js'
 import type { CapabilityKey } from '../../src/index.js'
@@ -126,7 +127,7 @@ describe('capability registry edge cases', () => {
     })
 
     await registry.whenQuiescent()
-    await provider.dispose()
+    await expect(provider.dispose()).rejects.toBeInstanceOf(ComponentDeactivationFailedError)
 
     const projected = registry.snapshot().components.find(entry => entry.label === 'provider')
     expect(provider.status).toBe('disposed')
@@ -166,7 +167,7 @@ describe('capability registry edge cases', () => {
     expect(consumer.status).toBe('failed')
     const projected = registry.snapshot().components.find(entry => entry.label === 'consumer')
     expect(projected?.failurePhase).toBe('deactivation')
-    await registry.dispose()
+    await expect(registry.dispose()).rejects.toBeInstanceOf(AggregateError)
   })
 
   it('does not publish an activation whose resolution was withdrawn', async () => {
@@ -308,7 +309,7 @@ describe('capability registry edge cases', () => {
     // consumer then failed.
     expect(publishedDuringTeardown).toEqual([1])
     expect(registry.snapshot().providers).toEqual([])
-    await registry.dispose()
+    await expect(registry.dispose()).rejects.toBeInstanceOf(AggregateError)
   })
 
   it('retries a failed activation once its requirements are satisfied', async () => {
@@ -375,7 +376,7 @@ describe('capability registry edge cases', () => {
     // Remove the requirement's provider, then retry: it must be refused, not attempted.
     await holder.dispose()
 
-    await expect(provider.retry()).rejects.toMatchObject({ code: 'CAPABILITY_UNSATISFIED' })
+    await expect(provider.retry()).rejects.toMatchObject({ code: 'COMPONENT_RETRY_UNSATISFIED' })
     expect(provider.status).toBe('failed')
     await registry.dispose()
   })

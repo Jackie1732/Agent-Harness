@@ -1,4 +1,7 @@
 import { EffectOwner } from '../effect/index.js'
+import type { EffectContext } from '../effect/index.js'
+import { HarnessError } from '../foundation/error.js'
+import type { JsonObject } from '../foundation/json.js'
 import {
   CapabilityBindingInvalidError,
   CapabilityKeyUndeclaredError,
@@ -20,9 +23,6 @@ import type {
   ProviderInstanceId,
 } from './types.js'
 
-/** Inverses of the bindings one activation published, applied when it withdraws. */
-export type ProviderTeardown = () => Promise<void>
-
 /** Mutable record of one mounted component. */
 export interface ComponentRecord {
   readonly id: ComponentId
@@ -38,30 +38,42 @@ export interface ComponentRecord {
    *
    * While activating it is the view captured when the attempt started, which keeps the
    * running setup reading one stable resolution. Once the bindings publish it is that
-   * captured view extended with the instance this activation published, so a consumer's
-   * committed view names its dependencies rather than only its own offerings.
+   * captured view restricted to declared requirements, so a consumer's committed view
+   * names the provider instance for each dependency.
    */
   committed: Map<CapabilityKey<unknown>, ProviderInstance>
   /** Resolution captured when the running activation started, used for drift checks. */
   attemptView: Map<CapabilityKey<unknown>, ProviderInstance> | undefined
   /** Values offered by the running activation; cleared when it settles. */
   staged: Map<CapabilityKey<unknown>, unknown> | undefined
-  /** Inverses of the bindings this component published, applied when it withdraws. */
-  teardown: ProviderTeardown | undefined
   /** Effect owner of the current activation. */
   owner: EffectOwner | undefined
+  /** Number of resource inverses accepted by the current activation. */
+  cleanupCount: number
+  /** Successful publication count used to allocate a fresh provider identity. */
+  providerSequence: number
+  /** Why the running activation was interrupted by a later registry mutation. */
+  interruption: 'release' | 'dependency' | undefined
   /** Phase of the latest failure, cleared when a transition succeeds. */
   failurePhase: FailurePhase | undefined
   /** Raw reason of the latest failure, cleared when a transition succeeds. */
   failure: unknown
+  /** Registry sequence assigned when the latest deactivation failure was observed. */
+  failureSequence: number | undefined
   /** Set while a transition task owns this component. */
   busy: boolean
+  /** Shared task created by the first explicit release request. */
+  releaseTask: Promise<void> | undefined
+  /** Shared task created by concurrent retries of one failed episode. */
+  retryTask: Promise<void> | undefined
 }
 
 /** One activation's captured inputs. */
 export interface ActivationAttempt {
   /** Effect owner created for this attempt. */
   readonly owner: EffectOwner
+  /** Root Effect context that owns this activation's operations. */
+  effect: EffectContext | undefined
   /** Resolution captured when the attempt started. */
   readonly view: Map<CapabilityKey<unknown>, ProviderInstance>
   /** Values offered through `provide()`, published only when the activation commits. */
@@ -113,9 +125,10 @@ export class ActivationContext implements ComponentContext {
    * Aborted once the owning activation stops.
    *
    * Reading it outside `setup` is a programming error: the context has already closed by
-   * then and `apply()` reports that state.
+   * then and the accessor reports that state.
    */
   get signal(): AbortSignal {
+    this.#assertOpen('signal')
     const signal = this.#attempt.signal
     if (signal === undefined) {
       throw new ComponentInactiveError('not-started', 'signal', this.#record.label)
@@ -137,11 +150,13 @@ export class ActivationContext implements ComponentContext {
     revert: (value: T) => void | PromiseLike<void>,
   ): Promise<T> {
     this.#assertOpen('apply')
-    const lease = await this.#attempt.owner.run(
-      label,
-      effect => effect.apply(label, operation, revert),
-    )
-    return lease.value
+    const effect = this.#attempt.effect
+    if (effect === undefined) {
+      throw new ComponentInactiveError('not-started', 'apply()', this.#record.label)
+    }
+    const value = await effect.apply(label, operation, revert)
+    this.#record.cleanupCount += 1
+    return value
   }
 
   /**
@@ -198,13 +213,12 @@ export class ActivationContext implements ComponentContext {
  * @param record - Component whose activation is committing.
  * @param staged - Values offered through `provide()`.
  * @param activeBindings - Registry binding view to extend.
- * @returns The published provider instance and the resolution it establishes.
  */
 export function publishBindings(
   record: ComponentRecord,
   staged: ReadonlyMap<CapabilityKey<unknown>, unknown>,
   activeBindings: Map<CapabilityKey<unknown>, ProviderInstance>,
-): { readonly instance: ProviderInstance; readonly view: Map<CapabilityKey<unknown>, ProviderInstance> } {
+): void {
   for (const key of staged.keys()) {
     if (!record.provides.includes(key)) {
       throw new CapabilityBindingInvalidError(record.label, key.name, 'undeclared')
@@ -220,18 +234,15 @@ export function publishBindings(
   }
 
   const instance: ProviderInstance = {
-    id: `${record.id}#${record.ordinal}:${staged.size}` as ProviderInstanceId,
+    id: `${record.id}#${record.providerSequence + 1}` as ProviderInstanceId,
     component: record.id,
     bindings,
   }
+  record.providerSequence += 1
 
-  const view = new Map<CapabilityKey<unknown>, ProviderInstance>()
   for (const binding of bindings) {
     activeBindings.set(binding.key, instance)
-    view.set(binding.key, instance)
   }
-
-  return { instance, view }
 }
 
 /**
@@ -269,7 +280,14 @@ export function assertClaimAvailable(
   const claimant = findClaimant(key, components)
   if (claimant !== undefined && claimant.id !== record.id) {
     const retiring = claimant.releasing || claimant.status === 'deactivating'
-    throw new CapabilityProviderConflictError(key.name, claimant.label, record.label, retiring)
+    throw new CapabilityProviderConflictError(
+      key.name,
+      claimant.label,
+      record.label,
+      retiring,
+      claimant.id,
+      record.id,
+    )
   }
 }
 
@@ -288,7 +306,9 @@ export function toDeclaration(record: ComponentRecord): ComponentDeclaration {
     provides: record.provides,
     releasing: record.releasing,
     status: record.status,
-    committed: record.committed,
+    committed: record.status === 'activating' && record.attemptView !== undefined
+      ? record.attemptView
+      : record.committed,
   }
 }
 
@@ -296,9 +316,10 @@ export function toDeclaration(record: ComponentRecord): ComponentDeclaration {
  * Describe a failure reason for a JSON-safe snapshot.
  *
  * @param reason - Value thrown by user code.
- * @returns A stable projection carrying no free-form payload.
+ * @returns A stable projection with JSON-safe fields and bounded causes.
  */
-export function projectFailure(reason: unknown): { readonly message: string; readonly name: string } {
+export function projectFailure(reason: unknown): JsonObject {
+  if (reason instanceof HarnessError) return { ...reason.toJSON() }
   return {
     name: reason instanceof Error ? reason.name : typeof reason,
     message: messageOf(reason),

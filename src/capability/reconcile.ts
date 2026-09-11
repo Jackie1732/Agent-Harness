@@ -1,26 +1,16 @@
-import { EffectOwner } from '../effect/index.js'
+import { EffectDisposalFailedError, EffectOwner } from '../effect/index.js'
 import { ActivationContext, publishBindings } from './record.js'
 import type { ActivationAttempt, ComponentRecord } from './record.js'
-import { ComponentActivationFailedError, ComponentDeactivationFailedError } from './errors.js'
+import {
+  CapabilityBindingInvalidError,
+  ComponentDeactivationFailedError,
+} from './errors.js'
 import type { CapabilityKey, ProviderInstance } from './types.js'
-
-/** What a transition did, so the coordinator knows whether to keep going. */
-export type TransitionResult = 'progress' | 'idle'
 
 /** Mutable state a coordinator drives one transition at a time. */
 export interface ReconciliationState {
   /** Active binding view: keys with a published provider instance. */
   readonly activeBindings: Map<CapabilityKey<unknown>, ProviderInstance>
-  /** Diagnostic view of what each key is bound to, shared with consumers. */
-  readonly bindings: Map<CapabilityKey<unknown>, unknown>
-}
-
-function messageOf(reason: unknown): string {
-  return reason instanceof Error ? reason.message : String(reason)
-}
-
-async function disposeOwner(owner: EffectOwner): Promise<void> {
-  await owner.dispose()
 }
 
 /**
@@ -32,53 +22,68 @@ async function disposeOwner(owner: EffectOwner): Promise<void> {
  *
  * @param record - Component being activated.
  * @param state - Binding views the activation reads and will publish into.
- * @returns Whether the activation committed.
+ * @returns A promise that settles after setup and every admitted operation.
  */
 export async function runActivation(
   record: ComponentRecord,
   state: ReconciliationState,
-): Promise<boolean> {
+): Promise<void> {
+  const view = new Map<CapabilityKey<unknown>, ProviderInstance>()
+  for (const key of record.requires) {
+    const instance = state.activeBindings.get(key)
+    if (instance !== undefined) view.set(key, instance)
+  }
   const attempt: ActivationAttempt = {
     owner: new EffectOwner(record.label),
-    view: new Map(state.activeBindings),
+    effect: undefined,
+    view,
     staged: new Map(),
     signal: undefined,
   }
   record.owner = attempt.owner
+  record.cleanupCount = 0
   record.attemptView = attempt.view
   record.staged = undefined
 
   const context = new ActivationContext(record, attempt, (key, value) => {
+    if (attempt.staged.has(key)) {
+      throw new CapabilityBindingInvalidError(record.label, key.name, 'duplicate')
+    }
     attempt.staged.set(key, value)
   })
 
   // The activation is the only effect of this owner, so its entry settling means setup
   // finished and every operation it admitted also settled. Reaching here without throwing
   // is therefore the whole completion condition; no label comparison is involved.
-  await attempt.owner.run(record.label, async effect => {
-    attempt.signal = effect.signal
-    await record.setup(context)
-  })
-  context.close()
+  try {
+    await attempt.owner.run(record.label, async effect => {
+      attempt.effect = effect
+      attempt.signal = effect.signal
+      await record.setup(context)
+    })
+  } finally {
+    context.close()
+  }
   // Hand the offered bindings to the commit step; they stay invisible until it publishes.
   record.staged = attempt.staged
-  return true
 }
 
 /**
  * Roll back a failed or interrupted activation.
  *
  * @param record - Component whose activation is being abandoned.
- * @param reason - Original reason, retained on the record.
  */
-export async function rollbackActivation(record: ComponentRecord, reason: unknown): Promise<void> {
+export async function rollbackActivation(record: ComponentRecord): Promise<void> {
   record.staged = undefined
   record.attemptView = undefined
   record.committed = new Map()
   const owner = record.owner
   record.owner = undefined
-  record.failure = reason
-  if (owner !== undefined) await disposeOwner(owner)
+  try {
+    if (owner !== undefined) await owner.dispose()
+  } finally {
+    record.cleanupCount = 0
+  }
 }
 
 /**
@@ -99,22 +104,14 @@ export async function runDeactivation(
   record.attemptView = undefined
   const owner = record.owner
   record.owner = undefined
-  const teardown = record.teardown
-  record.teardown = undefined
-
-  let failed = false
+  const attempted = record.cleanupCount
+  record.cleanupCount = 0
+  let failure: unknown
   if (owner !== undefined) {
     try {
-      await disposeOwner(owner)
-    } catch {
-      failed = true
-    }
-  }
-  if (teardown !== undefined) {
-    try {
-      await teardown()
-    } catch {
-      failed = true
+      await owner.dispose()
+    } catch (reason) {
+      failure = reason
     }
   }
 
@@ -124,12 +121,19 @@ export async function runDeactivation(
     const instance = state.activeBindings.get(key)
     if (instance?.component === record.id) {
       state.activeBindings.delete(key)
-      state.bindings.delete(key)
     }
   }
 
-  if (failed) {
-    record.failure = new ComponentDeactivationFailedError(record.label, 1, 1)
+  if (failure !== undefined) {
+    const failed = failure instanceof EffectDisposalFailedError
+      ? Math.max(1, failure.cleanupFailures.length)
+      : 1
+    record.failure = new ComponentDeactivationFailedError(
+      record.label,
+      Math.max(attempted, failed),
+      failed,
+      failure,
+    )
     record.failurePhase = 'deactivation'
     return false
   }
@@ -150,7 +154,7 @@ export function commitActivation(record: ComponentRecord, state: ReconciliationS
   const attemptView = record.attemptView
   if (staged === undefined || attemptView === undefined) return false
   try {
-    const published = publishBindings(record, staged, state.activeBindings)
+    publishBindings(record, staged, state.activeBindings)
     // The committed view names what this component resolves: its required keys and the
     // instance each one came from. Copying the whole captured view would also record keys
     // the component never declared, and the next evaluation compares key sets, so it would
@@ -161,21 +165,12 @@ export function commitActivation(record: ComponentRecord, state: ReconciliationS
       if (instance !== undefined) committed.set(key, instance)
     }
     record.committed = committed
-    record.teardown = () => Promise.resolve()
-    for (const binding of published.instance.bindings) {
-      state.bindings.set(binding.key, binding.value)
-    }
     record.staged = undefined
     record.attemptView = undefined
     return true
   } catch (reason) {
-    record.failure = new ComponentActivationFailedError(record.label, reason, 0)
+    record.failure = reason
     record.failurePhase = 'activation'
     return false
   }
-}
-
-/** Describe a failure reason for diagnostics; kept here to avoid an error import cycle. */
-export function describeFailure(reason: unknown): string {
-  return messageOf(reason)
 }

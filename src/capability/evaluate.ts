@@ -90,24 +90,17 @@ interface Graph {
   readonly providerByKey: ReadonlyMap<CapabilityKey<unknown>, ComponentId>
   /** Component to the components it depends on directly. */
   readonly dependencies: ReadonlyMap<ComponentId, ReadonlySet<ComponentId>>
-  /** Component to the components that depend on it directly. */
-  readonly dependents: ReadonlyMap<ComponentId, ReadonlySet<ComponentId>>
   /** Dependent to the requirement keys that connect it to a provider. */
   readonly edgeKeys: ReadonlyMap<ComponentId, ReadonlyMap<ComponentId, CapabilityKey<unknown>>>
-  /** Duplicate reservations: key to every claimant, in mount order. */
-  readonly conflicts: ReadonlyMap<CapabilityKey<unknown>, readonly ComponentId[]>
 }
 
 function buildGraph(declarations: readonly ComponentDeclaration[]): Graph {
   const providerByKey = new Map<CapabilityKey<unknown>, ComponentId>()
-  const conflicts = new Map<CapabilityKey<unknown>, ComponentId[]>()
   const dependencies = new Map<ComponentId, Set<ComponentId>>()
-  const dependents = new Map<ComponentId, Set<ComponentId>>()
   const edgeKeys = new Map<ComponentId, Map<ComponentId, CapabilityKey<unknown>>>()
 
   for (const declaration of declarations) {
     dependencies.set(declaration.id, new Set())
-    dependents.set(declaration.id, new Set())
     edgeKeys.set(declaration.id, new Map())
   }
 
@@ -116,10 +109,6 @@ function buildGraph(declarations: readonly ComponentDeclaration[]): Graph {
       const existing = providerByKey.get(key)
       if (existing === undefined) {
         providerByKey.set(key, declaration.id)
-      } else {
-        const claimants = conflicts.get(key) ?? [existing]
-        claimants.push(declaration.id)
-        conflicts.set(key, claimants)
       }
     }
   }
@@ -132,12 +121,11 @@ function buildGraph(declarations: readonly ComponentDeclaration[]): Graph {
       const provider = providerByKey.get(key)
       if (provider === undefined) continue
       edges.add(provider)
-      dependents.get(provider)?.add(declaration.id)
       keys.set(provider, key)
     }
   }
 
-  return { providerByKey, dependencies, dependents, edgeKeys, conflicts }
+  return { providerByKey, dependencies, edgeKeys }
 }
 
 /**
@@ -151,40 +139,37 @@ function buildGraph(declarations: readonly ComponentDeclaration[]): Graph {
  * @returns One report per distinct cycle.
  */
 export function detectCycles(declarations: readonly ComponentDeclaration[]): readonly CycleReport[] {
-  const graph = buildGraph(declarations)
-  const byId = new Map(declarations.map(declaration => [declaration.id, declaration]))
+  const live = declarations.filter(declaration => declaration.status !== 'disposed')
+  const graph = buildGraph(live)
+  const byId = new Map(live.map(declaration => [declaration.id, declaration]))
   const reported = new Set<string>()
   const reports: CycleReport[] = []
-  const finished = new Set<ComponentId>()
-  const onPath: ComponentId[] = []
-  const onPathIndex = new Map<ComponentId, number>()
+  const orderedIds = [...live].sort((a, b) => a.ordinal - b.ordinal).map(entry => entry.id)
 
-  const visit = (id: ComponentId): void => {
-    if (finished.has(id)) return
-    onPathIndex.set(id, onPath.length)
-    onPath.push(id)
-
-    for (const next of [...(graph.dependencies.get(id) ?? [])].sort((a, b) => compareIds(a, b))) {
-      const index = onPathIndex.get(next)
-      if (index !== undefined) {
-        const cycle = canonicalize(onPath.slice(index), graph, byId)
-        const fingerprint = cycle.ids.join('>')
-        if (!reported.has(fingerprint)) {
-          reported.add(fingerprint)
-          reports.push(cycle)
+  for (const start of orderedIds) {
+    const path: ComponentId[] = []
+    const onPath = new Set<ComponentId>()
+    const visit = (id: ComponentId): void => {
+      path.push(id)
+      onPath.add(id)
+      for (const next of [...(graph.dependencies.get(id) ?? [])].sort(compareIds)) {
+        if (next === start) {
+          const cycle = canonicalize(path, graph, byId)
+          const fingerprint = JSON.stringify(cycle.ids)
+          if (!reported.has(fingerprint)) {
+            reported.add(fingerprint)
+            reports.push(cycle)
+          }
+        } else if (!onPath.has(next) && compareIds(next, start) >= 0) {
+          // The smallest identity owns each cycle's traversal. Skipping smaller nodes
+          // avoids rediscovering rotations while preserving distinct overlapping paths.
+          visit(next)
         }
-        continue
       }
-      visit(next)
+      onPath.delete(id)
+      path.pop()
     }
-
-    onPath.pop()
-    onPathIndex.delete(id)
-    finished.add(id)
-  }
-
-  for (const declaration of [...declarations].sort((a, b) => a.ordinal - b.ordinal)) {
-    visit(declaration.id)
+    visit(start)
   }
 
   return reports
@@ -288,6 +273,7 @@ function assertNever(value: never): never {
  */
 export function evaluate(input: EvaluationInput): EvaluationResult {
   const ordered = [...input.declarations].sort((a, b) => a.ordinal - b.ordinal)
+  const live = ordered.filter(declaration => declaration.status !== 'disposed')
   // A provider leaves the resolvable set as soon as it is asked to leave, and stays out
   // for as long as it is deactivating. Its consumers therefore read themselves as
   // unsatisfied and deactivate first, in a cascade that reaches the end of the chain,
@@ -300,13 +286,11 @@ export function evaluate(input: EvaluationInput): EvaluationResult {
   const resolvable = new Map(
     [...input.activeBindings].filter(([, instance]) => !retiring.has(instance.component)),
   )
-  const graph = buildGraph(ordered)
-  const cycles = detectCycles(ordered)
+  const graph = buildGraph(live)
+  const cycles = detectCycles(live)
   const cyclic = new Set(cycles.flatMap(cycle => cycle.ids))
 
   const changes: ComponentChange[] = []
-  const targets = new Map<ComponentId, ReadonlyMap<CapabilityKey<unknown>, ProviderInstance>>()
-
   for (const declaration of ordered) {
     const resolved = cyclic.has(declaration.id) ? undefined : resolve(declaration, resolvable)
     const satisfied = resolved !== undefined && !declaration.releasing && !cyclic.has(declaration.id)
@@ -316,7 +300,6 @@ export function evaluate(input: EvaluationInput): EvaluationResult {
       ? 'deactivating'
       : classify(declaration, satisfied, resolved)
 
-    if (resolved !== undefined) targets.set(declaration.id, resolved)
     changes.push({
       id: declaration.id,
       label: declaration.label,
@@ -325,18 +308,24 @@ export function evaluate(input: EvaluationInput): EvaluationResult {
     })
   }
 
+  const statusById = new Map(ordered.map(declaration => [declaration.id, declaration.status]))
+  const activationCandidates = changes.filter(change =>
+    change.classification === 'activating' || statusById.get(change.id) === 'activating')
+  const deactivationCandidates = changes.filter(change =>
+    change.classification === 'deactivating' || statusById.get(change.id) === 'deactivating')
+
   return {
     changes,
     activationOrder: orderFor(
       ordered,
-      changes.filter(change => change.classification === 'activating'),
+      activationCandidates,
       graph,
       true,
       cyclic,
     ),
     deactivationOrder: orderFor(
       ordered,
-      changes.filter(change => change.classification === 'deactivating'),
+      deactivationCandidates,
       graph,
       false,
       cyclic,
@@ -419,7 +408,7 @@ function orderFor(
     for (const prereqs of remaining.values()) prereqs.delete(next)
   }
 
-  // Anything left sits on a cycle; append it in mount order so no component is dropped.
+  // Preserve every selected component if an inconsistent input leaves an unreported cycle.
   for (const id of [...remaining.keys()].sort((a, b) => ordinal(a) - ordinal(b))) order.push(id)
 
   return forward ? order : order.reverse()

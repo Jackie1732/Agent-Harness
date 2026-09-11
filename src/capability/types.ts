@@ -107,7 +107,8 @@ export interface ComponentHandle {
   readonly status: ComponentStatus
 
   /**
-   * Raw reason of the most recent failure, present only while `status` is `failed`.
+   * Raw reason of the most recent failure. A terminal component retains a cleanup failure
+   * after explicit disposal so callers can inspect why its release rejected.
    *
    * The value is left untransformed for programmatic inspection; the JSON-safe
    * projection of the same failure appears in the registry snapshot.
@@ -137,7 +138,7 @@ export interface ComponentSnapshot {
   readonly label: string
   /** Current lifecycle state. */
   readonly status: ComponentStatus
-  /** Failure phase when the component is failed. */
+  /** Phase of the retained failure, including cleanup failure after explicit disposal. */
   readonly failurePhase?: FailurePhase
   /** Names of the keys this component declares as required. */
   readonly requires: readonly string[]
@@ -161,6 +162,16 @@ export interface ProviderSnapshot {
   readonly keys: readonly string[]
 }
 
+/** JSON-safe projection of one cycle in the mounted declaration graph. */
+export interface CapabilityCycleSnapshot {
+  /** Component identities in cycle order. */
+  readonly ids: readonly string[]
+  /** Diagnostic labels in the same order as `ids`. */
+  readonly labels: readonly string[]
+  /** Capability names connecting each component to the next. */
+  readonly keyNames: readonly string[]
+}
+
 /** JSON-safe diagnostic view of a registry. */
 export interface RegistrySnapshot {
   /** Reconciliation revision this snapshot describes. */
@@ -169,6 +180,8 @@ export interface RegistrySnapshot {
   readonly components: readonly ComponentSnapshot[]
   /** Published provider instances. */
   readonly providers: readonly ProviderSnapshot[]
+  /** Cycles in the live declaration graph. */
+  readonly cycles: readonly CapabilityCycleSnapshot[]
   /** Declared key names mapped to the components that declare them. */
   readonly declarations: Readonly<Record<string, readonly string[]>>
   /** Key names with no resolvable provider and the components waiting on them. */

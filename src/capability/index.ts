@@ -26,6 +26,7 @@ export type {
 } from './evaluate.js'
 export type {
   CapabilityKey,
+  CapabilityCycleSnapshot,
   ComponentContext,
   ComponentDefinition,
   ComponentHandle,
