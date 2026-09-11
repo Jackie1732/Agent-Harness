@@ -225,7 +225,9 @@ function publishRecords(
   let previous = Promise.resolve()
   const published: Promise<EffectCleanupFailure | undefined>[] = []
 
-  for (const record of [...records].reverse()) {
+  // Iterate in reverse order (LIFO) without allocating a new array
+  for (let i = records.length - 1; i >= 0; i--) {
+    const record = records[i]!
     let task: Promise<EffectCleanupFailure | undefined>
     if (record.execution === undefined) {
       task = previous.then(() => callRevert(record.operationLabel, record.revert))

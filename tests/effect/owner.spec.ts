@@ -213,4 +213,25 @@ describe('EffectOwner basic lifecycle', () => {
     expect(lease.value).toBe('value')
     expect(owner.status).toBe('accepting')
   })
+
+  it('disposes an empty owner with no effects', async () => {
+    const owner = new EffectOwner('empty')
+    expect(owner.status).toBe('accepting')
+
+    await owner.dispose()
+    expect(owner.status).toBe('disposed')
+  })
+
+  it('disposes an owner that had effects but all were already released', async () => {
+    const owner = new EffectOwner('pre-released')
+    const lease = await owner.run('effect', async effect => {
+      await effect.apply('op', () => 'value', () => {})
+    })
+
+    await lease.dispose()
+    expect(owner.status).toBe('accepting')
+
+    await owner.dispose()
+    expect(owner.status).toBe('disposed')
+  })
 })
