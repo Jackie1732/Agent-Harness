@@ -46,7 +46,7 @@ Step 1 不是通用插件系统的缩小版。它只研究 Temporal Composabilit
 - 每个被 Runtime 接受的逆操作只属于一个 Effect。
 - 每个 Effect 只属于一个 `EffectOwner`。
 - Effect 可以单独释放；Owner 释放所有仍存活的 Effect。
-- 逆操作一旦开始便视为已消费，无论它成功还是失败，Runtime 都不自动重试。
+- Runtime 认领逆操作并向竞争者发布共享执行任务后，该记录便不再参与其他清理批次；无论执行成功还是失败，Runtime 都不自动重试。
 - 一个子 Owner 可以作为普通资源由父 Effect 持有，因此本阶段不需要专用父子树 API。
 
 ### 顺序
@@ -60,10 +60,12 @@ Step 1 不是通用插件系统的缩小版。它只研究 Temporal Composabilit
 
 ### 异步 Inertia
 
-- `dispose()` 立即阻止新的 Effect 和新的正向操作开始，并通知相关 `AbortSignal`。
+- 每个 Effect record 在 setup 开始前创建一个 AbortController，`EffectContext.signal` 在该 Effect 的整个生命周期中引用同一个 Signal。
+- Owner 释放会中止所有 Effect 的 Signal；成功返回的 Lease 被释放时只中止自己的 Signal。Signal 最多中止一次。
+- `dispose()` 立即阻止对应所有权范围内的新 Effect 或新正向操作开始，并在同一个同步片段内中止相关 Signal。
 - 已经调用的正向操作可以结算。若它成功，Runtime 必须先接受对应逆操作，随后才能清理。
 - Runtime 等待仍在启动的 Effect 结算，再完成 Owner 释放。
-- Abort 是协作通知，不是抢占。忽略 Abort 且永不结算的用户代码会使释放一直等待。
+- Abort 只表示调用方应停止开始新工作，不改变已经开始的 operation 如何结算，也不直接决定 `run()` 的成功或失败。忽略 Abort 且永不结算的用户代码会使释放一直等待。
 - Core 不使用超时伪造静止状态。超时和强制终止属于将来的 Host 策略。
 
 ### 失败
@@ -150,6 +152,10 @@ await owner.dispose()
 | 必填标签 | 错误能指出失败的 Effect 和逆操作；标签只用于诊断，不作为稳定身份 |
 | 全部异步释放 | 同一 API 覆盖同步与异步逆操作，调用方必须显式等待静止 |
 
+Effect 和 operation 标签允许重复。Runtime 不用标签去重、查找、排序或建立所有权，也不持久化标签；错误中的标签只能帮助人定位调用位置。
+
+`EffectLease.value` 是 setup 返回值的原始引用，Runtime 不代理、清空或追踪它的内部活性。对应 Lease 或 Owner 开始释放后，调用方不得继续把该值当作活动资源；Step 1 不增加会暗示 Runtime 能判断任意资源活性的 Lease 状态字段。
+
 第一版不公开 Effect Iterator。`apply()` 已能逐项建立获取与逆操作的关系，且比同步与异步 Generator 联合类型更容易约束返回值、异常和取消。后续真实用例若需要流式 Effect，可以在不改变底层接受顺序和清理记录的前提下增加适配层。
 
 Step 1 完成前，以上 API 仍是待实现设计。测试若暴露语义矛盾，可以同步修改接口与计划；Step 2 应复用最终验证过的所有权行为，不据此提前冻结尚未发布的函数签名。
@@ -191,11 +197,13 @@ Effect 内部状态服务于实现和状态机测试，不在 Step 1 暴露为�
 
 1. `run()` 在执行用户 `setup` 前登记 Effect 记录，使重入的 Owner 释放能够看到正在启动的 Effect。
 2. `setup` 可以进行普通计算，并通过同一个 `EffectContext` 执行零个或多个 `apply()`。
-3. `setup` 成功且 Owner 仍为 `accepting` 时，`run()` 返回活动 Lease。
+3. `setup` 结算成功后，Runtime 在构造和返回 Lease 前检查一次 Owner 状态；这是决定本次 `run()` 能否成功的最终检查点。
 4. `setup` 抛出或拒绝时，Runtime 关闭该 Effect 的接纳入口并回滚其已接受逆操作。
-5. Owner 在启动期间进入 `disposing` 时，Runtime 允许已开始操作结算，随后清理该 Effect；`run()` 不返回一个已经失去所有权的活动 Lease。
+5. 最终检查点仍为 `accepting` 时，`run()` 返回活动 Lease。Owner 已进入 `disposing` 时，Runtime 复用局部回滚路径清理该 Effect；回滚成功后 `run()` 以 `EFFECT_START_INTERRUPTED` 拒绝，回滚失败时以 `EFFECT_ROLLBACK_FAILED` 拒绝并把启动中断错误作为 cause。
 
 同一 Owner 允许多个 `run()` 并发启动。Runtime 不按调用顺序串行化整个 `setup`，因为一个长期初始化不应阻塞无关 Effect。全局逆操作栈根据每个 `apply()` 的实际完成与接受顺序确定。
+
+`run()` 一旦成功结算，其结果不会被后来发生的 Lease 或 Owner 释放追溯改变。后续释放只影响 Lease 所有的资源、Signal 和 `value` 的可用性。
 
 ### `EffectContext.apply()`
 
@@ -205,17 +213,18 @@ Effect 内部状态服务于实现和状态机测试，不在 Step 1 暴露为�
 4. 释放请求若在 `operation` 等待期间到达，Runtime 等待该操作结算。成功结果仍先登记逆操作，再进入清理。
 5. `operation` 失败时，Runtime 原样保留失败原因，不调用没有获得值的 `revert`。
 
-`operation` 必须在成功返回前自行处理内部的部分获取。如果一次操作可能依次获得多个资源，它应拆成多个 `apply()`；Runtime 无法恢复一个在抛错前从未交还给它的资源。
+`operation` 必须在成功返回前自行处理内部的部分获取。如果一次操作可能依次获得多个资源，它应拆成多个 `apply()`；Runtime 无法恢复一个在抛错前从未交还给它的资源。operation 启动后台任务、订阅或定时器时，必须返回能让 `revert` 停止并等待该工作的句柄；未通过返回值交给 Runtime 的后台工作不受本生命周期管理。
 
 Step 1 的可变状态只存在于一个 JavaScript Realm。Promise continuation 在两次异步让出之间顺序执行，因此双栈追加和 Owner 状态转换可以形成同步临界区，不需要 `Atomics` 或锁。Owner 不可跨 Worker 共享；跨线程所有权属于后续 Host 协议。
 
 ### `EffectLease.dispose()`
 
-- 第一次调用关闭该 Effect 的接纳入口、发送 Abort，并启动或加入该 Effect 的清理任务。
+- Lease 只在 `run()` 成功结算后可用；启动阶段只能由 Owner 请求释放。
+- 第一次调用关闭该 Effect 的接纳入口、中止它的 Signal，并启动该 Effect 的清理任务。
 - 除当前清理调用链中的非法重入外，并发与重复调用返回同一个清理 Promise，不重复执行逆操作。
 - 该 Promise 在此 Effect 的全部已开始操作和逆操作结算后完成或拒绝。
 - Lease 清理只处理自己的逆操作，不影响兄弟 Effect。
-- Lease 清理完成后，Owner 不再把它计入后续释放。
+- Lease 开始清理后，`value` 不再承诺表示活动资源；清理完成后，Owner 不再把该 Effect 计入后续释放。
 
 ### `EffectOwner.dispose()`
 
@@ -223,7 +232,9 @@ Step 1 的可变状态只存在于一个 JavaScript Realm。Promise continuation
 - Runtime 等待已经开始的正向操作和 `setup` 结算，然后反向遍历全局清理栈并处理所有剩余记录。
 - 除当前清理调用链中的非法重入外，并发与重复调用返回同一个 Promise。
 - 所有目标记录结算后，Owner 进入 `disposed`。存在清理错误时 Promise 拒绝，但状态仍为 `disposed`。
-- 一个逆操作可以等待另一个 Owner 或 Lease 的释放。逆操作不得等待当前正在执行它的同一个释放任务；Runtime 使用异步调用上下文识别同任务重入和沿当前调用链形成的释放环，并报告明确错误。
+- 一个逆操作可以等待另一个 Owner 或 Lease 的释放。逆操作不得等待当前正在执行它的同一个释放任务；Runtime 使用异步调用上下文的继承标识集合识别同任务重入和保持该继承链的释放环，并报告明确错误。
+
+Step 1 的“静止”只覆盖 Runtime 已跟踪的 setup、已经调用的 operation 和逆操作返回的 Promise：这些任务全部结算，且 Core 不再安排属于本次释放的回调。用户代码没有返回或登记的后台任务不在该保证内。测试通过受控 Promise 证明 `dispose()` 等待每个已跟踪任务，不通过等待若干真实时间来推断未来不会再有工作。
 
 ## 竞争条件决策表
 
@@ -231,11 +242,13 @@ Step 1 的可变状态只存在于一个 JavaScript Realm。Promise continuation
 |---|---|
 | `operation` 等待时 Owner 释放 | 发送 Abort，等待操作；成功则登记并立即执行逆操作，失败则完成该操作的失败路径 |
 | `setup` 等待时 Owner 释放 | 发送 Abort并等待 setup；不再允许新的 `apply()`，setup 结算后清理已接受记录 |
+| `run()` 成功后 Lease 释放 | 中止该 Effect 的 Signal 并清理它的记录；已经成功结算的 `run()` 结果不改变 |
 | Lease 与 Owner 同时释放 | 两者加入同一批单次清理记录；每个逆操作最多执行一次 |
 | 两个 Effect 的操作交错成功 | 按全局栈中的实际接受顺序形成 LIFO，不按 Effect 创建顺序重排 |
 | `setup` 失败且回滚成功 | `run()` 保留原始 setup 失败 |
 | `setup` 失败且回滚也失败 | `run()` 报告组合错误，同时保留 setup 原因和全部回滚失败 |
 | 一个逆操作失败 | 记录失败并继续执行其余目标逆操作 |
+| Lease 或 Owner 开始释放 | 已持有的 `EffectLease.value` 不再表示 Runtime 保证的活动资源 |
 | 释放完成后再次 `run()` | 在调用 setup 前拒绝，不产生用户副作用 |
 | 释放完成后重复 `dispose()` | 返回第一次释放的已结算 Promise，不执行新工作 |
 
@@ -246,12 +259,12 @@ Step 1 使用 `HarnessError` 派生错误，并保留原始异常对象供程序
 | 错误码 | 触发条件 | 必须保留的信息 |
 |---|---|---|
 | `EFFECT_OWNER_INACTIVE` | Owner 已开始或完成释放后请求新工作 | Effect 或操作标签、Owner 状态 |
-| `EFFECT_START_INTERRUPTED` | setup 成功前 Owner 已请求释放 | Effect 标签 |
+| `EFFECT_START_INTERRUPTED` | setup 成功后的最终检查点发现 Owner 已请求释放 | Effect 标签、清理尝试数与失败数 |
 | `EFFECT_ROLLBACK_FAILED` | setup 失败后的一个或多个逆操作失败 | 原始 setup 原因、按执行顺序排列的清理失败 |
 | `EFFECT_DISPOSAL_FAILED` | Lease 或 Owner 释放时一个或多个逆操作失败 | 释放目标、按执行顺序排列的清理失败 |
-| `EFFECT_REENTRANT_DISPOSE` | 逆操作直接等待或调用正在执行它的同一释放任务 | Effect 与逆操作标签 |
+| `EFFECT_REENTRANT_DISPOSE` | 释放调用命中当前异步继承链中已经活动的目标任务 | Effect 与逆操作标签 |
 
-如果 setup 失败而回滚全部成功，`run()` 直接拒绝原始失败，不增加包装层。组合错误保存原始 `unknown` 原因和清理失败数组；其 JSON 诊断只投影稳定、安全的标签、数量与消息，不把任意对象直接放入 `details`。
+如果 setup 失败而回滚全部成功，`run()` 直接拒绝原始失败，不增加包装层。组合错误保存原始 `unknown` 原因和清理失败数组；其 JSON 诊断只投影稳定、安全的标签、尝试数、失败数与消息，不把任意对象直接放入 `details`，也不使用成功字段暗示失败的逆操作已经恢复。
 
 清理错误的顺序等于逆操作的实际执行顺序。Runtime 不只保留第一个错误，因为这会隐藏其他未恢复资源。
 
@@ -269,7 +282,7 @@ Step 1 使用 `HarnessError` 派生错误，并保留原始异常对象供程序
 
 Cleanup record 是防止 Lease 与 Owner 竞争时重复清理的最小单元。Runtime 在一个同步临界区内创建并保存共享执行 Promise，再让该 Promise 在后续微任务中调用用户逆操作。重入调用因此总能取得已发布的任务，不会遇到“已认领但任务仍为空”的中间状态。选择阶段认领记录，执行阶段按序等待并收集错误。
 
-Owner 与 Lease 的每次释放各有一个内部任务标识。实现使用 Node `AsyncLocalStorage` 传播当前调用链上的释放标识；目标 `dispose()` 如果发现自己的标识已经在当前链中，便以 `EFFECT_REENTRANT_DISPOSE` 拒绝。该机制能覆盖直接自等待和当前调用链内的 `A → B → A`，不能证明两个独立启动的释放任务之间不存在更间接的互等环。
+Owner 与 Lease 的每次释放各有一个内部任务标识。实现使用 Node `AsyncLocalStorage` 保存当前异步链继承的标识集合；进入嵌套释放时复制已有集合并加入新标识，不用新标识覆盖外层 store。目标 `dispose()` 如果发现自己的标识已在继承集合中，便以 `EFFECT_REENTRANT_DISPOSE` 拒绝。该机制覆盖直接自等待和保持同一继承链的 `A → B → A`，不能检测从独立异步根启动后再互相等待的任务。
 
 内部可变状态不从公共对象泄漏。测试通过可观察资源、Promise 结算和公开错误验证行为，不读取私有数组来证明实现正确。
 
@@ -315,7 +328,7 @@ Experimental/
 - 在调用用户逆操作前发布共享 Promise，消除重入时 `executionTask` 尚未赋值的窗口。
 - 同时支持同步抛错、异步拒绝和正常完成。
 - 保证错误后不重试，并为上层聚合保留原始原因。
-- 使用异步调用上下文检测同任务重入和当前调用链内的释放环。
+- 使用异步调用上下文的累计标识集合检测同任务重入和保持同一继承链的释放环。
 
 完成条件：并发调用同一记录只执行一次逆操作，并且所有调用方观察到同一结算结果。
 
@@ -335,7 +348,7 @@ Experimental/
 - Lease 与 Owner 竞争时共享 Cleanup record 的执行任务。
 - 所有目标结算后再完成状态转换和 Promise。
 
-完成条件：释放完成表示已达到静止状态，而不是只发送了 Abort 或启动了清理。
+完成条件：释放完成表示全部 Runtime 跟踪的 setup、operation 与清理任务已经结算，而不是只发送了 Abort 或启动了清理。
 
 ### 1.5 完成错误聚合与诊断
 
@@ -373,6 +386,7 @@ Experimental/
 - 一个 Effect 的多个逆操作严格 LIFO。
 - 多个 Effect 的交错操作按全局接受顺序 LIFO。
 - setup 不含操作时仍能得到并释放 Lease。
+- 多个 Effect 或 operation 使用相同标签时均能正常启动和释放。
 
 ### 回滚与隔离
 
@@ -381,29 +395,34 @@ Experimental/
 - setup 失败且回滚成功时保留原始异常身份。
 - setup 与一个或多个逆操作同时失败时报告组合错误。
 - 逆操作失败后仍继续执行剩余逆操作。
+- 逆操作失败时，可观察资源保持实际的部分恢复状态；失败记录不会被重试，后续记录仍会被尝试。
+- 失败诊断报告清理尝试数与失败数，不产生表示完整恢复成功的字段。
 
 ### 幂等与竞争
 
 - Lease 连续、并发和 Owner 竞争释放时，每个逆操作最多执行一次。
 - Owner 多次释放返回同一个 Promise 实例。
 - operation 等待期间释放会先等待结果，再恢复成功获取的资源。
-- setup 等待期间释放会发送 Abort、拒绝后续 `apply()` 并等待 setup。
+- setup 等待期间 Owner 释放会中止 Signal、拒绝后续 `apply()` 并等待 setup；setup 成功结算后 `run()` 以启动中断拒绝。
+- `run()` 成功后 Lease 释放会中止同一个 Signal，但不会改变已经结算的 `run()` 结果。
 - 释放开始后新的 `run()` 不执行 setup。
-- 直接自等待和当前调用链内的释放环不会静默挂起。
+- 直接自等待和保持同一异步继承链的 `A → B → A` 不会静默挂起。
 - Cleanup record 在调用用户逆操作前已经发布共享执行 Promise。
 
 ### 静止与失败完成
 
 - 异步逆操作未完成前，`dispose()` 不结算。
+- 受控 setup、operation 或逆操作 Promise 未结算前，Owner 的 `dispose()` 不结算。
 - 所有逆操作失败时仍全部被调用。
 - 失败释放后 Owner 与 Lease 均保持终态。
 - 重复释放不会重试失败的逆操作。
-- 测试结束时没有活动资源和未处理 rejection。
+- `dispose()` 结算时，Core 已处理本次释放产生的全部内部 Promise rejection，且不再安排属于本次释放的回调。
 
 ### 类型与构建产物
 
 - `apply()` 的正向结果类型正确传给逆操作和调用方。
 - Lease 的 `value` 保留 setup 返回类型。
+- Lease 或 Owner 释放不替换、清空或重新解释 `value`；其资源活性由调用方契约负责。
 - 非函数操作或逆操作由 TypeScript 拒绝。
 - 根入口的源码 Smoke Test 和普通 Node 构建产物 Smoke Test 能访问 Step 1 公共导出。
 
@@ -422,20 +441,18 @@ Experimental/
 
 ## 验证命令
 
-实现阶段按需运行聚焦测试，最终至少执行：
+实现阶段按需运行聚焦测试。依赖安装含 Windows 原生绑定，最终从 Windows Node 环境分别执行：
 
 ```text
-pnpm install --frozen-lockfile
-pnpm run lint
-pnpm run typecheck
-pnpm run test
-pnpm run build
-pnpm run test:built
-pnpm run check
+npm run lint
+npm run typecheck
+npm run test
+npm run build
+npm run test:built
 git diff --check
 ```
 
-若新增 `fast-check`，先更新 `package.json` 和 Lockfile，再重新执行冻结安装。文档只记录实际执行过的命令，不把计划命令写成通过证据。
+若新增 `fast-check`，先按仓库当时的依赖规则更新 `package.json` 和 Lockfile，再执行冻结安装。文档只记录实际执行过的命令，不把计划命令写成通过证据。
 
 ## 验收清单
 
@@ -444,7 +461,8 @@ git diff --check
 - [ ] 根入口导出可用的 `EffectOwner`、`EffectContext` 和 `EffectLease` 类型。
 - [ ] 每个逆操作有且只有一个 Effect 所有者。
 - [ ] Lease 可以独立释放，Owner 可以释放全部剩余 Effect。
-- [ ] 标签用于诊断但不充当持久 ID。
+- [ ] 标签允许重复，只用于诊断，不充当查找键或持久 ID。
+- [ ] `EffectLease.value` 是原始 setup 返回值，释放开始后不再承诺表示活动资源。
 
 ### 恢复行为
 
@@ -455,11 +473,13 @@ git diff --check
 
 ### 异步生命周期
 
-- [ ] 释放阻止新工作并向在途 setup 发送 Abort。
+- [ ] 每个 Effect 使用同一个 Signal；Owner 与成功返回后的 Lease 释放都能中止相应 Signal。
+- [ ] 释放阻止新工作，Abort 不改变已开始 operation 的结算约定。
 - [ ] 已开始的正向操作结算后才进入对应清理。
-- [ ] `dispose()` 等待目标启动与清理任务全部结算。
+- [ ] `run()` 在 setup 成功后、返回 Lease 前执行最终 Owner 状态检查。
+- [ ] `dispose()` 等待 Runtime 跟踪的 setup、operation 与清理任务全部结算。
 - [ ] 重复和并发释放共享同一 Promise，且不重复清理。
-- [ ] 直接自等待和当前调用链内的释放环得到明确错误而不是挂起。
+- [ ] 直接自等待和保持同一异步继承链的释放环得到明确错误而不是挂起。
 - [ ] 重入清理始终能观察到已经发布的共享执行 Promise。
 
 ### 错误与诊断
@@ -468,13 +488,14 @@ git diff --check
 - [ ] 组合错误保留原始 setup 原因与全部清理失败。
 - [ ] JSON 诊断不包含不可序列化值。
 - [ ] 错误中的失败顺序与实际清理尝试顺序一致。
+- [ ] 清理失败时，错误和可观察资源状态不会暗示已经完整恢复。
 
 ### 测试与独立性
 
 - [ ] 基本、失败、竞争、状态机和类型测试全部通过。
 - [ ] 普通 Node 可以从构建产物导入 Step 1 API。
 - [ ] 源码与 Lockfile 不引入 DSH、Cordis 或父工作区依赖。
-- [ ] `pnpm run check` 和 `git diff --check` 通过。
+- [ ] Windows Node 环境中的 `lint`、`typecheck`、`test`、`build`、`test:built` 和 `git diff --check` 通过。
 - [ ] 本页记录最终 API、偏离计划的原因和实际执行证据。
 
 ## 风险与验证点
@@ -488,7 +509,9 @@ git diff --check
 | 清理遇到第一个错误便停止 | 串行尝试全部目标，再统一拒绝 |
 | Abort 被误解为强制停止 | API 和测试明确 Abort 只发出协作通知，释放仍等待结算 |
 | operation 抛错前已经产生部分副作用 | 要求拆分 `apply()` 或由 operation 自行恢复；Runtime 只管理已交还结果 |
-| 清理等待自身或形成调用链内的环 | 用 `AsyncLocalStorage` 传播释放标识并报告稳定错误；独立启动任务之间的互等环保留为限制 |
+| operation 隐藏后台任务、订阅或定时器 | 要求 operation 返回可供逆操作停止并等待的句柄；未交还的工作不属于 Runtime 跟踪范围 |
+| Lease value 在释放后被继续使用 | 明确 value 是不带活性跟踪的原始引用，释放开始后调用方不得依赖其活动状态 |
+| 清理等待自身或形成继承链内的环 | 用 `AsyncLocalStorage` 累计传播释放标识并报告稳定错误；独立异步根之间的互等环保留为限制 |
 | 错误聚合破坏 JSON 安全 | 原始异常与 JSON 诊断分离，诊断只保存稳定投影 |
 | 过早构建 Component/Fiber | 公共层只包含 Owner、Context 和 Lease，依赖激活留到 Step 2 |
 
@@ -513,6 +536,25 @@ Claude 的审计作为设计输入处理，原始示例不直接作为实现规�
 
 审计后的关键改进是把“原子认领”细化为两个不同问题：逆操作必须先进入所有权栈再把正向结果交给用户；清理任务必须先对竞争者可见再调用可能重入的用户逆操作。两处都依靠 JavaScript 同一 Realm 内无异步让出的同步片段，而不是依靠注释中的“原子”字样。
 
+## DeepSeek 审计后的修订
+
+DeepSeek 的审计按 Step 1 的实际 API 和阶段边界重新核对。原始附录中的事实、建议与环境记录不直接充当实现规范，处理结果如下：
+
+| 编号 | 处理 | 合入正文的决定 |
+|---:|---|---|
+| DS-01 | 部分采纳 | Signal 属于 Effect，Owner 与已成功返回的 Lease 都能中止它；启动期间没有可供调用方释放的 Lease，`run()` 结果由 setup 后的最终检查点决定 |
+| DS-02 | 延后 | Provider、能力键和 `set(key, value)` 属于 Step 2，本阶段不引入绑定替换规则 |
+| DS-03 | 部分采纳并修正 | `AsyncLocalStorage` 的 store 保存并累计继承标识，不在嵌套释放时覆盖；只承诺检测同一继承链中的自等待和环，不检测独立异步根之间的互等 |
+| DS-04 | 采纳核心 | 测试通过实际资源状态、继续清理和错误计数证明恢复不完整；不以搜索错误 JSON 中是否出现某些自然语言作为行为断言 |
+| DS-05 | 采纳 | `EffectLease.value` 是无活性跟踪的原始引用，释放开始后不再承诺活动；不增加误导性的 Lease 状态字段 |
+| DS-06 | 采纳 | 用“认领并发布共享执行任务”取代含糊的“已消费”，认领后不因成功或失败再次执行 |
+| DS-07 | 采纳 | setup 成功后、Lease 返回前设置唯一最终检查点；启动中断复用局部回滚，回滚失败保留中断 cause |
+| DS-08 | 采纳边界 | operation 必须交还可清理后台工作的句柄；不增加一个故意留下后台资源的常规测试 |
+| DS-09 | 采纳并收窄 | 静止只覆盖 Runtime 跟踪的 Promise 和 Core 安排的释放回调；用 Deferred 证明等待关系，不用若干宏任务推断无限未来 |
+| DS-10 | 采纳 | 标签允许重复，只用于诊断，不作为键、身份、排序条件或持久数据 |
+
+本次现场复核在项目当前 Node 环境中观察到累计 store 的嵌套轨迹为 `A → A,B → A`。这说明嵌套 `AsyncLocalStorage.run()` 是否丢失外层标识取决于进入内层时传入的数据；实现必须复制已有集合并加入新标识，不能只传入新标识。
+
 ## 明确不实现
 
 - Service Key、Provider、Consumer、Coeffect 或依赖图。
@@ -522,6 +564,8 @@ Claude 的审计作为设计输入处理，原始示例不直接作为实现规�
 - Effect Iterator、Generator 专用语法或装饰器。
 - 并行清理、交换性推断或 Observational Equivalence 判定器。
 - 超时、强制取消、进程终止或 Host Shutdown 策略。
+- 独立异步根之间或未继承同一释放标识集合的任务互等检测。
+- 用户代码未通过 operation 返回值或逆操作 Promise 交给 Runtime 的后台工作。
 - 外部 Emission 的事务提交、幂等键或业务补偿。
 - 持久化恢复、跨进程 Effect 所有权或分布式事务。
 - 稳定 Effect ID、诊断树或遥测传输。
@@ -533,6 +577,8 @@ Claude 的审计作为设计输入处理，原始示例不直接作为实现规�
 规划提交执行了 `pnpm run check`，Step 0 的 6 个测试文件和 24 项测试继续通过，Lint、类型检查、构建与普通 Node Smoke Test 通过；本地 Markdown 链接检查和 `git diff --check` 也通过。这些结果只证明规划变更没有破坏现有基线，不是 Step 1 行为的实现证据。
 
 Claude 审计整合执行了 `pnpm run check`，同一组 6 个测试文件和 24 项测试继续通过；Markdown 围栏、相对链接和 `git diff --check` 通过。审计修订仍属于规划证据，不表示 Effect Runtime 已实现。
+
+DeepSeek 审计整合按当前协作规则在 Windows Node 环境分别执行了 `npm run lint`、`npm run typecheck`、`npm run test`、`npm run build` 和 `npm run test:built`，6 个测试文件中的 24 项测试通过，普通 Node 成功加载构建产物。Markdown 围栏、相对链接和 `git diff --check` 通过。另用当前 Node 实测累计 `AsyncLocalStorage` store 的嵌套轨迹为 `A → A,B → A`。这些仍是规划与现有基线证据，不是 Step 1 Runtime 的实现证据。
 
 ## 完成后的下一步
 
