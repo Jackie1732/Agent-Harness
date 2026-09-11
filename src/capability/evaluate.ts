@@ -125,13 +125,15 @@ function buildGraph(declarations: readonly ComponentDeclaration[]): Graph {
   }
 
   for (const declaration of declarations) {
-    const edges = dependencies.get(declaration.id)!
+    const edges = dependencies.get(declaration.id)
+    const keys = edgeKeys.get(declaration.id)
+    if (edges === undefined || keys === undefined) continue
     for (const key of declaration.requires) {
       const provider = providerByKey.get(key)
       if (provider === undefined) continue
       edges.add(provider)
-      dependents.get(provider)!.add(declaration.id)
-      edgeKeys.get(declaration.id)!.set(provider, key)
+      dependents.get(provider)?.add(declaration.id)
+      keys.set(provider, key)
     }
   }
 
@@ -285,10 +287,15 @@ function assertNever(value: never): never {
  */
 export function evaluate(input: EvaluationInput): EvaluationResult {
   const ordered = [...input.declarations].sort((a, b) => a.ordinal - b.ordinal)
-  // A provider that has been asked to leave stops resolving immediately. Its consumers
-  // then read themselves as unsatisfied and deactivate first, while the binding itself is
-  // withdrawn only after their cleanup settles.
-  const retiring = new Set(ordered.filter(entry => entry.releasing).map(entry => entry.id))
+  // A provider leaves the resolvable set as soon as it is asked to leave, and stays out
+  // for as long as it is deactivating. Its consumers therefore read themselves as
+  // unsatisfied and deactivate first, in a cascade that reaches the end of the chain,
+  // while each binding stays published and readable until its own consumer has finished.
+  const retiring = new Set(
+    ordered
+      .filter(entry => entry.releasing || entry.status === 'deactivating')
+      .map(entry => entry.id),
+  )
   const resolvable = new Map(
     [...input.activeBindings].filter(([, instance]) => !retiring.has(instance.component)),
   )

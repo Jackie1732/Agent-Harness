@@ -355,19 +355,31 @@ export class CapabilityRegistry {
   }
 
   async #drain(): Promise<void> {
-    let guard = 0
-    while (await this.#step()) {
-      guard += 1
-      if (guard > this.#maxSteps) {
-        throw new Error(`reconciliation did not converge: ${JSON.stringify(this.#statuses())}`)
-      }
-    }
+    await this.#reconcileUntilSettled()
     const pending = [...this.#pendingSettles]
     this.#pendingSettles = []
     for (const settle of pending) settle()
   }
 
-  async #step(): Promise<boolean> {
+  /**
+   * Drive the transitions that belong to the changes recorded so far.
+   *
+   * A blocked pass means a component is running setup or cleanup that has not settled
+   * yet. That is a stopping point, not a reason to spin: the caller's barrier must not
+   * wait for a component that is waiting on the outside world. A later mutation starts a
+   * new pass, and a pass that makes progress keeps going on its own.
+   */
+  async #reconcileUntilSettled(): Promise<void> {
+    for (let guard = 0; ; guard += 1) {
+      if (guard > this.#maxSteps) {
+        throw new Error(`reconciliation did not converge: ${JSON.stringify(this.#statuses())}`)
+      }
+      const outcome = await this.#step()
+      if (outcome !== 'progress') return
+    }
+  }
+
+  async #step(): Promise<'progress' | 'blocked' | 'settled'> {
     const records = this.#ordered()
     const result = evaluate({
       declarations: records.map(toDeclaration),
@@ -397,7 +409,13 @@ export class CapabilityRegistry {
       if (change.classification === 'deactivating') continue
       if (await this.#transition(record, change.classification, activationSet)) progressed = true
     }
-    return progressed
+
+    if (progressed) return 'progress'
+    // Nothing moved, but a component is still mid-transition: its setup or cleanup is
+    // waiting on something this loop cannot advance. Report that so the caller yields.
+    const remaining = records.some(record =>
+      record.status === 'activating' || record.status === 'deactivating')
+    return remaining ? 'blocked' : 'settled'
   }
 
   async #transition(
