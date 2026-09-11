@@ -203,8 +203,9 @@ function canonicalize(
 
   const keyNames: string[] = []
   for (let index = 0; index < rotated.length; index += 1) {
-    const dependent = rotated[index]!
-    const provider = rotated[(index + 1) % rotated.length]!
+    const dependent = rotated[index]
+    const provider = rotated[(index + 1) % rotated.length]
+    if (dependent === undefined || provider === undefined) continue
     const key = graph.edgeKeys.get(dependent)?.get(provider)
     keyNames.push(key?.name ?? byId.get(dependent)?.label ?? 'unknown')
   }
