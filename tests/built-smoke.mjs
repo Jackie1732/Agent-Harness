@@ -22,4 +22,31 @@ await owner.dispose()
 assert.deepEqual(trace, ['value'])
 assert.equal(owner.status, 'disposed')
 
+// The Step 2 capability layer must work from the built output alone.
+const capability = harness.createCapabilityKey('smoke.capability')
+const registry = new harness.CapabilityRegistry()
+const consumed = []
+registry.mount({
+  label: 'provider',
+  requires: [],
+  provides: [capability],
+  setup: context => {
+    context.provide(capability, 'bound')
+  },
+})
+const consumer = registry.mount({
+  label: 'consumer',
+  requires: [capability],
+  provides: [],
+  setup: context => {
+    consumed.push(context.require(capability))
+  },
+})
+await registry.whenQuiescent()
+assert.equal(consumer.status, 'active')
+assert.deepEqual(consumed, ['bound'])
+await registry.dispose()
+assert.equal(registry.status, 'disposed')
+assert.equal(registry.snapshot().providers.length, 0)
+
 console.log('built-smoke: dist/index.js loaded with plain Node')
