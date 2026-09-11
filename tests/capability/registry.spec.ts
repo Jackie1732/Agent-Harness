@@ -1,10 +1,12 @@
 import { describe, expect, it } from 'vitest'
 import {
+  CapabilityCycleError,
   CapabilityProviderConflictError,
   CapabilityRegistry,
   CapabilityUnsatisfiedError,
   ComponentInactiveError,
   createCapabilityKey,
+  RegistryNotConvergedError,
 } from '../../src/index.js'
 import type { CapabilityKey, ComponentId } from '../../src/index.js'
 import { createDeferred, drainMicrotasks } from '../helpers/deferred.js'
@@ -606,5 +608,77 @@ describe('capability registry lifecycle', { timeout: 4000 }, () => {
     expect((barrierFailure as { code?: string }).code).toBe('REGISTRY_REENTRANT_WAIT')
     expect(registrationAllowed).toBe(true)
     await registry.dispose()
+  })
+
+  it('rejects a mount whose component requires a key it also provides', async () => {
+    const loop = key('self-loop')
+    const registry = new CapabilityRegistry()
+
+    let thrown: unknown
+    try {
+      registry.mount({
+        label: 'self-cycler',
+        requires: [loop],
+        provides: [loop],
+        setup: () => {},
+      })
+    } catch (reason) {
+      thrown = reason
+    }
+
+    expect(thrown).toBeInstanceOf(CapabilityCycleError)
+    const cycle = thrown as CapabilityCycleError
+    expect(cycle.code).toBe('CAPABILITY_CYCLE')
+    expect(cycle.keyNames).toEqual(['self-loop'])
+    expect(cycle.labels).toEqual(['self-cycler'])
+    expect(cycle.componentIds).toHaveLength(1)
+
+    // The rejection is a mount-time validation: the registry keeps accepting work.
+    const healthy = registry.mount({
+      label: 'healthy',
+      requires: [],
+      provides: [],
+      setup: () => {},
+    })
+    const snapshot = await registry.whenQuiescent()
+    expect(healthy.status).toBe('active')
+    expect(snapshot.components).toHaveLength(1)
+    await registry.dispose()
+  })
+
+  it('reports a coded error when reconciliation exceeds its step budget', async () => {
+    const capability = key('budget')
+    const registry = new CapabilityRegistry({ maxReconciliationSteps: 1 })
+
+    registry.mount({
+      label: 'provider',
+      requires: [],
+      provides: [capability],
+      setup: context => {
+        context.provide(capability, 'value')
+      },
+    })
+    registry.mount({
+      label: 'consumer',
+      requires: [capability],
+      provides: [],
+      setup: () => {},
+    })
+
+    let thrown: unknown
+    try {
+      await registry.whenQuiescent()
+    } catch (reason) {
+      thrown = reason
+    }
+
+    expect(thrown).toBeInstanceOf(RegistryNotConvergedError)
+    const guard = thrown as RegistryNotConvergedError
+    expect(guard.code).toBe('REGISTRY_NOT_CONVERGED')
+    expect(guard.maxSteps).toBe(1)
+    expect(guard.statuses.length).toBeGreaterThan(0)
+
+    // The budget guards every reconciliation pass, including the one disposal drives.
+    await expect(registry.dispose()).rejects.toBeInstanceOf(RegistryNotConvergedError)
   })
 })
