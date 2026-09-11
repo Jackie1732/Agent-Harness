@@ -12,6 +12,7 @@ Step 0 已建立独立 TypeScript 工程和通用基础契约。当前代码提�
 
 - [笔记索引](notes/README.md)
 - [Agent 提交队列](notes/commit-queue.md)
+- [Step 1 实施计划](notes/step1.md)
 - [Step 0 实施计划与证据](notes/step0.md)
 - [设计原则](notes/design-principles.md)
 - [Step 0 修订提案](notes/step0-revised.md)
@@ -38,4 +39,4 @@ pnpm run check
 
 ## 下一阶段
 
-Step 1 实现 Revertible Effect 生命周期内核，包括 Effect 获取、逆操作记录、LIFO 恢复、异步 Inertia、失败回滚和幂等 Dispose。Service 与 Reactive Coeffect 在 Step 2 实现。
+Step 1 已完成[实施规划](notes/step1.md)，将实现 Effect 获取、逆操作记录、LIFO 恢复、异步 Inertia、失败回滚和幂等 Dispose。Service 与 Reactive Coeffect 在 Step 2 实现。
