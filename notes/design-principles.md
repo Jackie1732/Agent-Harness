@@ -32,6 +32,8 @@ Revertible Effect 把一次 Context 变换与在当前应用点成立的左逆�
 - Dispose 必须幂等，并等待异步清理完成。
 - 清理失败必须保留为可诊断错误，同时继续尝试剩余清理。
 
+以上五条已由 Step 1 的 `EffectOwner` 实现，并由 `tests/effect/` 的可执行用例验证：逆操作在结果交给调用方前登记，局部与全局清理按实际接受顺序反向执行，`dispose()` 共享单次认领的清理任务，清理失败逐项聚合后仍继续执行剩余逆操作。执行证据见 [Step 1 计划](step1.md)。
+
 ### 待验证假设
 
 - 第一版使用严格 LIFO 串行清理可能比并行清理更容易证明正确。
@@ -122,6 +124,8 @@ Context Paradigm 将 Effect Context 与 Coeffect Context 统一，并要求 Comp
 - 失败 Component 完成回滚后再公开失败状态。
 - 依赖循环必须在配置或诊断中明确报告。
 - Runtime Shutdown 必须等待所有已接受工作收敛。
+
+第一条和第五条已由 Step 1 实现：`EffectOwner.dispose()` 与 `EffectLease.dispose()` 各自返回同一个 Promise，并在 Runtime 跟踪的 `setup`、已开始的 operation 和逆操作全部结算后才完成。第二条属于 Step 2 的依赖目标视图。第三、四条尚未实现。
 
 ### 待验证假设
 
