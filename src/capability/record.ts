@@ -66,8 +66,13 @@ export interface ActivationAttempt {
   readonly view: Map<CapabilityKey<unknown>, ProviderInstance>
   /** Values offered through `provide()`, published only when the activation commits. */
   readonly staged: Map<CapabilityKey<unknown>, unknown>
-  /** Signal of the activation root effect, captured when the activation started. */
-  signal: AbortSignal
+  /**
+   * Signal of the activation root effect.
+   *
+   * It is captured when the activation starts, which happens before `setup` runs; the
+   * context therefore publishes it as defined for every read `setup` can make.
+   */
+  signal: AbortSignal | undefined
 }
 
 function messageOf(reason: unknown): string {
@@ -104,9 +109,18 @@ export class ActivationContext implements ComponentContext {
     this.#onProvide = onProvide
   }
 
-  /** Aborted once the owning activation stops. */
+  /**
+   * Aborted once the owning activation stops.
+   *
+   * Reading it outside `setup` is a programming error: the context has already closed by
+   * then and `apply()` reports that state.
+   */
   get signal(): AbortSignal {
-    return this.#attempt.signal
+    const signal = this.#attempt.signal
+    if (signal === undefined) {
+      throw new ComponentInactiveError('not-started', 'signal', this.#record.label)
+    }
+    return signal
   }
 
   /**

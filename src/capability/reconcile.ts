@@ -42,7 +42,7 @@ export async function runActivation(
     owner: new EffectOwner(record.label),
     view: new Map(state.activeBindings),
     staged: new Map(),
-    signal: undefined as unknown as AbortSignal,
+    signal: undefined,
   }
   record.owner = attempt.owner
   record.attemptView = attempt.view
@@ -52,16 +52,16 @@ export async function runActivation(
     attempt.staged.set(key, value)
   })
 
-  const lease = await attempt.owner.run(record.label, async effect => {
+  // The activation is the only effect of this owner, so its entry settling means setup
+  // finished and every operation it admitted also settled. Reaching here without throwing
+  // is therefore the whole completion condition; no label comparison is involved.
+  await attempt.owner.run(record.label, async effect => {
     attempt.signal = effect.signal
     await record.setup(context)
   })
-  // The activation is the only effect of this owner, so its entry settling means setup
-  // finished and every operation it admitted also settled.
   context.close()
+  // Hand the offered bindings to the commit step; they stay invisible until it publishes.
   record.staged = attempt.staged
-
-  if (lease.label !== record.label) return false
   return true
 }
 
@@ -151,11 +151,15 @@ export function commitActivation(record: ComponentRecord, state: ReconciliationS
   if (staged === undefined || attemptView === undefined) return false
   try {
     const published = publishBindings(record, staged, state.activeBindings)
-    // The committed view is what this component is bound to: the dependencies it captured
-    // plus the bindings it just published. Recording only its own bindings would make the
-    // next evaluation read every dependency as a change.
-    const committed = new Map(attemptView)
-    for (const binding of published.instance.bindings) committed.set(binding.key, published.instance)
+    // The committed view names what this component resolves: its required keys and the
+    // instance each one came from. Copying the whole captured view would also record keys
+    // the component never declared, and the next evaluation compares key sets, so it would
+    // read that surplus as a change and deactivate the component immediately.
+    const committed = new Map<CapabilityKey<unknown>, ProviderInstance>()
+    for (const key of record.requires) {
+      const instance = attemptView.get(key)
+      if (instance !== undefined) committed.set(key, instance)
+    }
     record.committed = committed
     record.teardown = () => Promise.resolve()
     for (const binding of published.instance.bindings) {
