@@ -208,6 +208,10 @@ async function callRevert(
  * when an inverse is asynchronous. A nested release that would join an inherited active
  * chain records a wait failure instead of deadlocking that chain.
  *
+ * A rejected link would abort the remaining inverses, so the link handed to the next
+ * record resolves on either settlement and the rejection stays with the task the batch
+ * reports.
+ *
  * @param records - Records in acceptance order.
  * @param token - Token of the release chain claiming new records.
  * @param labels - Labels reported if joining a record would create a wait cycle.
@@ -236,7 +240,7 @@ function publishRecords(
       task = record.execution.task
     }
     published.push(task)
-    previous = task.then(() => undefined)
+    previous = task.then(() => undefined, () => undefined)
   }
 
   return published
