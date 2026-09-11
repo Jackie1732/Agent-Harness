@@ -11,6 +11,8 @@ These instructions apply to the entire autonomous Agent Harness repository.
 ## Step branches and queue
 
 - Persistent branches use only `step<number>`, for example `step0` and `step1`. All agents working on one development stage contribute sequentially to that stage branch.
+- Every stage branch stays on the remote after its work merges, because the branch names the stage rather than its open pull request. `step0` is the accepted baseline: a stage branch is created from the exact baseline commit, and its work merges back into `step0`. The newest stage branch is the active one and takes the daily work.
+- The next stage opens its own branch from the then-current `step0` instead of extending the merged stage branch. `step1` therefore holds the Step 1 work, and Step 2 begins on a new `step2`.
 - Distinguish agents through each commit's Git author and committer plus an `Agent:` trailer. Use `Codex <codex@agent.local>`, `DeepSeek <deepseek@agent.local>`, or `Claude <claude@agent.local>` and the matching trailer value.
 - Do not set a repository-wide agent identity because the same checkout serves several agents. Supply `user.name` and `user.email` on each automated commit.
 - Add or update one row in `notes/commit-queue.md` for the contribution.
