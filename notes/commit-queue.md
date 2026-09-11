@@ -34,6 +34,7 @@
 | 顺序 | Agent | 分支 | 基线 | 状态 | 范围 | 验证 | 说明 |
 |---:|---|---|---|---|---|---|---|
 | C-0001 | Codex | `step0` | 初始仓库 | `pushed` | Step 0 独立工程、基础契约、测试和设计文档 | `pnpm install --frozen-lockfile`; `pnpm run check`; Markdown 链接检查 | Codex 提交以 `Agent: Codex` 标记；后续 Agent 从 `origin/step0` 取得基线 |
+| CL-0002 | Claude | `step0` | `origin/step0` | `landed` | 拆分 JSON 校验器、保留嵌套错误原因、补充公共 JSDoc 和错误边界测试 | `pnpm run check`; `git diff --check`; Markdown 链接检查 | Codex 审查修复了类型错误，为 Error cause 增加循环与深度限制，并移除重复的提交说明文件 |
 
 ## 工作规则
 

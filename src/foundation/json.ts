@@ -28,7 +28,14 @@ function isPlainRecord(value: object): boolean {
   return prototype === null || Object.getPrototypeOf(prototype) === null
 }
 
-function findJsonProblem(value: unknown, path: string, active: Set<object>): JsonProblem | undefined {
+/**
+ * Validate a primitive value for JSON compatibility.
+ *
+ * @param value - The value to validate
+ * @param path - The current path in the object tree
+ * @returns A problem description if invalid, undefined if valid
+ */
+function validatePrimitive(value: unknown, path: string): JsonProblem | undefined {
   if (value === null) return undefined
 
   switch (typeof value) {
@@ -42,11 +49,91 @@ function findJsonProblem(value: unknown, path: string, active: Set<object>): Jso
     case 'function':
     case 'symbol':
       return { path, reason: `${typeof value} is not a JSON value` }
-    case 'object':
-      break
+    default:
+      return undefined
+  }
+}
+
+/**
+ * Validate an array for JSON compatibility.
+ *
+ * Checks for:
+ * - Dense indexed elements only
+ * - No sparse elements
+ * - Data properties only (no getters/setters)
+ * - Recursively valid elements
+ *
+ * @param value - The array to validate
+ * @param path - The current path in the object tree
+ * @param active - Set tracking objects currently being validated (for cycle detection)
+ * @returns A problem description if invalid, undefined if valid
+ */
+function validateArray(value: unknown[], path: string, active: Set<object>): JsonProblem | undefined {
+  const ownNames = Object.getOwnPropertyNames(value).filter(name => name !== 'length')
+  if (ownNames.length !== value.length) {
+    return { path, reason: 'array must contain only dense indexed elements' }
   }
 
-  if (active.has(value)) return { path, reason: 'circular reference' }
+  for (let index = 0; index < value.length; index += 1) {
+    const descriptor = Object.getOwnPropertyDescriptor(value, String(index))
+    if (descriptor === undefined) {
+      return { path: `${path}[${index}]`, reason: 'sparse array element' }
+    }
+    if (!('value' in descriptor)) {
+      return { path: `${path}[${index}]`, reason: 'array elements must be data properties' }
+    }
+    const problem = findJsonProblem(descriptor.value, `${path}[${index}]`, active)
+    if (problem !== undefined) return problem
+  }
+
+  return undefined
+}
+
+/**
+ * Validate an object for JSON compatibility.
+ *
+ * Checks for:
+ * - Plain record only (no custom classes, Date, etc.)
+ * - Enumerable data properties only
+ * - Recursively valid property values
+ *
+ * @param value - The object to validate
+ * @param path - The current path in the object tree
+ * @param active - Set tracking objects currently being validated (for cycle detection)
+ * @returns A problem description if invalid, undefined if valid
+ */
+function validateObject(value: object, path: string, active: Set<object>): JsonProblem | undefined {
+  if (!isPlainRecord(value)) {
+    return { path, reason: 'object must be a plain record' }
+  }
+
+  for (const key of Object.getOwnPropertyNames(value)) {
+    const descriptor = Object.getOwnPropertyDescriptor(value, key)
+    if (descriptor === undefined || !descriptor.enumerable || !('value' in descriptor)) {
+      return { path: propertyPath(path, key), reason: 'object fields must be enumerable data properties' }
+    }
+    const problem = findJsonProblem(descriptor.value, propertyPath(path, key), active)
+    if (problem !== undefined) return problem
+  }
+
+  return undefined
+}
+
+/**
+ * Recursively find the first JSON incompatibility in a value.
+ *
+ * @param value - The value to validate
+ * @param path - The current path in the object tree
+ * @param active - Set tracking objects currently being validated (for cycle detection)
+ * @returns A problem description if invalid, undefined if valid
+ */
+function findJsonProblem(value: unknown, path: string, active: Set<object>): JsonProblem | undefined {
+  if (value === null || typeof value !== 'object') return validatePrimitive(value, path)
+
+  if (active.has(value)) {
+    return { path, reason: 'circular reference' }
+  }
+
   if (Object.getOwnPropertySymbols(value).length > 0) {
     return { path, reason: 'symbol-keyed properties are not JSON fields' }
   }
@@ -54,41 +141,21 @@ function findJsonProblem(value: unknown, path: string, active: Set<object>): Jso
   active.add(value)
   try {
     if (Array.isArray(value)) {
-      const ownNames = Object.getOwnPropertyNames(value).filter(name => name !== 'length')
-      if (ownNames.length !== value.length) {
-        return { path, reason: 'array must contain only dense indexed elements' }
-      }
-      for (let index = 0; index < value.length; index += 1) {
-        const descriptor = Object.getOwnPropertyDescriptor(value, String(index))
-        if (descriptor === undefined) {
-          return { path: `${path}[${index}]`, reason: 'sparse array element' }
-        }
-        if (!('value' in descriptor)) {
-          return { path: `${path}[${index}]`, reason: 'array elements must be data properties' }
-        }
-        const problem = findJsonProblem(descriptor.value, `${path}[${index}]`, active)
-        if (problem !== undefined) return problem
-      }
-      return undefined
+      return validateArray(value, path, active)
     }
-
-    if (!isPlainRecord(value)) return { path, reason: 'object must be a plain record' }
-
-    for (const key of Object.getOwnPropertyNames(value)) {
-      const descriptor = Object.getOwnPropertyDescriptor(value, key)
-      if (descriptor === undefined || !descriptor.enumerable || !('value' in descriptor)) {
-        return { path: propertyPath(path, key), reason: 'object fields must be enumerable data properties' }
-      }
-      const problem = findJsonProblem(descriptor.value, propertyPath(path, key), active)
-      if (problem !== undefined) return problem
-    }
-    return undefined
+    return validateObject(value, path, active)
   } finally {
     active.delete(value)
   }
 }
 
-/** Return whether a value can cross a JSON protocol without implicit coercion. */
+/**
+ * Check whether a value can cross a JSON protocol without implicit coercion.
+ *
+ * @param value - The value to check
+ * @returns True if the value is JSON-safe, false otherwise
+ *
+ */
 export function isJsonValue(value: unknown): value is JsonValue {
   return findJsonProblem(value, '$', new Set()) === undefined
 }
@@ -96,7 +163,9 @@ export function isJsonValue(value: unknown): value is JsonValue {
 /**
  * Require a JSON-safe value.
  *
- * @throws {TypeError} with the first invalid path and reason.
+ * @param value - The value to validate
+ * @param label - A label for the value in error messages
+ * @throws {TypeError} with the first invalid path and reason
  */
 export function assertJsonValue(value: unknown, label = 'value'): asserts value is JsonValue {
   const problem = findJsonProblem(value, '$', new Set())

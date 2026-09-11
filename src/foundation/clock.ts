@@ -1,5 +1,6 @@
 /** Wall-clock source expressed as Unix epoch milliseconds. */
 export interface Clock {
+  /** @returns Current Unix epoch time in milliseconds. */
   now(): number
 }
 

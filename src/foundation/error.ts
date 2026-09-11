@@ -15,10 +15,41 @@ export interface HarnessErrorJson {
   readonly cause?: JsonValue
 }
 
-function serializeCause(cause: unknown): JsonValue | undefined {
+const MAX_CAUSE_DEPTH = 16
+
+/**
+ * Serialize an error cause to a JSON-safe value.
+ *
+ * @param cause - Cause to serialize.
+ * @param active - Error objects in the current cause chain.
+ * @param depth - Current cause depth.
+ * @returns A bounded JSON-safe representation, or `undefined` for no cause.
+ */
+function serializeCause(
+  cause: unknown,
+  active: Set<Error> = new Set(),
+  depth = 0,
+): JsonValue | undefined {
   if (cause === undefined) return undefined
-  if (cause instanceof Error) return { name: cause.name, message: cause.message }
+
+  if (cause instanceof Error) {
+    if (active.has(cause)) return '[circular Error cause]'
+    if (depth >= MAX_CAUSE_DEPTH) return '[Error cause depth limit reached]'
+    active.add(cause)
+    try {
+      const nestedCause = serializeCause(cause.cause, active, depth + 1)
+      return {
+        name: cause.name,
+        message: cause.message,
+        ...(nestedCause === undefined ? {} : { cause: nestedCause }),
+      }
+    } finally {
+      active.delete(cause)
+    }
+  }
+
   if (isJsonValue(cause)) return cause
+
   try {
     return String(cause)
   } catch {
