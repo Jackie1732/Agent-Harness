@@ -13,3 +13,8 @@ temp/
 *~
 .DS_Store
 Thumbs.db
+
+# Local notes: only the index is shared.
+# Files already tracked stay tracked, because gitignore does not untrack them.
+notes/**/*.md
+!notes/README.md
