@@ -4,7 +4,14 @@ import type { Awaitable, EffectContext } from '../effect/index.js'
 
 declare const capabilityValue: unique symbol
 
-/** Compile-time value type carried by a capability key. */
+/**
+ * Compile-time value type carried by a capability key.
+ *
+ * @template T - The type of value this key resolves to
+ *
+ * @example
+ * const DatabaseKey = createCapabilityKey<Database>('core:database')
+ */
 export interface CapabilityKey<T> {
   /** Name used in diagnostics and conflict messages; never an identity. */
   readonly name: string
@@ -57,7 +64,30 @@ export interface ProviderInstance {
   readonly bindings: readonly ProviderBinding[]
 }
 
-/** A component declares what it needs and what it offers. */
+/**
+ * A component declares what it needs and what it offers.
+ *
+ * Components are activated when all required capabilities are satisfied and deactivated
+ * when any requirement becomes unavailable. Setup runs once per activation and receives
+ * a context to read requirements and publish providers.
+ *
+ * @example
+ * const apiServer: ComponentDefinition = {
+ *   label: 'api-server',
+ *   requires: [DatabaseKey, ConfigKey],
+ *   provides: [ServerKey],
+ *   setup: async (ctx) => {
+ *     const db = ctx.require(DatabaseKey)
+ *     const config = ctx.require(ConfigKey)
+ *     const server = await ctx.apply(
+ *       'listen',
+ *       () => createServer(db, config).listen(8080),
+ *       (s) => s.close()
+ *     )
+ *     ctx.provide(ServerKey, server)
+ *   }
+ * }
+ */
 export interface ComponentDefinition {
   /** Diagnostic label; may repeat across components. */
   readonly label: string
@@ -76,23 +106,53 @@ export interface ComponentDefinition {
 /**
  * Execution context of one activation.
  *
- * It is valid only while `setup` runs. Reading or providing after `setup` settles
- * reports `COMPONENT_INACTIVE` instead of returning a possibly stale binding.
+ * Extends EffectContext from Step 1, providing both capability access (require/provide)
+ * and resource management (apply). The context is valid only while `setup` runs.
+ * Reading or providing after `setup` settles reports `COMPONENT_INACTIVE` instead of
+ * returning a possibly stale binding.
+ *
+ * @example
+ * setup: async (ctx) => {
+ *   // Read requirements from the attempt view captured at activation start
+ *   const db = ctx.require(DatabaseKey)
+ *
+ *   // Acquire resources with automatic cleanup
+ *   const conn = await ctx.apply(
+ *     'connect',
+ *     () => db.connect(),
+ *     (c) => c.close()
+ *   )
+ *
+ *   // Publish providers
+ *   ctx.provide(ConnectionKey, conn)
+ *
+ *   // Check abort signal for early exit
+ *   if (ctx.signal.aborted) return
+ * }
  */
 export interface ComponentContext extends EffectContext {
   /**
    * Read a declared requirement from the attempt view captured for this activation.
    *
+   * The value comes from the attempt view captured when this activation started.
+   * If the provider is replaced during activation, this method continues returning the
+   * original value until setup completes; the final checkpoint then abandons the attempt.
+   *
    * @param key - Key declared in `requires`.
-   * @returns The bound value.
+   * @returns The bound value from the attempt view.
+   * @throws {ComponentInactiveError} if called after setup settles.
    */
   require<T>(key: CapabilityKey<T>): T
 
   /**
    * Offer the value for a declared key; published only if the whole activation commits.
    *
+   * The binding is held privately until setup succeeds and all acquired resources are
+   * registered. If setup fails or is interrupted, the binding is never published.
+   *
    * @param key - Key declared in `provides`.
    * @param value - Value to publish under that key.
+   * @throws {ComponentInactiveError} if called after setup settles.
    */
   provide<T>(key: CapabilityKey<T>, value: T): void
 }
