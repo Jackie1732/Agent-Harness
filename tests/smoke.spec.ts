@@ -1,5 +1,12 @@
 import { describe, expect, it } from 'vitest'
-import { EffectOwner, HARNESS_VERSION, noopLogger, systemClock } from '../src/index.js'
+import {
+  CapabilityRegistry,
+  EffectOwner,
+  HARNESS_VERSION,
+  createCapabilityKey,
+  noopLogger,
+  systemClock,
+} from '../src/index.js'
 
 describe('public source entry', () => {
   it('loads through NodeNext ESM resolution', () => {
@@ -23,5 +30,35 @@ describe('public source entry', () => {
     await owner.dispose()
     expect(trace).toEqual(['value'])
     expect(owner.status).toBe('disposed')
+  })
+
+  it('exports the Step 2 capability layer', async () => {
+    const capability = createCapabilityKey<string>('smoke.capability')
+    const registry = new CapabilityRegistry()
+    const consumed: string[] = []
+
+    registry.mount({
+      label: 'provider',
+      requires: [],
+      provides: [capability],
+      setup: context => {
+        context.provide(capability, 'bound')
+      },
+    })
+    const consumer = registry.mount({
+      label: 'consumer',
+      requires: [capability],
+      provides: [],
+      setup: context => {
+        consumed.push(context.require(capability))
+      },
+    })
+
+    await registry.whenQuiescent()
+
+    expect(consumer.status).toBe('active')
+    expect(consumed).toEqual(['bound'])
+    await registry.dispose()
+    expect(registry.snapshot().providers).toEqual([])
   })
 })
