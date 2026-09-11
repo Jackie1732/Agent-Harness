@@ -12,11 +12,13 @@ import {
 import type { ReconciliationState } from './reconcile.js'
 import {
   CapabilityBindingInvalidError,
+  CapabilityCycleError,
   CapabilityKeyNameConflictError,
   ComponentActivationFailedError,
   ComponentDeactivationFailedError,
   ComponentInactiveError,
   ComponentRetryUnsatisfiedError,
+  RegistryNotConvergedError,
   RegistryReentrantWaitError,
 } from './errors.js'
 import type {
@@ -373,6 +375,14 @@ export class CapabilityRegistry {
   #assertDeclarationValid(record: ComponentRecord): void {
     this.#assertNoDuplicateKeys(record, 'requires')
     this.#assertNoDuplicateKeys(record, 'provides')
+    // A component that requires a key it also provides can never satisfy itself: its own
+    // binding publishes only after activation, which its requirement blocks. The race
+    // table refuses this at mount instead of letting the component wait forever.
+    for (const key of record.requires) {
+      if (record.provides.includes(key)) {
+        throw new CapabilityCycleError([key.name], [record.label], [record.id])
+      }
+    }
     const seen = new Map<string, {
       readonly key: CapabilityKey<unknown>
       readonly record: ComponentRecord
@@ -548,7 +558,7 @@ export class CapabilityRegistry {
   async #reconcileUntilSettled(): Promise<void> {
     for (let guard = 0; ; guard += 1) {
       if (guard > this.#maxSteps) {
-        throw new Error(`reconciliation did not converge: ${JSON.stringify(this.#statuses())}`)
+        throw new RegistryNotConvergedError(this.#maxSteps, this.#statuses())
       }
       const outcome = await this.#step()
       if (outcome !== 'progress') return

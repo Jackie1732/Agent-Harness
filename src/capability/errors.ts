@@ -15,6 +15,7 @@ export type CapabilityErrorCode =
   | 'COMPONENT_RETRY_UNSATISFIED'
   | 'COMPONENT_INACTIVE'
   | 'REGISTRY_REENTRANT_WAIT'
+  | 'REGISTRY_NOT_CONVERGED'
 
 /** Labels of the components a diagnostic names. */
 export interface CapabilityErrorOptions extends HarnessErrorOptions {
@@ -402,5 +403,32 @@ export class RegistryReentrantWaitError extends HarnessError<'REGISTRY_REENTRANT
     this.name = 'RegistryReentrantWaitError'
     this.componentLabel = componentLabel
     this.task = task
+  }
+}
+
+/**
+ * The coordinator exhausted its step budget without the registry settling.
+ */
+export class RegistryNotConvergedError extends HarnessError<'REGISTRY_NOT_CONVERGED'> {
+  /** Step budget the coordinator exhausted. */
+  readonly maxSteps: number
+  /** Per-component `label:status` projection at the point the guard tripped. */
+  readonly statuses: readonly string[]
+
+  /**
+   * Create the error for a reconciliation that did not settle within its budget.
+   *
+   * @param maxSteps - Step budget the coordinator exhausted.
+   * @param statuses - Per-component status projection at the guard trip.
+   */
+  constructor(maxSteps: number, statuses: readonly string[]) {
+    super(
+      'REGISTRY_NOT_CONVERGED',
+      `reconciliation did not converge within ${maxSteps} steps: ${statuses.join(', ')}`,
+      { details: { maxSteps, statuses: [...statuses] } },
+    )
+    this.name = 'RegistryNotConvergedError'
+    this.maxSteps = maxSteps
+    this.statuses = statuses
   }
 }
