@@ -6,13 +6,39 @@
 
 ## 当前状态
 
-Step 0 已建立独立 TypeScript 工程和通用基础契约。当前代码提供 Brand、Result、JSON 边界、结构化错误、Clock、Logger、版本导出和独立质量检查，不包含 Effect、Component、LLM、Tool、Session 或 Agent 运行时。
+Step 1 已实现 Revertible Effect 生命周期内核。当前代码提供 Step 0 的基础契约，以及 `EffectOwner`、`EffectContext`、`EffectLease`：调用方在正向操作旁提供逆操作，Runtime 在把结果交给调用方之前登记该逆操作，并按实际接受顺序的反向串行恢复。不包含 Component、Service、LLM、Tool、Session 或 Agent 运行时。
+
+```ts
+import { EffectOwner } from '@atomic-harness/core'
+
+const active = new Set<string>()
+const owner = new EffectOwner('example')
+
+const lease = await owner.run('resource', async effect => {
+  return await effect.apply(
+    'listen',
+    () => {
+      active.add('listener')
+      return 'listener'
+    },
+    resource => {
+      active.delete(resource)
+    },
+  )
+})
+
+await lease.dispose()
+await owner.dispose()
+// active is empty, and owner.status is 'disposed'.
+```
+
+`lease.value` 是 `setup` 的原始返回值，Runtime 不代理也不清空它。对应的 Lease 或 Owner 开始释放后，该值不再表示活动资源。已经成功结算的 `run()` 结果不会被随后的释放改变。
 
 ## 开发入口
 
 - [笔记索引](notes/README.md)
 - [Agent 提交队列](notes/commit-queue.md)
-- [Step 1 实施计划](notes/step1.md)
+- [Step 1 实施计划与证据](notes/step1.md)
 - [Step 0 实施计划与证据](notes/step0.md)
 - [设计原则](notes/design-principles.md)
 - [Step 0 修订提案](notes/step0-revised.md)
@@ -20,14 +46,18 @@ Step 0 已建立独立 TypeScript 工程和通用基础契约。当前代码提�
 
 ## 本地检查
 
-在本目录执行：
+依赖按 Windows 安装，门禁从 Windows Node 逐项执行：
 
 ```text
-pnpm install --frozen-lockfile
-pnpm run check
+npm install --frozen-lockfile
+npm run lint
+npm run typecheck
+npm run test
+npm run build
+npm run test:built
 ```
 
-`check` 依次执行 Lint、TypeScript 类型检查、Vitest、构建和普通 Node 构建产物 Smoke Test。该命令不修改源码。
+五条脚本依次等价于 `check` 的内容。`check` 自身调用 `pnpm`，而当前环境只在 Windows 侧提供 Node 与 npm，因此逐项执行。Lint、类型检查、测试和构建都不修改源码。
 
 ## 目录边界
 
@@ -39,4 +69,4 @@ pnpm run check
 
 ## 下一阶段
 
-Step 1 已完成[实施规划](notes/step1.md)，将实现 Effect 获取、逆操作记录、LIFO 恢复、异步 Inertia、失败回滚和幂等 Dispose。Service 与 Reactive Coeffect 在 Step 2 实现。
+Step 2 在已经验证的所有权与释放行为之上实现 Reactive Coeffect：能力键、Provider 身份、Consumer 需求、依赖变化分类，以及 Consumer 先于 Provider 的有序停用。
