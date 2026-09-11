@@ -83,9 +83,10 @@ export class EffectOwnerInactiveError extends HarnessError<'EFFECT_OWNER_INACTIV
    * @param ownerStatus - Owner status at the moment the request was rejected.
    */
   constructor(requestLabel: string, ownerStatus: string) {
+    const statusDesc = ownerStatus === 'disposing' ? 'currently releasing' : ownerStatus === 'disposed' ? 'already released' : `in state "${ownerStatus}"`
     super(
       'EFFECT_OWNER_INACTIVE',
-      `owner rejected "${requestLabel}" because its status is "${ownerStatus}"`,
+      `owner rejected "${requestLabel}" because it is ${statusDesc}`,
       { details: { requestLabel, ownerStatus } },
     )
     this.name = 'EffectOwnerInactiveError'
