@@ -71,7 +71,7 @@ describe('cycle detection over the declaration graph', () => {
     expect(cycles[0]!.keyNames).toHaveLength(2)
   })
 
-  it('never reports a cycle when no component is active', () => {
+  it('reports a cycle when no component is active', () => {
     // The whole point of reading declarations: neither component has ever published a
     // binding, so a view built from active bindings would see no cycle at all.
     const a = key('a')
@@ -133,6 +133,25 @@ describe('cycle detection over the declaration graph', () => {
       expect(cycle.keyNames[index]).toBe(requiresOf[String(from)])
       expect(requiresOf[String(from)]).toBe(providesOf[String(to)])
     })
+  })
+
+  it('reports overlapping cycles that share an already visited path', () => {
+    const a = key('overlap.a')
+    const b = key('overlap.b')
+    const c = key('overlap.c')
+    const d = key('overlap.d')
+    const cycles = detectCycles([
+      declaration({ id: 'A', ordinal: 0, requires: [b, c], provides: [a] }),
+      declaration({ id: 'B', ordinal: 1, requires: [d], provides: [b] }),
+      declaration({ id: 'C', ordinal: 2, requires: [d], provides: [c] }),
+      declaration({ id: 'D', ordinal: 3, requires: [a], provides: [d] }),
+    ])
+
+    expect(cycles).toHaveLength(2)
+    expect(cycles.map(cycle => cycle.ids)).toEqual([
+      ['A', 'B', 'D'],
+      ['A', 'C', 'D'],
+    ])
   })
 
   it('reports no cycle for an acyclic chain', () => {

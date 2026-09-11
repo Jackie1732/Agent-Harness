@@ -34,23 +34,27 @@ export class CapabilityKeyNameConflictError extends HarnessError<'CAPABILITY_KEY
   readonly keyName: string
   /** Labels of the components that declared the keys. */
   readonly labels: readonly string[]
+  /** Component identities of the conflicting declarations. */
+  readonly componentIds: readonly string[]
 
   /**
    * Create the error for a duplicate diagnostic name inside one registry.
    *
    * @param keyName - Name shared by the two keys.
    * @param labels - Labels of the declaring components, in declaration order.
+   * @param componentIds - Identities of the declaring components, in the same order.
    */
-  constructor(keyName: string, labels: readonly string[] = []) {
+  constructor(keyName: string, labels: readonly string[] = [], componentIds: readonly string[] = []) {
     super(
       'CAPABILITY_KEY_NAME_CONFLICT',
       `capability name "${keyName}" is used by two different keys`
         + (labels.length === 0 ? '' : ` declared by ${labels.map(label => `"${label}"`).join(' and ')}`),
-      { details: { keyName, ...labelDetails(labels) } },
+      { details: { keyName, ...labelDetails(labels), componentIds: [...componentIds] } },
     )
     this.name = 'CapabilityKeyNameConflictError'
     this.keyName = keyName
     this.labels = labels
+    this.componentIds = componentIds
   }
 }
 
@@ -97,6 +101,10 @@ export class CapabilityProviderConflictError extends HarnessError<'CAPABILITY_PR
   readonly requestedBy: string
   /** Whether the holder is still retiring rather than active. */
   readonly retiring: boolean
+  /** Identity of the component that holds the claim. */
+  readonly heldById?: string
+  /** Identity of the component whose claim was rejected. */
+  readonly requestedById?: string
 
   /**
    * Create the error for a rejected provider claim.
@@ -105,19 +113,39 @@ export class CapabilityProviderConflictError extends HarnessError<'CAPABILITY_PR
    * @param heldBy - Label of the component that already holds the claim.
    * @param requestedBy - Label of the component whose claim was rejected.
    * @param retiring - Whether the holder is still retiring.
+   * @param heldById - Identity of the component that holds the claim.
+   * @param requestedById - Identity of the component whose claim was rejected.
    */
-  constructor(keyName: string, heldBy: string, requestedBy: string, retiring: boolean) {
+  constructor(
+    keyName: string,
+    heldBy: string,
+    requestedBy: string,
+    retiring: boolean,
+    heldById?: string,
+    requestedById?: string,
+  ) {
     super(
       'CAPABILITY_PROVIDER_CONFLICT',
       `component "${requestedBy}" cannot provide "${keyName}" because "${heldBy}" already claims it`
         + (retiring ? ' and has not finished retiring' : ''),
-      { details: { keyName, heldBy, requestedBy, retiring } },
+      {
+        details: {
+          keyName,
+          heldBy,
+          requestedBy,
+          retiring,
+          ...(heldById === undefined ? {} : { heldById }),
+          ...(requestedById === undefined ? {} : { requestedById }),
+        },
+      },
     )
     this.name = 'CapabilityProviderConflictError'
     this.keyName = keyName
     this.heldBy = heldBy
     this.requestedBy = requestedBy
     this.retiring = retiring
+    if (heldById !== undefined) this.heldById = heldById
+    if (requestedById !== undefined) this.requestedById = requestedById
   }
 }
 
@@ -188,23 +216,31 @@ export class CapabilityCycleError extends HarnessError<'CAPABILITY_CYCLE'> {
   readonly keyNames: readonly string[]
   /** Labels of the components on the cycle, in path order. */
   readonly labels: readonly string[]
+  /** Component identities on the cycle, in path order. */
+  readonly componentIds: readonly string[]
 
   /**
    * Create the error for a cyclic declaration graph.
    *
    * @param keyNames - Key names on the cycle, in path order.
    * @param labels - Component labels on the cycle, in path order.
+   * @param componentIds - Component identities on the cycle, in path order.
    */
-  constructor(keyNames: readonly string[], labels: readonly string[]) {
+  constructor(
+    keyNames: readonly string[],
+    labels: readonly string[],
+    componentIds: readonly string[] = [],
+  ) {
     super(
       'CAPABILITY_CYCLE',
       `capability cycle over ${keyNames.map(key => `"${key}"`).join(' -> ')}`
         + ` involves ${labels.map(label => `"${label}"`).join(' -> ')}`,
-      { details: { keyNames: [...keyNames], ...labelDetails(labels) } },
+      { details: { keyNames: [...keyNames], ...labelDetails(labels), componentIds: [...componentIds] } },
     )
     this.name = 'CapabilityCycleError'
     this.keyNames = keyNames
     this.labels = labels
+    this.componentIds = componentIds
   }
 }
 
@@ -250,6 +286,8 @@ export class ComponentDeactivationFailedError extends HarnessError<'COMPONENT_DE
   readonly attempted: number
   /** Number of those attempts that failed. */
   readonly failed: number
+  /** Original cleanup failure retained for programmatic inspection. */
+  readonly reason: unknown
 
   /**
    * Create the error for a failed deactivation.
@@ -257,18 +295,20 @@ export class ComponentDeactivationFailedError extends HarnessError<'COMPONENT_DE
    * @param componentLabel - Label of the component.
    * @param attempted - Number of cleanup inverses attempted.
    * @param failed - Number of attempts that failed.
+   * @param reason - Original cleanup failure.
    */
-  constructor(componentLabel: string, attempted: number, failed: number) {
+  constructor(componentLabel: string, attempted: number, failed: number, reason?: unknown) {
     super(
       'COMPONENT_DEACTIVATION_FAILED',
       `component "${componentLabel}" failed while deactivating; ${attempted} cleanup `
         + `${attempted === 1 ? 'inverse' : 'inverses'} attempted, ${failed} failed`,
-      { details: { componentLabel, attempted, failed } },
+      { cause: reason, details: { componentLabel, attempted, failed } },
     )
     this.name = 'ComponentDeactivationFailedError'
     this.componentLabel = componentLabel
     this.attempted = attempted
     this.failed = failed
+    this.reason = reason
   }
 }
 
@@ -339,24 +379,24 @@ export class ComponentInactiveError extends HarnessError<'COMPONENT_INACTIVE'> {
 }
 
 /**
- * Cleanup code waited for the reconciliation currently running it.
+ * Component lifecycle code waited for the reconciliation currently running it.
  */
 export class RegistryReentrantWaitError extends HarnessError<'REGISTRY_REENTRANT_WAIT'> {
-  /** Label of the component whose cleanup waited. */
+  /** Label of the component whose lifecycle callback waited. */
   readonly componentLabel: string
-  /** Task type the cleanup tried to wait for. */
+  /** Lifecycle phase that tried to wait for reconciliation. */
   readonly task: string
 
   /**
-   * Create the error for a cleanup that would wait for its own reconciliation.
+   * Create the error for lifecycle code that would wait for its own reconciliation.
    *
-   * @param componentLabel - Label of the component whose cleanup waited.
+   * @param componentLabel - Label of the component whose lifecycle callback waited.
    * @param task - Task type the cleanup tried to wait for.
    */
   constructor(componentLabel: string, task: string) {
     super(
       'REGISTRY_REENTRANT_WAIT',
-      `cleanup of component "${componentLabel}" waited for the ${task} already running it`,
+      `lifecycle callback of component "${componentLabel}" waited for the ${task} already running it`,
       { details: { componentLabel, task } },
     )
     this.name = 'RegistryReentrantWaitError'
