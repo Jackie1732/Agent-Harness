@@ -36,6 +36,7 @@
 | C-0001 | Codex | `step0` | 初始仓库 | `pushed` | Step 0 独立工程、基础契约、测试和设计文档 | `pnpm install --frozen-lockfile`; `pnpm run check`; Markdown 链接检查 | Codex 提交以 `Agent: Codex` 标记；后续 Agent 从 `origin/step0` 取得基线 |
 | CL-0002 | Claude | `step0` | `origin/step0` | `landed` | 拆分 JSON 校验器、保留嵌套错误原因、补充公共 JSDoc 和错误边界测试 | `pnpm run check`; `git diff --check`; Markdown 链接检查 | Codex 审查修复了类型错误，为 Error cause 增加循环与深度限制，并移除重复的提交说明文件 |
 | C-0003 | Codex | `step1` | `ce54eb2` | `committed-local` | Step 1 Revertible Effect 生命周期内核完整规划与文档入口 | `pnpm run check`; Markdown 链接检查; `git diff --check` | 规划固定可观察行为、竞争决策和验收矩阵；纯 Markdown 贡献保留在本地，不单独推送 |
+| C-0004 | Codex | `step1` | `e253063` | `committed-local` | 审查并整合 Claude 对 Step 1 规划的审计意见 | `pnpm run check`; Markdown 围栏与链接检查; `git diff --check` | 采纳登记临界区、任务发布顺序和可复现竞争测试；删除错误示例与无依据的性能、调试和兼容性扩展；纯 Markdown 贡献不推送 |
 
 ## 工作规则
 
