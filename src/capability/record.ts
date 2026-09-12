@@ -1,5 +1,7 @@
 import { EffectOwner } from '../effect/index.js'
 import type { EffectContext } from '../effect/index.js'
+import type { ScopeControl } from '../extension/scope-tree.js'
+import type { Scope } from '../extension/types.js'
 import { HarnessError } from '../foundation/error.js'
 import type { JsonObject } from '../foundation/json.js'
 import {
@@ -48,6 +50,8 @@ export interface ComponentRecord {
   staged: Map<CapabilityKey<unknown>, unknown> | undefined
   /** Effect owner of the current activation. */
   owner: EffectOwner | undefined
+  /** Scope owned by the current activation attempt or committed episode. */
+  activationScope: ScopeControl | undefined
   /** Number of resource inverses accepted by the current activation. */
   cleanupCount: number
   /** Successful publication count used to allocate a fresh provider identity. */
@@ -80,6 +84,8 @@ export interface ActivationAttempt {
   readonly view: Map<CapabilityKey<unknown>, ProviderInstance>
   /** Values offered through `provide()`, published only when the activation commits. */
   readonly staged: Map<CapabilityKey<unknown>, unknown>
+  /** Staged extension scope published with this activation's bindings. */
+  readonly scope: ScopeControl
   /**
    * Signal of the activation root effect.
    *
@@ -136,6 +142,12 @@ export class ActivationContext implements ComponentContext {
       throw new ComponentInactiveError('not-started', 'signal', this.#record.label)
     }
     return signal
+  }
+
+  /** Scope whose contributions publish only if this activation commits. */
+  get scope(): Scope {
+    this.#assertOpen('scope')
+    return this.#attempt.scope.scope
   }
 
   /**
@@ -207,20 +219,16 @@ export class ActivationContext implements ComponentContext {
 }
 
 /**
- * Validate and publish the staged bindings of one activation.
- *
- * The whole batch becomes visible in one synchronous section, so a consumer never
- * observes a partially published activation.
+ * Validate the staged bindings of one activation without publishing them.
  *
  * @param record - Component whose activation is committing.
  * @param staged - Values offered through `provide()`.
- * @param activeBindings - Registry binding view to extend.
+ * @returns The provider instance that can be published without more validation.
  */
-export function publishBindings(
+export function prepareBindings(
   record: ComponentRecord,
   staged: ReadonlyMap<CapabilityKey<unknown>, unknown>,
-  activeBindings: Map<CapabilityKey<unknown>, ProviderInstance>,
-): void {
+): ProviderInstance {
   for (const key of staged.keys()) {
     if (!record.provides.includes(key)) {
       throw new CapabilityBindingInvalidError(record.label, key.name, 'undeclared')
@@ -240,11 +248,20 @@ export function publishBindings(
     component: record.id,
     bindings,
   }
-  record.providerSequence += 1
+  return instance
+}
 
-  for (const binding of bindings) {
-    activeBindings.set(binding.key, instance)
-  }
+/**
+ * Publish a provider instance that already passed activation validation.
+ *
+ * @param instance - Prepared provider instance.
+ * @param activeBindings - Registry binding view to extend.
+ */
+export function publishBindings(
+  instance: ProviderInstance,
+  activeBindings: Map<CapabilityKey<unknown>, ProviderInstance>,
+): void {
+  for (const binding of instance.bindings) activeBindings.set(binding.key, instance)
 }
 
 /**

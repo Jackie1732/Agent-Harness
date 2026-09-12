@@ -4,6 +4,8 @@ import {
   EffectOwner,
   HARNESS_VERSION,
   createCapabilityKey,
+  createEventName,
+  createMiddlewareName,
   noopLogger,
   systemClock,
 } from '../src/index.js'
@@ -60,5 +62,25 @@ describe('public source entry', () => {
     expect(consumed).toEqual(['bound'])
     await registry.dispose()
     expect(registry.snapshot().providers).toEqual([])
+  })
+
+  it('exports the Step 3 extension layer', async () => {
+    const registry = new CapabilityRegistry()
+    const event = createEventName<number>('smoke.event')
+    const middleware = createMiddlewareName<string, string>('smoke.middleware')
+    const seen: number[] = []
+    registry.scope.on(event, 'listener', value => {
+      seen.push(value)
+    })
+    registry.scope.intercept(middleware, 'handler', async (request, next) => {
+      return `${request}:${await next()}`
+    })
+
+    await registry.scope.emit(event, 3)
+    await expect(registry.scope.invoke(middleware, 'outer', () => 'terminal'))
+      .resolves.toBe('outer:terminal')
+    expect(seen).toEqual([3])
+    expect('dispose' in registry.scope).toBe(false)
+    await registry.dispose()
   })
 })

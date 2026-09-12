@@ -1,6 +1,7 @@
 import type { Brand } from '../foundation/brand.js'
 import type { JsonObject } from '../foundation/json.js'
 import type { Awaitable, EffectContext } from '../effect/index.js'
+import type { Scope } from '../extension/types.js'
 
 declare const capabilityValue: unique symbol
 
@@ -131,6 +132,9 @@ export interface ComponentDefinition {
  * }
  */
 export interface ComponentContext extends EffectContext {
+  /** Activation Scope retained for this Component episode. */
+  readonly scope: Scope
+
   /**
    * Read a declared requirement from the attempt view captured for this activation.
    *

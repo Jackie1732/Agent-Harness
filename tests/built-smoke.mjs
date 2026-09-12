@@ -12,6 +12,9 @@ assert.equal('detectCycles' in harness, false)
 assert.equal('capabilityKeyName' in harness, false)
 assert.equal('CapabilityUnsatisfiedError' in harness, false)
 assert.equal('assertQuiescentStop' in harness, false)
+assert.equal('ScopeTree' in harness, false)
+assert.equal('eventPayload' in harness, false)
+assert.equal('middlewareTypes' in harness, false)
 
 // The Step 1 lifecycle kernel must be usable from the built output alone.
 const trace = []
@@ -50,6 +53,24 @@ const consumer = registry.mount({
 await registry.whenQuiescent()
 assert.equal(consumer.status, 'active')
 assert.deepEqual(consumed, ['bound'])
+
+// The Step 3 extension layer must expose only its application-facing names and scopes.
+const event = harness.createEventName('smoke.event')
+const middleware = harness.createMiddlewareName('smoke.middleware')
+const received = []
+registry.scope.on(event, 'listener', value => {
+  received.push(value)
+})
+registry.scope.intercept(middleware, 'handler', async (request, next) => {
+  return `${request}:${await next()}`
+})
+await registry.scope.emit(event, 3)
+assert.deepEqual(received, [3])
+assert.equal(
+  await registry.scope.invoke(middleware, 'outer', () => 'terminal'),
+  'outer:terminal',
+)
+assert.equal('dispose' in registry.scope, false)
 await registry.dispose()
 assert.equal(registry.status, 'disposed')
 assert.equal(registry.snapshot().providers.length, 0)

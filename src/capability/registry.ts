@@ -1,10 +1,13 @@
 import { AsyncLocalStorage } from 'node:async_hooks'
+import { ScopeTree } from '../extension/scope-tree.js'
+import type { RootScope } from '../extension/types.js'
 import { detectCycles, evaluate } from './evaluate.js'
 import type { ChangeClassification } from './evaluate.js'
 import { assertClaimAvailable, createHandle, projectFailure, toDeclaration } from './record.js'
 import type { ComponentRecord } from './record.js'
 import {
-  commitActivation,
+  applyActivation,
+  prepareActivation,
   rollbackActivation,
   runActivation,
   runDeactivation,
@@ -71,7 +74,11 @@ export function assertQuiescentStop(
  */
 export class CapabilityRegistry {
   readonly #components = new Map<ComponentId, ComponentRecord>()
-  readonly #state: ReconciliationState = { activeBindings: new Map() }
+  readonly #scopeTree = new ScopeTree()
+  readonly #state: ReconciliationState = {
+    activeBindings: new Map(),
+    scopeTree: this.#scopeTree,
+  }
   readonly #lifecycleExecution = new AsyncLocalStorage<LifecycleExecution>()
   #status: RegistryStatus = 'accepting'
   #revision = 0
@@ -83,6 +90,7 @@ export class CapabilityRegistry {
   #settleRequested = false
   #pendingSettles: PendingBarrier[] = []
   #disposalTask: Promise<void> | undefined
+  #scopeShutdownTask: Promise<void> | undefined
   readonly #maxSteps: number
 
   /**
@@ -101,6 +109,11 @@ export class CapabilityRegistry {
   /** Lifecycle state of this registry. */
   get status(): RegistryStatus {
     return this.#status
+  }
+
+  /** Root extension scope whose lifetime is owned by this registry. */
+  get scope(): RootScope {
+    return this.#scopeTree.root
   }
 
   /**
@@ -137,6 +150,7 @@ export class CapabilityRegistry {
       attemptView: undefined,
       staged: undefined,
       owner: undefined,
+      activationScope: undefined,
       cleanupCount: 0,
       providerSequence: 0,
       interruption: undefined,
@@ -253,20 +267,29 @@ export class CapabilityRegistry {
    */
   dispose(): Promise<void> {
     const lifecycle = this.#activeLifecycle()
+    const scopeReentrant = lifecycle === undefined
+      ? this.#scopeTree.rootReentrantError('registry.dispose()')
+      : undefined
     if (this.#disposalTask !== undefined) {
       if (lifecycle !== undefined) {
         void this.#disposalTask.catch(() => undefined)
         return Promise.reject(new RegistryReentrantWaitError(lifecycle.record.label, lifecycle.phase))
       }
+      if (scopeReentrant !== undefined) {
+        void this.#disposalTask.catch(() => undefined)
+        return Promise.reject(scopeReentrant)
+      }
       return this.#disposalTask
     }
+    const scopeDisposal = this.#scopeTree.beginRootDispose()
+    this.#scopeShutdownTask = scopeDisposal
     this.#status = 'disposing'
     const records = this.#ordered()
     const targets = records.filter(record => record.status !== 'disposed')
     for (const record of targets) record.releasing = true
     this.#interruptInvalidActivations()
     this.#touch()
-    const disposal = this.#barrier().then(() => {
+    const disposal = scopeDisposal.then(() => this.#barrier()).then(() => {
       const failures = records
         .filter(record => record.failure !== undefined && (
           record.failurePhase === 'deactivation'
@@ -288,6 +311,10 @@ export class CapabilityRegistry {
     if (lifecycle !== undefined) {
       void disposal.catch(() => undefined)
       return Promise.reject(new RegistryReentrantWaitError(lifecycle.record.label, lifecycle.phase))
+    }
+    if (scopeReentrant !== undefined) {
+      void disposal.catch(() => undefined)
+      return Promise.reject(scopeReentrant)
     }
     return disposal
   }
@@ -485,10 +512,17 @@ export class CapabilityRegistry {
 
   #release(record: ComponentRecord): Promise<void> {
     const lifecycle = this.#activeLifecycle()
+    const scopeReentrant = lifecycle === undefined
+      ? record.activationScope?.reentrantError('component.dispose()')
+      : undefined
     if (record.releaseTask !== undefined) {
       if (lifecycle !== undefined) {
         void record.releaseTask.catch(() => undefined)
         return Promise.reject(new RegistryReentrantWaitError(lifecycle.record.label, lifecycle.phase))
+      }
+      if (scopeReentrant !== undefined) {
+        void record.releaseTask.catch(() => undefined)
+        return Promise.reject(scopeReentrant)
       }
       return record.releaseTask
     }
@@ -501,6 +535,8 @@ export class CapabilityRegistry {
     // Recording the request is synchronous; the executor owns the transitions that carry
     // it out, so lifecycle code calling this cannot wait for the reconciliation running it.
     record.releasing = true
+    const scopeDisposal = record.activationScope?.beginDispose()
+    if (scopeDisposal !== undefined) void scopeDisposal.catch(() => undefined)
     this.#interruptInvalidActivations()
     this.#touch()
     const task = this.#barrier().then(() => {
@@ -512,6 +548,10 @@ export class CapabilityRegistry {
     if (lifecycle !== undefined) {
       void task.catch(() => undefined)
       return Promise.reject(new RegistryReentrantWaitError(lifecycle.record.label, lifecycle.phase))
+    }
+    if (scopeReentrant !== undefined) {
+      void task.catch(() => undefined)
+      return Promise.reject(scopeReentrant)
     }
     return task
   }
@@ -599,6 +639,7 @@ export class CapabilityRegistry {
   }
 
   async #step(): Promise<'progress' | 'blocked' | 'settled'> {
+    if (this.#scopeShutdownTask !== undefined) await this.#scopeShutdownTask
     const records = this.#ordered()
     const live = records.filter(record => record.status !== 'disposed')
     const result = evaluate({
@@ -685,15 +726,17 @@ export class CapabilityRegistry {
             )
             return true
           }
-          if (commitActivation(record, this.#state)) {
+          try {
+            const prepared = prepareActivation(record)
+            applyActivation(record, this.#state, prepared)
             record.status = 'active'
             record.failure = undefined
             record.failurePhase = undefined
             record.failureSequence = undefined
             record.retryable = false
             record.interruption = undefined
-          } else {
-            await this.#abandonActivation(record, record.failure, false)
+          } catch (reason) {
+            await this.#abandonActivation(record, reason, false)
           }
         } finally {
           record.busy = false
@@ -702,6 +745,10 @@ export class CapabilityRegistry {
       }
       case 'active':
         if (classification !== 'deactivating') return false
+        {
+          const scopeDisposal = record.activationScope?.beginDispose()
+          if (scopeDisposal !== undefined) void scopeDisposal.catch(() => undefined)
+        }
         record.status = 'deactivating'
         return true
       case 'deactivating': {

@@ -1,5 +1,6 @@
 import { EffectDisposalFailedError, EffectOwner } from '../effect/index.js'
-import { ActivationContext, publishBindings } from './record.js'
+import type { PreparedScopePublication, ScopeTree } from '../extension/scope-tree.js'
+import { ActivationContext, prepareBindings, publishBindings } from './record.js'
 import type { ActivationAttempt, ComponentRecord } from './record.js'
 import {
   CapabilityBindingInvalidError,
@@ -11,6 +12,15 @@ import type { CapabilityKey, ProviderInstance } from './types.js'
 export interface ReconciliationState {
   /** Active binding view: keys with a published provider instance. */
   readonly activeBindings: Map<CapabilityKey<unknown>, ProviderInstance>
+  /** Scope Tree that owns every Component activation scope. */
+  readonly scopeTree: ScopeTree
+}
+
+/** Prevalidated capability and Scope state for one activation commit. */
+export interface PreparedActivation {
+  readonly provider: ProviderInstance
+  readonly committed: Map<CapabilityKey<unknown>, ProviderInstance>
+  readonly scope: PreparedScopePublication
 }
 
 /**
@@ -38,9 +48,11 @@ export async function runActivation(
     effect: undefined,
     view,
     staged: new Map(),
+    scope: state.scopeTree.createActivationScope(record.label),
     signal: undefined,
   }
   record.owner = attempt.owner
+  record.activationScope = attempt.scope
   record.cleanupCount = 0
   record.attemptView = attempt.view
   record.staged = undefined
@@ -77,13 +89,28 @@ export async function rollbackActivation(record: ComponentRecord): Promise<void>
   record.staged = undefined
   record.attemptView = undefined
   record.committed = new Map()
+  const scope = record.activationScope
+  record.activationScope = undefined
   const owner = record.owner
   record.owner = undefined
-  try {
-    if (owner !== undefined) await owner.dispose()
-  } finally {
-    record.cleanupCount = 0
+  record.cleanupCount = 0
+  const failures: unknown[] = []
+  if (scope !== undefined) {
+    try {
+      await scope.beginDispose()
+    } catch (reason) {
+      failures.push(reason)
+    }
   }
+  if (owner !== undefined) {
+    try {
+      await owner.dispose()
+    } catch (reason) {
+      failures.push(reason)
+    }
+  }
+  if (failures.length === 1) throw failures[0]
+  if (failures.length > 1) throw new AggregateError(failures, 'activation Scope and Effect cleanup failed')
 }
 
 /**
@@ -102,6 +129,9 @@ export async function runDeactivation(
 ): Promise<boolean> {
   record.committed = new Map()
   record.attemptView = undefined
+  const scope = record.activationScope
+  if (scope !== undefined) await scope.beginDispose()
+  record.activationScope = undefined
   const owner = record.owner
   record.owner = undefined
   const attempted = record.cleanupCount
@@ -143,34 +173,47 @@ export async function runDeactivation(
 }
 
 /**
- * Publish the staged bindings of a completed activation.
+ * Validate one activation's bindings and staged Scope without publishing either.
  *
- * @param record - Component that finished activating.
- * @param state - Binding views to extend.
- * @returns Whether the bindings were valid and are now visible.
+ * @param record - Component that finished setup.
+ * @returns Prepared state whose apply step invokes no validation or user code.
  */
-export function commitActivation(record: ComponentRecord, state: ReconciliationState): boolean {
+export function prepareActivation(record: ComponentRecord): PreparedActivation {
   const staged = record.staged
   const attemptView = record.attemptView
-  if (staged === undefined || attemptView === undefined) return false
-  try {
-    publishBindings(record, staged, state.activeBindings)
-    // The committed view names what this component resolves: its required keys and the
-    // instance each one came from. Copying the whole captured view would also record keys
-    // the component never declared, and the next evaluation compares key sets, so it would
-    // read that surplus as a change and deactivate the component immediately.
-    const committed = new Map<CapabilityKey<unknown>, ProviderInstance>()
-    for (const key of record.requires) {
-      const instance = attemptView.get(key)
-      if (instance !== undefined) committed.set(key, instance)
-    }
-    record.committed = committed
-    record.staged = undefined
-    record.attemptView = undefined
-    return true
-  } catch (reason) {
-    record.failure = reason
-    record.failurePhase = 'activation'
-    return false
+  const scope = record.activationScope
+  if (staged === undefined || attemptView === undefined || scope === undefined) {
+    throw new Error(`component "${record.label}" has no activation attempt to commit`)
   }
+  const provider = prepareBindings(record, staged)
+  // The committed view names what this component resolves: its required keys and the
+  // instance each one came from. Copying the whole captured view would also record keys
+  // the component never declared, and the next evaluation compares key sets, so it would
+  // read that surplus as a change and deactivate the component immediately.
+  const committed = new Map<CapabilityKey<unknown>, ProviderInstance>()
+  for (const key of record.requires) {
+    const instance = attemptView.get(key)
+    if (instance !== undefined) committed.set(key, instance)
+  }
+  return { provider, committed, scope: scope.preparePublication() }
+}
+
+/**
+ * Publish one prevalidated activation in a synchronous user-code-free section.
+ *
+ * @param record - Component whose activation is committing.
+ * @param state - Binding and Scope state receiving the commit.
+ * @param prepared - Result returned by prepareActivation.
+ */
+export function applyActivation(
+  record: ComponentRecord,
+  state: ReconciliationState,
+  prepared: PreparedActivation,
+): void {
+  publishBindings(prepared.provider, state.activeBindings)
+  prepared.scope.apply()
+  record.providerSequence += 1
+  record.committed = prepared.committed
+  record.staged = undefined
+  record.attemptView = undefined
 }
