@@ -22,6 +22,32 @@ These instructions apply to the entire autonomous Agent Harness repository.
 - Start new work from the exact accepted base named in the queue. Fetch before using a remote base.
 - Never rewrite another agent's published commits. Do not use a raw force push.
 
+## Stage lifecycle and Git operations
+
+Use the following lifecycle for every stage. It keeps the stage branch as the stage's complete development history and keeps `main` as the cumulative integration line.
+
+1. Before starting a stage, run `git fetch origin --prune`, inspect `git status --short --branch`, and verify that local `main` is exactly `origin/main` with `git pull --ff-only origin main`.
+2. Create the new stage branch from the current integration tip: `git switch -c stepN main`, then `git push -u origin stepN`. Do not create it from an older stage branch, an old pull-request tip, or a stale remote-tracking ref.
+3. During the stage, make implementation commits only on `stepN`. Each commit has one responsibility, an explicit Agent trailer, and records only commands actually run. Push with `git push origin stepN`, then verify `git rev-parse stepN origin/stepN` are identical.
+4. Keep `notes/` local. Update the active Step note and `notes/commit-queue.md` for handoff and audit purposes, but do not stage or commit those files unless the user explicitly changes the repository policy. Do not add generated output, papers, runtime logs, or unknown untracked files to a stage commit.
+5. Before archiving, verify the stage worktree and diff, run the complete stage checks, and confirm the stage branch contains the intended final commit. The stage branch remains on the remote; do not delete it and do not merge it into another `stepN` branch.
+6. Archive only into `main`: switch to `main`, run `git pull --ff-only origin main`, and fast-forward `main` to the completed stage with `git merge --ff-only stepN` when the stage was created from the current `main`. If the fast-forward is impossible, stop and inspect the divergence; do not rebase or force-push a published stage branch. Push `main` and verify `git rev-parse main origin/main` are identical.
+7. After the archive reaches `main`, start the next stage from that exact archive tip: `git switch -c step<N+1> main`, push it, and verify both refs. A stale next-stage branch may be repaired only by a fast-forward to `main`; if it has unique commits, preserve them and ask for review before changing its base.
+8. Final verification must show the stage branch, `main`, and the next-stage branch separately, including their commit IDs and ancestry. The expected relation is `stepN` retaining the stage tip, `main` containing that tip, and `step<N+1>` starting at the latest `main` tip.
+
+For a repository that already has a stale next-stage branch, the safe repair is:
+
+```text
+git fetch origin --prune
+git switch main
+git pull --ff-only origin main
+git switch step<N+1>
+git merge --ff-only main
+git push origin step<N+1>
+```
+
+This repair is valid only when the old next-stage tip is an ancestor of `main`. If it is not, preserve the branch and stop for an explicit decision; never hide the divergence with a reset or force push.
+
 ## Implementation
 
 - Preserve the staged development order in the active Step note.
