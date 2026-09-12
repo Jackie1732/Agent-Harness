@@ -54,13 +54,13 @@ export interface ComponentRecord {
   providerSequence: number
   /** Why the running activation was interrupted by a later registry mutation. */
   interruption: 'release' | 'dependency' | undefined
-  /** Phase of the latest failure, cleared when a transition succeeds. */
+  /** Phase of the latest failure; retained in a terminal state when cleanup is incomplete. */
   failurePhase: FailurePhase | undefined
-  /** Raw reason of the latest failure, cleared when a transition succeeds. */
+  /** Raw reason of the latest failure; retained in a terminal state when cleanup is incomplete. */
   failure: unknown
   /** Whether the latest failure left the component safe to activate again. */
   retryable: boolean
-  /** Registry sequence assigned when the latest deactivation failure was observed. */
+  /** Registry sequence assigned when the latest incomplete cleanup was observed. */
   failureSequence: number | undefined
   /** Set while a transition task owns this component. */
   busy: boolean

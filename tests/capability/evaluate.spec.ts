@@ -1,15 +1,12 @@
 import { describe, expect, it } from 'vitest'
 import { createCapabilityKey } from '../../src/index.js'
 import type {
-  CapabilityKey,
   ComponentDeclaration,
   ComponentChange,
-  ComponentId,
-  ComponentStatus,
   EvaluationResult,
-  ProviderInstance,
-} from '../../src/index.js'
+} from '../../src/capability/evaluate.js'
 import { detectCycles, evaluate } from '../../src/capability/evaluate.js'
+import type { CapabilityKey, ComponentId, ComponentStatus, ProviderInstance } from '../../src/capability/types.js'
 
 let keyCounter = 0
 function key<T>(name?: string): CapabilityKey<T> {

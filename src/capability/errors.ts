@@ -1,5 +1,4 @@
 import { HarnessError } from '../foundation/error.js'
-import type { HarnessErrorOptions } from '../foundation/error.js'
 import type { JsonObject } from '../foundation/json.js'
 
 /** Stable error codes reported by the capability layer. */
@@ -8,7 +7,6 @@ export type CapabilityErrorCode =
   | 'CAPABILITY_KEY_UNDECLARED'
   | 'CAPABILITY_PROVIDER_CONFLICT'
   | 'CAPABILITY_BINDING_INVALID'
-  | 'CAPABILITY_UNSATISFIED'
   | 'CAPABILITY_CYCLE'
   | 'COMPONENT_ACTIVATION_FAILED'
   | 'COMPONENT_DEACTIVATION_FAILED'
@@ -17,12 +15,6 @@ export type CapabilityErrorCode =
   | 'COMPONENT_INACTIVE'
   | 'REGISTRY_REENTRANT_WAIT'
   | 'REGISTRY_NOT_CONVERGED'
-
-/** Labels of the components a diagnostic names. */
-export interface CapabilityErrorOptions extends HarnessErrorOptions {
-  /** Diagnostic labels, in the order the diagnostic names them. */
-  readonly labels?: readonly string[]
-}
 
 function labelDetails(labels: readonly string[] | undefined): JsonObject {
   return labels === undefined ? {} : { labels: [...labels] }
@@ -183,7 +175,10 @@ export class CapabilityBindingInvalidError extends HarnessError<'CAPABILITY_BIND
 }
 
 /**
- * A component was asked to activate while its requirements are not satisfied.
+ * An internal activation assertion found an unresolved declared requirement.
+ *
+ * Valid registry scheduling keeps this diagnostic internal: a component remains
+ * `unsatisfied` until every requirement resolves.
  */
 export class CapabilityUnsatisfiedError extends HarnessError<'CAPABILITY_UNSATISFIED'> {
   /** Label of the component that was asked to activate. */
@@ -247,7 +242,7 @@ export class CapabilityCycleError extends HarnessError<'CAPABILITY_CYCLE'> {
 }
 
 /**
- * A component failed during activation; its effects were rolled back.
+ * A component failed during activation and rollback was attempted.
  */
 export class ComponentActivationFailedError extends HarnessError<'COMPONENT_ACTIVATION_FAILED'> {
   /** Label of the failed component. */
@@ -435,27 +430,38 @@ export class RegistryReentrantWaitError extends HarnessError<'REGISTRY_REENTRANT
 }
 
 /**
- * The coordinator exhausted its step budget without the registry settling.
+ * The coordinator exhausted its step budget or reached a blocked transitional state.
  */
 export class RegistryNotConvergedError extends HarnessError<'REGISTRY_NOT_CONVERGED'> {
-  /** Step budget the coordinator exhausted. */
+  /** Why reconciliation stopped without reaching a quiescent point. */
+  readonly reason: 'step-limit' | 'blocked'
+  /** Configured step budget, whether or not it was exhausted. */
   readonly maxSteps: number
-  /** Per-component `label:status` projection at the point the guard tripped. */
+  /** Per-component `label:status` projection at the point reconciliation stopped. */
   readonly statuses: readonly string[]
 
   /**
-   * Create the error for a reconciliation that did not settle within its budget.
+   * Create the error for a reconciliation that did not reach a quiescent point.
    *
-   * @param maxSteps - Step budget the coordinator exhausted.
-   * @param statuses - Per-component status projection at the guard trip.
+   * @param reason - Whether the step budget was exhausted or progress was blocked.
+   * @param maxSteps - Configured step budget.
+   * @param statuses - Per-component status projection where reconciliation stopped.
    */
-  constructor(maxSteps: number, statuses: readonly string[]) {
+  constructor(
+    reason: 'step-limit' | 'blocked',
+    maxSteps: number,
+    statuses: readonly string[],
+  ) {
+    const message = reason === 'step-limit'
+      ? `reconciliation did not converge within ${maxSteps} steps: ${statuses.join(', ')}`
+      : `reconciliation is blocked with transitional components: ${statuses.join(', ')}`
     super(
       'REGISTRY_NOT_CONVERGED',
-      `reconciliation did not converge within ${maxSteps} steps: ${statuses.join(', ')}`,
-      { details: { maxSteps, statuses: [...statuses] } },
+      message,
+      { details: { reason, maxSteps, statuses: [...statuses] } },
     )
     this.name = 'RegistryNotConvergedError'
+    this.reason = reason
     this.maxSteps = maxSteps
     this.statuses = statuses
   }

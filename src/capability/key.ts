@@ -16,13 +16,3 @@ export function createCapabilityKey<T>(name: string): CapabilityKey<T> {
   if (name.length === 0) throw new TypeError('capability key name must not be empty')
   return Object.freeze({ name })
 }
-
-/**
- * Read the diagnostic name of a key.
- *
- * @param key - Capability key.
- * @returns The name recorded at creation.
- */
-export function capabilityKeyName(key: CapabilityKey<unknown>): string {
-  return key.name
-}

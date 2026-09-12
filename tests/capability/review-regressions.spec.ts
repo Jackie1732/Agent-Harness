@@ -232,8 +232,13 @@ describe('capability review regressions', () => {
     expect(reasons[0]).toMatchObject({ code: 'EFFECT_ROLLBACK_FAILED', setupReason: setupFailure })
     expect(reasons[1]).toMatchObject({ code: 'EFFECT_DISPOSAL_FAILED' })
     expect(cleanups).toBe(1)
-    await handle.dispose()
-    await registry.dispose()
+    await expect(handle.dispose()).rejects.toBe(failure)
+    expect(handle.status).toBe('disposed')
+    expect(handle.error).toBe(failure)
+    expect(registry.snapshot().components.find(entry => entry.id === handle.id)?.failure).toMatchObject({
+      code: 'COMPONENT_ACTIVATION_FAILED',
+    })
+    await expect(registry.dispose()).rejects.toMatchObject({ errors: [failure] })
   })
 
   it('shares a component release task and lets an activation failure leave failed', async () => {
@@ -255,6 +260,7 @@ describe('capability review regressions', () => {
     await first
 
     expect(handle.status).toBe('disposed')
+    expect(handle.error).toBeUndefined()
     await registry.dispose()
   })
 
@@ -283,7 +289,7 @@ describe('capability review regressions', () => {
     expect(failure.reason).toMatchObject({
       code: 'EFFECT_DISPOSAL_FAILED',
     })
-    await registry.dispose()
+    await expect(registry.dispose()).rejects.toMatchObject({ errors: [failure] })
   })
 
   it('shares registry disposal and aggregates every cleanup failure', async () => {
@@ -393,6 +399,40 @@ describe('capability review regressions', () => {
     await disposal
     await barrier
     expect(outcome).toBe('fulfilled')
+    await registry.dispose()
+  })
+
+  it('includes mutations accepted before the next global quiescent point', async () => {
+    const registry = new CapabilityRegistry()
+    const setupStarted = createDeferred<void>()
+    const setupGate = createDeferred<void>()
+    registry.mount({
+      label: 'initial',
+      requires: [],
+      provides: [],
+      setup: async () => {
+        setupStarted.resolve()
+        await setupGate.promise
+      },
+    })
+
+    const firstBarrier = registry.whenQuiescent()
+    const secondBarrier = registry.whenQuiescent()
+    expect(secondBarrier).not.toBe(firstBarrier)
+    await setupStarted.promise
+
+    const late = registry.mount({
+      label: 'accepted-before-quiescence',
+      requires: [],
+      provides: [],
+      setup: () => {},
+    })
+    setupGate.resolve()
+
+    const [firstSnapshot, secondSnapshot] = await Promise.all([firstBarrier, secondBarrier])
+    expect(late.status).toBe('active')
+    expect(firstSnapshot.components.find(component => component.id === late.id)?.status).toBe('active')
+    expect(secondSnapshot).toEqual(firstSnapshot)
     await registry.dispose()
   })
 
@@ -589,6 +629,48 @@ describe('capability review regressions', () => {
     }
     expect(handle.status).toBe('disposed')
     await registry.dispose()
+  })
+
+  it('rejects an in-flight release when activation rollback is incomplete', async () => {
+    const registry = new CapabilityRegistry()
+    const started = createDeferred<void>()
+    const escape = createDeferred<void>()
+    const cleanupFailure = new Error('in-flight rollback failed')
+    let handle: ComponentHandle
+
+    handle = registry.mount({
+      label: 'unsafe-release-during-setup',
+      requires: [],
+      provides: [],
+      setup: async context => {
+        await context.apply('leaked-lease', () => undefined, () => {
+          throw cleanupFailure
+        })
+        started.resolve()
+        const aborted = new Promise<void>(resolve => {
+          context.signal.addEventListener('abort', () => resolve(), { once: true })
+        })
+        await Promise.race([aborted, escape.promise])
+      },
+    })
+
+    await started.promise
+    const disposalResult = handle.dispose().then(
+      () => undefined,
+      reason => reason,
+    )
+    try {
+      await drainMicrotasks(8)
+    } finally {
+      escape.resolve()
+    }
+
+    const failure = await disposalResult
+    expect(failure).toBeInstanceOf(ComponentActivationFailedError)
+    expect((failure as ComponentActivationFailedError).reason).toBeInstanceOf(AggregateError)
+    expect(handle.status).toBe('disposed')
+    expect(handle.error).toBe(failure)
+    await expect(registry.dispose()).rejects.toMatchObject({ errors: [failure] })
   })
 
   it('never publishes staged bindings after a dependency retires mid-setup', async () => {

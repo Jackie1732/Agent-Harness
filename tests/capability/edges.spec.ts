@@ -133,7 +133,7 @@ describe('capability registry edge cases', () => {
     const projected = registry.snapshot().components.find(entry => entry.label === 'provider')
     expect(provider.status).toBe('disposed')
     expect(projected?.status).toBe('disposed')
-    await registry.dispose()
+    await expect(registry.dispose()).rejects.toMatchObject({ errors: [provider.error] })
   })
 
   it('does not retry after activation rollback leaves cleanup incomplete', async () => {
@@ -160,8 +160,16 @@ describe('capability registry edge cases', () => {
     })
     await expect(handle.retry()).rejects.toBeInstanceOf(ComponentRetryUnsafeError)
     expect(attempts).toBe(1)
-    await handle.dispose()
-    await registry.dispose()
+    const failure = handle.error
+    await expect(handle.dispose()).rejects.toBe(failure)
+    expect(handle.status).toBe('disposed')
+    expect(handle.error).toBe(failure)
+    expect(registry.snapshot().components.find(entry => entry.id === handle.id)?.failure).toMatchObject({
+      code: 'COMPONENT_ACTIVATION_FAILED',
+    })
+    await expect(registry.dispose()).rejects.toMatchObject({
+      errors: [failure],
+    })
   })
 
   it('stops a component instead of restarting it when automatic cleanup fails', async () => {

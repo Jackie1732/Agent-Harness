@@ -40,7 +40,7 @@ export type ComponentStatus =
   | 'failed'
   | 'disposed'
 
-/** Which transition failed for a component in the `failed` status. */
+/** Which transition produced the latest failure, including one retained after disposal. */
 export type FailurePhase = 'activation' | 'deactivation'
 
 /** Registry lifecycle state. */
@@ -238,7 +238,7 @@ export interface CapabilityCycleSnapshot {
 export interface RegistrySnapshot {
   /** Reconciliation revision this snapshot describes. */
   readonly revision: number
-  /** Component projections indexed by identity. */
+  /** Component projections in mount order; each projection carries its identity. */
   readonly components: readonly ComponentSnapshot[]
   /** Published provider instances. */
   readonly providers: readonly ProviderSnapshot[]

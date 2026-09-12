@@ -46,6 +46,23 @@ interface LifecycleExecution {
 }
 
 /**
+ * Reject a coordinator stop that still contains transitional components.
+ *
+ * @param outcome - Non-progress result returned by one reconciliation step.
+ * @param maxSteps - Configured reconciliation step budget.
+ * @param statuses - Stable component status projection at the stop point.
+ */
+export function assertQuiescentStop(
+  outcome: 'blocked' | 'settled',
+  maxSteps: number,
+  statuses: readonly string[],
+): void {
+  if (outcome === 'blocked') {
+    throw new RegistryNotConvergedError('blocked', maxSteps, statuses)
+  }
+}
+
+/**
  * Registry of mounted components and the capabilities they publish.
  *
  * Mutation is synchronous and only records intent. Every transition runs inside one
@@ -153,7 +170,8 @@ export class CapabilityRegistry {
    * Wait until the registry reaches its next quiescent point.
    *
    * The barrier settles at the first coordinator quiescent point after the call. Mutations
-   * accepted before that point are included in the same reconciliation pass.
+   * accepted before that point are included in the same reconciliation pass. A coordinator
+   * stop with transitional components rejects instead of reporting false quiescence.
    *
    * @returns The snapshot taken at that quiescent point.
    * @throws {ComponentInactiveError} If the registry was released.
@@ -228,6 +246,9 @@ export class CapabilityRegistry {
   /**
    * Release every mounted component and wait for all cleanup to settle.
    *
+   * Retained failures from incomplete cleanup remain visible and are aggregated even when
+   * the affected component had already reached its terminal state.
+   *
    * @returns A promise that settles after the registry reaches its terminal state.
    */
   dispose(): Promise<void> {
@@ -240,16 +261,16 @@ export class CapabilityRegistry {
       return this.#disposalTask
     }
     this.#status = 'disposing'
-    const targets = this.#ordered().filter(record => record.status !== 'disposed')
-    const failuresBeforeDisposal = new Map(targets.map(record => [record.id, record.failure]))
+    const records = this.#ordered()
+    const targets = records.filter(record => record.status !== 'disposed')
     for (const record of targets) record.releasing = true
     this.#interruptInvalidActivations()
     this.#touch()
     const disposal = this.#barrier().then(() => {
-      const failures = targets
+      const failures = records
         .filter(record => record.failure !== undefined && (
           record.failurePhase === 'deactivation'
-          || record.failure !== failuresBeforeDisposal.get(record.id)
+          || (record.failurePhase === 'activation' && !record.retryable)
         ))
         .sort((left, right) =>
           (left.failureSequence ?? Number.MAX_SAFE_INTEGER)
@@ -568,10 +589,12 @@ export class CapabilityRegistry {
   async #reconcileUntilSettled(): Promise<void> {
     for (let guard = 0; ; guard += 1) {
       if (guard > this.#maxSteps) {
-        throw new RegistryNotConvergedError(this.#maxSteps, this.#statuses())
+        throw new RegistryNotConvergedError('step-limit', this.#maxSteps, this.#statuses())
       }
       const outcome = await this.#step()
-      if (outcome !== 'progress') return
+      if (outcome === 'progress') continue
+      assertQuiescentStop(outcome, this.#maxSteps, this.#statuses())
+      return
     }
   }
 
@@ -717,10 +740,11 @@ export class CapabilityRegistry {
       }
       case 'failed':
         if (record.releasing) {
-          if (record.failurePhase === 'activation') {
+          if (record.failurePhase === 'activation' && record.retryable) {
             record.failure = undefined
             record.failurePhase = undefined
             record.failureSequence = undefined
+            record.retryable = false
           }
           record.status = 'disposed'
           return true
@@ -760,8 +784,13 @@ export class CapabilityRegistry {
       : new AggregateError([reason, rollbackFailure], `activation and rollback failed for "${record.label}"`)
     record.failure = new ComponentActivationFailedError(record.label, failureReason, rollbackAttempted)
     record.failurePhase = 'activation'
-    record.failureSequence = undefined
     record.retryable = rollbackFailure === undefined
+    if (rollbackFailure === undefined) {
+      record.failureSequence = undefined
+    } else {
+      this.#nextFailureSequence += 1
+      record.failureSequence = this.#nextFailureSequence
+    }
     record.status = record.releasing ? 'disposed' : 'failed'
   }
 }

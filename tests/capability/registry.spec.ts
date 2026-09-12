@@ -3,12 +3,12 @@ import {
   CapabilityCycleError,
   CapabilityProviderConflictError,
   CapabilityRegistry,
-  CapabilityUnsatisfiedError,
   ComponentInactiveError,
   createCapabilityKey,
   RegistryNotConvergedError,
 } from '../../src/index.js'
 import type { CapabilityKey, ComponentId } from '../../src/index.js'
+import { assertQuiescentStop } from '../../src/capability/registry.js'
 import { createDeferred, drainMicrotasks } from '../helpers/deferred.js'
 
 let keyCounter = 0
@@ -554,7 +554,7 @@ describe('capability registry lifecycle', { timeout: 4000 }, () => {
     await registry.dispose()
   })
 
-  it('reports unsatisfied explicitly when asked to activate without requirements', async () => {
+  it('reports unsatisfied requirements as state without throwing', async () => {
     const capability = key('missing-for-retry')
     const registry = new CapabilityRegistry()
     const handle = registry.mount({
@@ -569,7 +569,6 @@ describe('capability registry lifecycle', { timeout: 4000 }, () => {
     const projected = snapshot.components.find(entry => entry.id === handle.id)
     expect(projected?.status).toBe('unsatisfied')
     expect(snapshot.unresolved[capability.name]).toEqual([handle.id])
-    void CapabilityUnsatisfiedError
     await registry.dispose()
   })
   it('rejects a barrier taken from inside cleanup instead of deadlocking', async () => {
@@ -675,10 +674,23 @@ describe('capability registry lifecycle', { timeout: 4000 }, () => {
     expect(thrown).toBeInstanceOf(RegistryNotConvergedError)
     const guard = thrown as RegistryNotConvergedError
     expect(guard.code).toBe('REGISTRY_NOT_CONVERGED')
+    expect(guard.reason).toBe('step-limit')
     expect(guard.maxSteps).toBe(1)
     expect(guard.statuses.length).toBeGreaterThan(0)
 
     // The budget guards every reconciliation pass, including the one disposal drives.
     await expect(registry.dispose()).rejects.toBeInstanceOf(RegistryNotConvergedError)
+  })
+
+  it('rejects a blocked transitional stop instead of reporting quiescence', () => {
+    expect(() => assertQuiescentStop('blocked', 10, ['provider:deactivating'])).toThrowError(
+      expect.objectContaining({
+        code: 'REGISTRY_NOT_CONVERGED',
+        reason: 'blocked',
+        maxSteps: 10,
+        statuses: ['provider:deactivating'],
+      }),
+    )
+    expect(() => assertQuiescentStop('settled', 10, [])).not.toThrow()
   })
 })

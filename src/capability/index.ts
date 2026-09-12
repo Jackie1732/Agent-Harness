@@ -1,5 +1,4 @@
-export { createCapabilityKey, capabilityKeyName } from './key.js'
-export { detectCycles, evaluate } from './evaluate.js'
+export { createCapabilityKey } from './key.js'
 export { CapabilityRegistry } from './registry.js'
 export {
   CapabilityBindingInvalidError,
@@ -7,7 +6,6 @@ export {
   CapabilityKeyNameConflictError,
   CapabilityKeyUndeclaredError,
   CapabilityProviderConflictError,
-  CapabilityUnsatisfiedError,
   ComponentActivationFailedError,
   ComponentDeactivationFailedError,
   ComponentInactiveError,
@@ -17,15 +15,7 @@ export {
   RegistryReentrantWaitError,
 } from './errors.js'
 
-export type { CapabilityErrorCode, CapabilityErrorOptions } from './errors.js'
-export type {
-  ChangeClassification,
-  ComponentChange,
-  ComponentDeclaration,
-  CycleReport,
-  EvaluationInput,
-  EvaluationResult,
-} from './evaluate.js'
+export type { CapabilityErrorCode } from './errors.js'
 export type {
   CapabilityKey,
   CapabilityCycleSnapshot,
@@ -36,9 +26,6 @@ export type {
   ComponentSnapshot,
   ComponentStatus,
   FailurePhase,
-  ProviderBinding,
-  ProviderInstance,
-  ProviderInstanceId,
   ProviderSnapshot,
   RegistrySnapshot,
   RegistryStatus,

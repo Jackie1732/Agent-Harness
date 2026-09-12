@@ -7,6 +7,11 @@ assert.equal(typeof harness.assertJsonValue, 'function')
 assert.equal(typeof harness.HarnessError, 'function')
 assert.equal(typeof harness.systemClock.now, 'function')
 assert.equal(typeof harness.EffectOwner, 'function')
+assert.equal('evaluate' in harness, false)
+assert.equal('detectCycles' in harness, false)
+assert.equal('capabilityKeyName' in harness, false)
+assert.equal('CapabilityUnsatisfiedError' in harness, false)
+assert.equal('assertQuiescentStop' in harness, false)
 
 // The Step 1 lifecycle kernel must be usable from the built output alone.
 const trace = []
