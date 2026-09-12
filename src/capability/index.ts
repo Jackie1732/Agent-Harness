@@ -12,6 +12,7 @@ export {
   ComponentDeactivationFailedError,
   ComponentInactiveError,
   ComponentRetryUnsatisfiedError,
+  ComponentRetryUnsafeError,
   RegistryNotConvergedError,
   RegistryReentrantWaitError,
 } from './errors.js'

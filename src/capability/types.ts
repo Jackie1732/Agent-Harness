@@ -210,6 +210,8 @@ export interface ComponentSnapshot {
   readonly task?: 'activation' | 'deactivation'
   /** JSON-safe projection of the latest failure. */
   readonly failure?: JsonObject
+  /** Whether an explicit retry can safely start a new activation episode. */
+  readonly retryable?: boolean
 }
 
 /** JSON-safe projection of one published provider instance. */

@@ -25,6 +25,7 @@
 ### 阶段计划
 
 - [Step 1：Revertible Effect 生命周期内核计划](step1.md) - Effect 所有权、LIFO 恢复、异步收敛、失败回滚与验收矩阵。
+- [Step 2：Reactive Coeffect 与 Component 生命周期计划](step2.md) - Capability、原子绑定发布、依赖顺序、失败状态与有序停用。
 - [Step 0：独立工程与基础契约计划](step0.md) - 已完成的工程基线、基础契约和执行证据。
 - [Step 0 修订提案](step0-revised.md) - 提前公开论文形式化类型的备选方案，保留为设计输入。
 
