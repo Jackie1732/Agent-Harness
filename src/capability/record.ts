@@ -58,6 +58,8 @@ export interface ComponentRecord {
   failurePhase: FailurePhase | undefined
   /** Raw reason of the latest failure, cleared when a transition succeeds. */
   failure: unknown
+  /** Whether the latest failure left the component safe to activate again. */
+  retryable: boolean
   /** Registry sequence assigned when the latest deactivation failure was observed. */
   failureSequence: number | undefined
   /** Set while a transition task owns this component. */

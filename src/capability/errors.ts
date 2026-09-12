@@ -13,6 +13,7 @@ export type CapabilityErrorCode =
   | 'COMPONENT_ACTIVATION_FAILED'
   | 'COMPONENT_DEACTIVATION_FAILED'
   | 'COMPONENT_RETRY_UNSATISFIED'
+  | 'COMPONENT_RETRY_UNSAFE'
   | 'COMPONENT_INACTIVE'
   | 'REGISTRY_REENTRANT_WAIT'
   | 'REGISTRY_NOT_CONVERGED'
@@ -338,6 +339,33 @@ export class ComponentRetryUnsatisfiedError extends HarnessError<'COMPONENT_RETR
     this.name = 'ComponentRetryUnsatisfiedError'
     this.componentLabel = componentLabel
     this.missingKeys = missingKeys
+  }
+}
+
+/**
+ * A failed component cannot be retried because its previous cleanup is incomplete.
+ */
+export class ComponentRetryUnsafeError extends HarnessError<'COMPONENT_RETRY_UNSAFE'> {
+  /** Label of the component whose retry was rejected. */
+  readonly componentLabel: string
+  /** Phase whose cleanup or rollback made retry unsafe. */
+  readonly failurePhase: 'activation' | 'deactivation'
+
+  /**
+   * Create the error for a retry that could layer work over unrecovered resources.
+   *
+   * @param componentLabel - Label of the component whose retry was rejected.
+   * @param failurePhase - Phase that left cleanup incomplete.
+   */
+  constructor(componentLabel: string, failurePhase: 'activation' | 'deactivation') {
+    super(
+      'COMPONENT_RETRY_UNSAFE',
+      `component "${componentLabel}" cannot retry after an incomplete ${failurePhase} cleanup`,
+      { details: { componentLabel, failurePhase } },
+    )
+    this.name = 'ComponentRetryUnsafeError'
+    this.componentLabel = componentLabel
+    this.failurePhase = failurePhase
   }
 }
 

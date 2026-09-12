@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest'
 import {
   CapabilityRegistry,
   ComponentDeactivationFailedError,
+  ComponentRetryUnsafeError,
   createCapabilityKey,
 } from '../../src/index.js'
 import type { CapabilityKey } from '../../src/index.js'
@@ -135,6 +136,34 @@ describe('capability registry edge cases', () => {
     await registry.dispose()
   })
 
+  it('does not retry after activation rollback leaves cleanup incomplete', async () => {
+    const registry = new CapabilityRegistry()
+    let attempts = 0
+    const handle = registry.mount({
+      label: 'unsafe-activation-retry',
+      requires: [],
+      provides: [],
+      setup: async context => {
+        attempts += 1
+        await context.apply('leaked-lease', () => undefined, () => {
+          throw new Error('rollback failed')
+        })
+        throw new Error('setup failed')
+      },
+    })
+
+    await registry.whenQuiescent().catch(() => undefined)
+
+    expect(handle.status).toBe('failed')
+    expect(registry.snapshot().components.find(entry => entry.id === handle.id)).toMatchObject({
+      retryable: false,
+    })
+    await expect(handle.retry()).rejects.toBeInstanceOf(ComponentRetryUnsafeError)
+    expect(attempts).toBe(1)
+    await handle.dispose()
+    await registry.dispose()
+  })
+
   it('stops a component instead of restarting it when automatic cleanup fails', async () => {
     const capability = key('automatic-cleanup-failure')
     const registry = new CapabilityRegistry()
@@ -167,6 +196,8 @@ describe('capability registry edge cases', () => {
     expect(consumer.status).toBe('failed')
     const projected = registry.snapshot().components.find(entry => entry.label === 'consumer')
     expect(projected?.failurePhase).toBe('deactivation')
+    expect(projected?.retryable).toBe(false)
+    await expect(consumer.retry()).rejects.toBeInstanceOf(ComponentRetryUnsafeError)
     await expect(registry.dispose()).rejects.toBeInstanceOf(AggregateError)
   })
 

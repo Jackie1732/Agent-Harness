@@ -18,6 +18,7 @@ import {
   ComponentDeactivationFailedError,
   ComponentInactiveError,
   ComponentRetryUnsatisfiedError,
+  ComponentRetryUnsafeError,
   RegistryNotConvergedError,
   RegistryReentrantWaitError,
 } from './errors.js'
@@ -124,6 +125,7 @@ export class CapabilityRegistry {
       interruption: undefined,
       failurePhase: undefined,
       failure: undefined,
+      retryable: false,
       failureSequence: undefined,
       busy: false,
       releaseTask: undefined,
@@ -369,6 +371,7 @@ export class CapabilityRegistry {
       ...(record.failurePhase === undefined ? {} : { failurePhase: record.failurePhase }),
       ...(record.busy ? { task: record.status === 'deactivating' ? 'deactivation' as const : 'activation' as const } : {}),
       ...(record.failure === undefined ? {} : { failure: projectFailure(record.failure) }),
+      ...(record.status === 'failed' ? { retryable: record.retryable } : {}),
     }
   }
 
@@ -432,6 +435,12 @@ export class CapabilityRegistry {
     if (record.status !== 'failed') {
       return Promise.reject(new ComponentInactiveError(record.status, 'retry()', record.label))
     }
+    if (!record.retryable) {
+      return Promise.reject(new ComponentRetryUnsafeError(
+        record.label,
+        record.failurePhase ?? 'activation',
+      ))
+    }
     const missing = this.#missingKeys(record)
     if (missing.length > 0) {
       return Promise.reject(new ComponentRetryUnsatisfiedError(record.label, missing))
@@ -440,6 +449,7 @@ export class CapabilityRegistry {
     record.failure = undefined
     record.failurePhase = undefined
     record.failureSequence = undefined
+    record.retryable = false
     this.#touch()
     const task = this.#barrier().then(() => undefined)
     record.retryTask = task.finally(() => {
@@ -657,6 +667,7 @@ export class CapabilityRegistry {
             record.failure = undefined
             record.failurePhase = undefined
             record.failureSequence = undefined
+            record.retryable = false
             record.interruption = undefined
           } else {
             await this.#abandonActivation(record, record.failure, false)
@@ -685,6 +696,7 @@ export class CapabilityRegistry {
         } catch (reason) {
           record.failure = new ComponentDeactivationFailedError(record.label, 1, 1, reason)
           record.failurePhase = 'deactivation'
+          record.retryable = false
         } finally {
           lifecycle.active = false
           record.busy = false
@@ -700,6 +712,7 @@ export class CapabilityRegistry {
           return true
         }
         record.status = succeeded ? 'unsatisfied' : 'failed'
+        record.retryable = false
         return true
       }
       case 'failed':
@@ -748,6 +761,7 @@ export class CapabilityRegistry {
     record.failure = new ComponentActivationFailedError(record.label, failureReason, rollbackAttempted)
     record.failurePhase = 'activation'
     record.failureSequence = undefined
+    record.retryable = rollbackFailure === undefined
     record.status = record.releasing ? 'disposed' : 'failed'
   }
 }
