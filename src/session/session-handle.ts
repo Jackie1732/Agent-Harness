@@ -167,11 +167,7 @@ export class SessionHandleImpl implements SessionHandle {
 
   dispose(): Promise<void> {
     if (this.#disposeTask !== undefined) return this.#disposeTask
-    this.#acceptance = this.#acceptance === 'ended' ? 'ended' : 'ending'
-    const task = this.#tail.then(
-      () => this.#writerLease.dispose(),
-      () => this.#writerLease.dispose(),
-    ).finally(() => {
+    const task = this.#tail.then(() => this.#writerLease.dispose()).finally(() => {
       this.#status = 'disposed'
       this.#owner.releaseHandle(this)
     })
@@ -181,12 +177,13 @@ export class SessionHandleImpl implements SessionHandle {
 
   #assertWritable(): void {
     this.#owner.assertActive()
-    if (this.#status !== 'open') this.#inactive()
+    if (this.#status !== 'open' || this.#disposeTask !== undefined) this.#inactive()
   }
 
   #inactive(): never {
-    throw new SessionError('SESSION_HANDLE_INACTIVE', `Session Handle ${this.header.sessionId} is ${this.#status}`, {
-      details: { sessionId: this.header.sessionId, status: this.#status },
+    const state = this.#disposeTask !== undefined && this.#status === 'open' ? 'releasing' : this.#status
+    throw new SessionError('SESSION_HANDLE_INACTIVE', `Session Handle ${this.header.sessionId} is ${state}`, {
+      details: { sessionId: this.header.sessionId, status: state },
     })
   }
 
