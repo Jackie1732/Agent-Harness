@@ -14,9 +14,9 @@ temp/
 .DS_Store
 Thumbs.db
 
-# Local notes: only the index is shared.
+# Local notes and review packages: only the index is shared.
 # Files already tracked stay tracked, because gitignore does not untrack them.
-notes/**/*.md
+notes/**
 !notes/README.md
 
 # Working handoff drafts kept local until they are complete.
