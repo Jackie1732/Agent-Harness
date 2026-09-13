@@ -1,4 +1,7 @@
 import assert from 'node:assert/strict'
+import { mkdtemp, rm } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 
 const harness = await import('../dist/index.js')
 
@@ -20,6 +23,12 @@ for (const internalName of [
   'emitEvent',
   'invokeMiddleware',
   'isWithin',
+  'FrameScanner',
+  'SerialGate',
+  'SessionHandleImpl',
+  'loadSessionHistory',
+  'scanFileSessionEvents',
+  'createFileSessionBackendForTest',
 ]) {
   assert.equal(internalName in harness, false, `${internalName} must stay internal`)
 }
@@ -84,5 +93,44 @@ assert.equal('dispose' in registry.scope, false)
 await registry.dispose()
 assert.equal(registry.status, 'disposed')
 assert.equal(registry.snapshot().providers.length, 0)
+
+// The Step 4 Session layer must commit and project through the built entry alone.
+const sessionId = harness.parseSessionId('00000000-0000-4000-8000-000000000099')
+const recorded = harness.createDurableEventDefinition({
+  type: 'smoke/recorded',
+  payloadVersion: 1,
+  ignorable: false,
+  decode: value => value,
+})
+const sessionRoot = await mkdtemp(join(tmpdir(), 'atomic-harness-built-'))
+try {
+const sessionRepository = new harness.SessionRepository({
+  backend: new harness.FileSessionBackend({ root: sessionRoot, maxRecordBytes: 2048 }),
+  catalog: harness.createDurableEventCatalog([recorded]),
+  maxLineageDepth: 2,
+  identitySource: { nextSessionId: () => sessionId },
+  clock: { now: () => 1_789_257_600_000 },
+})
+const session = await sessionRepository.create()
+await session.append(recorded, { value: 4 })
+await sessionRepository.dispose()
+const reopenedRepository = new harness.SessionRepository({
+  backend: new harness.FileSessionBackend({ root: sessionRoot, maxRecordBytes: 2048 }),
+  catalog: harness.createDurableEventCatalog([recorded]),
+  maxLineageDepth: 2,
+})
+const reopened = await reopenedRepository.open(sessionId)
+const projected = reopened.project({
+  name: 'smoke count',
+  initial: () => 0,
+  apply: state => state + 1,
+})
+assert.equal(projected.state, 1)
+assert.equal(projected.coverage.length, 1)
+assert.equal(reopened.snapshot().localPosition, 1)
+await reopenedRepository.dispose()
+} finally {
+  await rm(sessionRoot, { recursive: true, force: true })
+}
 
 console.log('built-smoke: dist/index.js loaded with plain Node')
