@@ -1,4 +1,4 @@
-import { appendFile, mkdtemp, readFile, rm, stat } from 'node:fs/promises'
+import { appendFile, mkdtemp, readFile, rm, stat, truncate } from 'node:fs/promises'
 import type { FileHandle } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -150,6 +150,9 @@ describe('File Session Backend', () => {
     await expect(backend.readPrefix(sessionId)).rejects.toMatchObject({ code: 'SESSION_LOG_INVALID' })
     await expect(backend.openWriter(sessionId)).rejects.toMatchObject({ code: 'SESSION_LOG_INVALID' })
     expect(await readFile(log)).toEqual(before)
+    await truncate(log, 0)
+    const writer = await backend.openWriter(sessionId)
+    await writer.dispose()
     await backend.dispose()
   })
 

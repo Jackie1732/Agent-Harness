@@ -104,31 +104,31 @@ const recorded = harness.createDurableEventDefinition({
 })
 const sessionRoot = await mkdtemp(join(tmpdir(), 'atomic-harness-built-'))
 try {
-const sessionRepository = new harness.SessionRepository({
-  backend: new harness.FileSessionBackend({ root: sessionRoot, maxRecordBytes: 2048 }),
-  catalog: harness.createDurableEventCatalog([recorded]),
-  maxLineageDepth: 2,
-  identitySource: { nextSessionId: () => sessionId },
-  clock: { now: () => 1_789_257_600_000 },
-})
-const session = await sessionRepository.create()
-await session.append(recorded, { value: 4 })
-await sessionRepository.dispose()
-const reopenedRepository = new harness.SessionRepository({
-  backend: new harness.FileSessionBackend({ root: sessionRoot, maxRecordBytes: 2048 }),
-  catalog: harness.createDurableEventCatalog([recorded]),
-  maxLineageDepth: 2,
-})
-const reopened = await reopenedRepository.open(sessionId)
-const projected = reopened.project({
-  name: 'smoke count',
-  initial: () => 0,
-  apply: state => state + 1,
-})
-assert.equal(projected.state, 1)
-assert.equal(projected.coverage.length, 1)
-assert.equal(reopened.snapshot().localPosition, 1)
-await reopenedRepository.dispose()
+  const sessionRepository = new harness.SessionRepository({
+    backend: new harness.FileSessionBackend({ root: sessionRoot, maxRecordBytes: 2048 }),
+    catalog: harness.createDurableEventCatalog([recorded]),
+    maxLineageDepth: 2,
+    identitySource: { nextSessionId: () => sessionId },
+    clock: { now: () => 1_789_257_600_000 },
+  })
+  const session = await sessionRepository.create()
+  await session.append(recorded, { value: 4 })
+  await sessionRepository.dispose()
+  const reopenedRepository = new harness.SessionRepository({
+    backend: new harness.FileSessionBackend({ root: sessionRoot, maxRecordBytes: 2048 }),
+    catalog: harness.createDurableEventCatalog([recorded]),
+    maxLineageDepth: 2,
+  })
+  const reopened = await reopenedRepository.open(sessionId)
+  const projected = reopened.project({
+    name: 'smoke count',
+    initial: () => 0,
+    apply: state => state + 1,
+  })
+  assert.equal(projected.state, 1)
+  assert.equal(projected.coverage.length, 1)
+  assert.equal(reopened.snapshot().localPosition, 1)
+  await reopenedRepository.dispose()
 } finally {
   await rm(sessionRoot, { recursive: true, force: true })
 }

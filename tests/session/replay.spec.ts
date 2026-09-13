@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import {
   createDurableEventCatalog,
+  createDurableEventDefinition,
   formatSessionAddress,
   formatSessionEventId,
   MemorySessionBackend,
@@ -16,7 +17,7 @@ import type {
   SessionProjection,
   StoredSessionEvent,
 } from '../../src/index.js'
-import { createTestRepository, deltaEvent } from './fixtures.js'
+import { createTestRepository, deltaEvent, firstId, identities } from './fixtures.js'
 import type { Delta } from './fixtures.js'
 
 describe('Session replay and Projection', () => {
@@ -63,6 +64,31 @@ describe('Session replay and Projection', () => {
     const first = handle.project(projection())
     expect(first).toEqual(handle.project(projection()))
     expect(first.state).toBe(5)
+    await repo.dispose()
+  })
+
+  it('reserves the ended lifecycle for the built-in terminal event version', async () => {
+    const futureEnded = createDurableEventDefinition<JsonObject>({
+      type: sessionEndedEvent.type,
+      payloadVersion: 2,
+      ignorable: false,
+      decode: value => value as JsonObject,
+    })
+    const repo = new SessionRepository({
+      backend: new MemorySessionBackend({ maxRecordBytes: 4096 }),
+      catalog: createDurableEventCatalog([deltaEvent, futureEnded]),
+      maxLineageDepth: 1,
+      identitySource: identities(firstId),
+    })
+    const handle = await repo.create()
+
+    await handle.append(futureEnded, {})
+    expect(handle.snapshot().lifecycle).toBe('active')
+    await handle.append(deltaEvent, { value: 1 })
+    await handle.dispose()
+
+    const reopened = await repo.open(handle.header.sessionId)
+    expect(reopened.snapshot()).toMatchObject({ lifecycle: 'active', localPosition: 2 })
     await repo.dispose()
   })
 

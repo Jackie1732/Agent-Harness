@@ -5,7 +5,7 @@ import type { SessionWriter } from './backend.js'
 import type { DurableEventCatalog, DurableEventDefinition } from './event-catalog.js'
 import { sessionEndedEvent } from './event-catalog.js'
 import { SessionError } from './errors.js'
-import { extendLocalSegment } from './history.js'
+import { extendLocalSegment, isSessionEndedRecord } from './history.js'
 import { formatSessionEventId, sessionSequence } from './ids.js'
 import { snapshotJson } from './json.js'
 import { projectSession } from './projection.js'
@@ -105,7 +105,10 @@ export class SessionHandleImpl implements SessionHandle {
     this.#acceptance = this.#view.lifecycle === 'ended' ? 'ended' : 'accepting'
     if (this.#acceptance === 'ended') {
       const record = this.#view.history.at(-1)?.events.at(-1)
-      if (record?.kind !== 'known' || record.stored.type !== sessionEndedEvent.type) {
+      if (
+        record?.kind !== 'known'
+        || !isSessionEndedRecord(record.stored)
+      ) {
         throw new Error('ended Session must finish with its terminal event')
       }
       this.#endedEvent = record as CommittedSessionEvent<SessionEndedPayload>

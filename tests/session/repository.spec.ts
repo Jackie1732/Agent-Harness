@@ -81,6 +81,7 @@ describe('Session Repository and Handle', () => {
     const append = handle.append(deltaEvent, { value: 1 })
     await appendStarted.promise
     const ending = handle.end()
+    expect(handle.end()).toBe(ending)
 
     expect(() => handle.append(deltaEvent, { value: 2 })).toThrowError(
       expect.objectContaining({ code: 'SESSION_ENDED' }),

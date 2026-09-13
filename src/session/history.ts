@@ -41,6 +41,12 @@ function decodeKnown(
   }
 }
 
+/** Whether one stored record is the built-in local Session terminal event. */
+export function isSessionEndedRecord(event: StoredSessionEvent): boolean {
+  return event.type === sessionEndedEvent.type
+    && event.payloadVersion === sessionEndedEvent.payloadVersion
+}
+
 /** Apply Catalog and local lifecycle semantics to one verified physical prefix. */
 export function materializeLocalSession(
   local: LocalStoredSession,
@@ -92,7 +98,7 @@ export function materializeLocalSession(
     }
     const record = decodeKnown(event, definition)
     records.push(record)
-    if (definition === sessionEndedEvent) lifecycle = 'ended'
+    if (isSessionEndedRecord(event)) lifecycle = 'ended'
   }
   if (local.position !== local.events.length) {
     throw new SessionError('SESSION_LOG_INVALID', 'Backend position differs from returned event count', {
@@ -121,7 +127,9 @@ export function extendLocalSegment<TPayload extends JsonValue>(
   return Object.freeze({
     header: segment.header,
     through: sessionLogPosition(events.length),
-    localLifecycle: event.stored.type === sessionEndedEvent.type ? 'ended' : segment.localLifecycle,
+    localLifecycle: isSessionEndedRecord(event.stored)
+      ? 'ended'
+      : segment.localLifecycle,
     events,
   })
 }

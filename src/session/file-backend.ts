@@ -141,28 +141,32 @@ export class FileSessionBackend implements SessionBackend {
         }
         state.writerToken = token
         state.unknown = false
-        const opened = await openFileSessionLog(path)
         try {
-          const scanned = await scanFileSessionEvents(
-            path,
-            (await opened.stat()).size,
-            this.#maxRecordBytes,
-          )
-          validateFileSessionEvents(sessionId, scanned.events)
-          if (scanned.incompleteTail !== undefined) {
-            await opened.truncate(scanned.committedBytes)
-            await opened.sync()
+          const opened = await openFileSessionLog(path)
+          try {
+            const scanned = await scanFileSessionEvents(
+              path,
+              (await opened.stat()).size,
+              this.#maxRecordBytes,
+            )
+            validateFileSessionEvents(sessionId, scanned.events)
+            if (scanned.incompleteTail !== undefined) {
+              await opened.truncate(scanned.committedBytes)
+              await opened.sync()
+            }
+            state.committedBytes = scanned.committedBytes
+            state.position = scanned.position
+            return opened
+          } catch (cause) {
+            await opened.close()
+            throw cause
           }
-          state.committedBytes = scanned.committedBytes
-          state.position = scanned.position
-          return opened
         } catch (cause) {
-          await opened.close()
+          this.#clearWriterState(state)
           throw cause
         }
       })
     } catch (cause) {
-      if (state.writerToken === token) this.#clearWriterState(state)
       releaseCommitState(root, sessionId, state)
       throw cause
     }
@@ -219,7 +223,8 @@ export class FileSessionBackend implements SessionBackend {
     const path = fileSessionLog(root, sessionId)
     const state = acquireCommitState(root, sessionId)
     try {
-      const boundary = await state.gate.run(async () => {
+      const requested = through === undefined ? undefined : sessionLogPosition(through)
+      const capture = await state.gate.run(async () => {
         this.#assertActive()
         if (state.writerToken !== undefined) {
           if (state.unknown) {
@@ -230,12 +235,17 @@ export class FileSessionBackend implements SessionBackend {
           if (state.committedBytes === undefined) {
             throw new Error('active File writer has no committed boundary')
           }
-          return state.committedBytes
+          return { kind: 'boundary', value: state.committedBytes } as const
         }
-        return await fileSessionLogSize(path, sessionId)
+        const boundary = await fileSessionLogSize(path, sessionId)
+        // A newly opened writer may shrink only an incomplete tail, so finish this
+        // idle-log scan before releasing the gate that admits tail recovery.
+        const scanned = await scanFileSessionEvents(path, boundary, this.#maxRecordBytes, requested)
+        return { kind: 'scanned', value: scanned } as const
       })
-      const requested = through === undefined ? undefined : sessionLogPosition(through)
-      const scanned = await scanFileSessionEvents(path, boundary, this.#maxRecordBytes, requested)
+      const scanned = capture.kind === 'scanned'
+        ? capture.value
+        : await scanFileSessionEvents(path, capture.value, this.#maxRecordBytes, requested)
       validateFileSessionEvents(sessionId, scanned.events)
       return Object.freeze({
         header,
