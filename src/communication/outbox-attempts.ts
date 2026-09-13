@@ -1,6 +1,7 @@
 import { SerialGate } from '../foundation/serial-gate.js'
+import { assertNever } from '../foundation/never.js'
 import type { SessionHandle } from '../session/index.js'
-import { SessionError } from '../session/index.js'
+import { parseSessionAddress, parseSessionEventId, SessionError } from '../session/index.js'
 import { equalMessageEnvelopes } from './canonical-json.js'
 import { CommunicationError } from './errors.js'
 import type { MessageId } from './ids.js'
@@ -62,6 +63,22 @@ function makeActive(envelope: MessageEnvelope, attempt: number, signal: AbortSig
     settled,
     settle,
   }
+}
+
+function normalizeOutcome(lease: DeliveryAttemptLease, outcome: MessageDeliveryOutcome): MessageDeliveryOutcome {
+  if (outcome.kind !== 'accepted') return outcome
+  const receipt = outcome.receipt
+  try {
+    const recipientId = parseSessionAddress(lease.envelope.recipient)
+    if (
+      receipt.messageId === lease.messageId
+      && receipt.recipient === lease.envelope.recipient
+      && parseSessionEventId(receipt.inboxEventId).sessionId === recipientId
+    ) return outcome
+  } catch {
+    // A provider must not turn an invalid or unrelated receipt into a durable delivery fact.
+  }
+  return Object.freeze({ kind: 'retry', code: 'transport-outcome-unknown' })
 }
 
 /** Owns persisted delivery attempts and their process-local exclusive leases. */
@@ -131,8 +148,14 @@ export class OutboxAttemptCoordinator {
             })
           }
           await this.#appendStatus(outboxAbandonedEvent, { messageId, reason })
-          return projectMailbox(this.#options.handle.snapshot(), this.#options.catalog)
-            .outbox.find(item => item.messageId === messageId)!
+          const committed = projectMailbox(this.#options.handle.snapshot(), this.#options.catalog)
+            .outbox.find(item => item.messageId === messageId)
+          if (committed === undefined) {
+            throw new CommunicationError('MESSAGE_STATE_INVALID', 'committed Outbox abandonment is missing from projection', {
+              details: { messageId, reason },
+            })
+          }
+          return committed
         })
         if ('settled' in result) {
           await result.settled
@@ -162,26 +185,27 @@ export class OutboxAttemptCoordinator {
         })
       }
       try {
-        switch (outcome.kind) {
+        const verifiedOutcome = normalizeOutcome(lease, outcome)
+        switch (verifiedOutcome.kind) {
           case 'accepted':
             await this.#appendStatus(outboxDeliveredEvent, {
               messageId: lease.messageId,
               attempt: lease.attempt,
-              inboxEventId: outcome.receipt.inboxEventId,
+              inboxEventId: verifiedOutcome.receipt.inboxEventId,
             })
             return 'delivered'
           case 'rejected':
             await this.#appendStatus(outboxRejectedEvent, {
               messageId: lease.messageId,
               attempt: lease.attempt,
-              code: outcome.code,
+              code: verifiedOutcome.code,
             })
             return 'rejected'
           case 'retry':
             await this.#appendStatus(outboxAttemptFailedEvent, {
               messageId: lease.messageId,
               attempt: lease.attempt,
-              code: outcome.code,
+              code: verifiedOutcome.code,
             })
             if (lease.attempt >= this.#options.maxDeliveryAttempts) {
               await this.#appendStatus(outboxAbandonedEvent, {
@@ -191,6 +215,8 @@ export class OutboxAttemptCoordinator {
               return 'abandoned'
             }
             return 'retryable'
+          default:
+            return assertNever(verifiedOutcome, 'delivery outcome')
         }
       } finally {
         this.#active.delete(lease.messageId)

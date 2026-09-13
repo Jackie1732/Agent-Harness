@@ -1,3 +1,4 @@
+import { assertNever } from '../foundation/never.js'
 import type { SessionDirectory } from './directory.js'
 import { resolveDirectoryReceiver } from './directory.js'
 import { CommunicationError } from './errors.js'
@@ -43,13 +44,21 @@ export function createInProcessMessageTransport(directory: SessionDirectory): Me
           return Object.freeze({ kind: 'rejected', code: 'recipient-ended' })
         case 'online':
           break
+        default:
+          return assertNever(target.status, 'Directory status')
       }
       try {
-        return await target.receiver!.acceptDelivery(candidate, candidate.sender, options.signal)
+        if (target.receiver === undefined) {
+          throw new CommunicationError('MESSAGE_DIRECTORY_CONFLICT', 'online recipient route has no receiver', {
+            details: { recipient: candidate.recipient },
+          })
+        }
+        return await target.receiver.acceptDelivery(candidate, candidate.sender, options.signal)
       } catch (cause) {
         if (cause instanceof CommunicationError && cause.code === 'MESSAGE_INBOX_COMMIT_UNKNOWN') {
           return Object.freeze({ kind: 'retry', code: 'receiver-outcome-unknown' })
         }
+        if (cause instanceof CommunicationError) throw cause
         return Object.freeze({ kind: 'retry', code: 'transport-outcome-unknown' })
       }
     },

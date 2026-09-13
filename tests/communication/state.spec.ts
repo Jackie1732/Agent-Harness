@@ -9,13 +9,16 @@ import {
   createSessionDirectory,
   decodeMessageEnvelope,
   formatSessionAddress,
+  formatSessionEventId,
   messageEnvelopeDigest,
   parseChannelId,
   parseMessageId,
+  parseSessionAddress,
   parseSessionId,
   projectMailbox,
+  sessionSequence,
 } from '../../src/index.js'
-import type { SessionBackend, SessionLogPosition, SessionWriter, StoredSessionEvent } from '../../src/index.js'
+import type { MessageTransport, SessionBackend, SessionLogPosition, SessionWriter, StoredSessionEvent } from '../../src/index.js'
 import {
   inboxAcceptedEvent,
   outboxAcceptedEvent,
@@ -23,6 +26,7 @@ import {
 } from '../../src/communication/session-events.js'
 import {
   channelIds,
+  communicationIdentities,
   createCommunicationService,
   createRepository,
   limits,
@@ -78,6 +82,25 @@ function ambiguousCommitBackend(eventType: string): SessionBackend {
 }
 
 describe('communication state validation', () => {
+  it('maps an invalid recipient to the communication error vocabulary before committing', async () => {
+    const repository = createRepository()
+    const runtime = createCommunicationService()
+    try {
+      const handle = await repository.create()
+      const mailbox = await runtime.service.attach(handle, { catalog: messageCatalog, policy: runtime.policy })
+
+      await expect(mailbox.send(requestMessage, {
+        kind: 'root', recipient: 'not-a-session-address' as never, channelId: parseChannelId(channelIds[0]),
+      }, { text: 'invalid recipient' })).rejects.toMatchObject({ code: 'MESSAGE_ENVELOPE_INVALID' })
+      expect(mailbox.snapshot().outbox).toHaveLength(0)
+    } finally {
+      await runtime.service.dispose()
+      await runtime.transport.dispose()
+      await runtime.directory.dispose()
+      await repository.dispose()
+    }
+  })
+
   it('preserves an Inbox record when its Message Definition is unavailable', async () => {
     const repository = createRepository(undefined, sessionIdentities([secondSession]))
     try {
@@ -187,6 +210,100 @@ describe('communication state validation', () => {
     } finally {
       await transport.dispose()
       await directory.dispose()
+    }
+  })
+
+  it('records an unrelated provider receipt as an unknown retry outcome', async () => {
+    const repository = createRepository()
+    const directory = createSessionDirectory()
+    let delivery = 0
+    const transport: MessageTransport = {
+      async deliver(candidate) {
+        delivery += 1
+        return {
+          kind: 'accepted',
+          receipt: {
+            messageId: delivery === 1
+              ? parseMessageId('10000000-0000-4000-8000-000000000199')
+              : candidate.messageId,
+            recipient: candidate.recipient,
+            inboxEventId: formatSessionEventId(
+              delivery === 1 ? parseSessionAddress(candidate.recipient) : secondSession,
+              sessionSequence(1),
+            ),
+          },
+        }
+      },
+      async dispose() {},
+    }
+    const service = new CommunicationService({
+      directory,
+      transport,
+      limits,
+      identitySource: communicationIdentities(),
+    })
+    try {
+      const senderHandle = await repository.create()
+      const recipientHandle = await repository.create()
+      const sender = await service.attach(senderHandle, { catalog: messageCatalog, policy: {
+        canSend: () => ({ kind: 'allow' }), canReceive: () => ({ kind: 'allow' }),
+      } })
+      await sender.send(requestMessage, {
+        kind: 'root', recipient: recipientHandle.header.address, channelId: parseChannelId(channelIds[0]),
+      }, { text: 'wrong message receipt' })
+      await sender.send(requestMessage, {
+        kind: 'root', recipient: recipientHandle.header.address, channelId: parseChannelId(channelIds[1]),
+      }, { text: 'wrong recipient event receipt' })
+
+      await expect(service.createDispatcher(sender).dispatch()).resolves.toMatchObject({
+        delivered: 0, retryable: 2, remainingPending: 2,
+      })
+      expect(sender.snapshot().outbox.map(item => ({
+        status: item.status,
+        attempt: item.lastFailure?.attempt,
+        failure: item.lastFailure?.code,
+      }))).toEqual([
+        { status: 'pending', attempt: 1, failure: 'transport-outcome-unknown' },
+        { status: 'pending', attempt: 1, failure: 'transport-outcome-unknown' },
+      ])
+    } finally {
+      await service.dispose()
+      await directory.dispose()
+      await repository.dispose()
+    }
+  })
+
+  it('surfaces a recipient policy configuration failure after settling the sender attempt', async () => {
+    const repository = createRepository()
+    const runtime = createCommunicationService()
+    try {
+      const senderHandle = await repository.create()
+      const recipientHandle = await repository.create()
+      const sender = await runtime.service.attach(senderHandle, { catalog: messageCatalog, policy: runtime.policy })
+      const recipient = await runtime.service.attach(recipientHandle, {
+        catalog: messageCatalog,
+        policy: {
+          canSend: () => ({ kind: 'allow' }),
+          canReceive: () => ({ kind: 'invalid' }) as never,
+        },
+      })
+      await sender.send(requestMessage, {
+        kind: 'root', recipient: recipient.address, channelId: parseChannelId(channelIds[0]),
+      }, { text: 'bad receiver policy' })
+
+      await expect(runtime.service.createDispatcher(sender).dispatch()).rejects.toMatchObject({
+        code: 'MESSAGE_CONFIG_INVALID',
+      })
+      expect(sender.snapshot().outbox[0]).toMatchObject({
+        status: 'pending',
+        lastFailure: { attempt: 1, code: 'transport-outcome-unknown' },
+      })
+      expect(recipient.snapshot().inbox).toHaveLength(0)
+    } finally {
+      await runtime.service.dispose()
+      await runtime.transport.dispose()
+      await runtime.directory.dispose()
+      await repository.dispose()
     }
   })
 

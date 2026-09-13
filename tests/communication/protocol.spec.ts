@@ -58,7 +58,7 @@ describe('communication protocol values', () => {
     expect(Buffer.from(canonicalJsonBytes(left)).toString()).toBe(Buffer.from(canonicalJsonBytes(right)).toString())
     expect(messageEnvelopeDigest(left)).toBe(messageEnvelopeDigest(right))
     expect(equalMessageEnvelopes(left, right)).toBe(true)
-    expect(equalMessageEnvelopes(left, reorderedArray, 'same-digest', 'same-digest')).toBe(false)
+    expect(equalMessageEnvelopes(left, reorderedArray)).toBe(false)
   })
 
   it('uses immutable exact Definition identities in an independent Catalog', () => {

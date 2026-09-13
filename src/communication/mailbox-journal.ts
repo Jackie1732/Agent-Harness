@@ -122,7 +122,11 @@ export class MailboxJournal {
     replyTo?: MessageId,
   ): Promise<OutgoingMessageAccepted<TPayload>> {
     const recipient = request.recipient
-    parseSessionAddress(recipient)
+    try {
+      parseSessionAddress(recipient)
+    } catch (cause) {
+      throw new CommunicationError('MESSAGE_ENVELOPE_INVALID', 'message recipient is not canonical', { cause })
+    }
     const channelId = parseChannelId(request.channelId)
     const snapshot = this.snapshot()
     if (this.#options.handle.snapshot().lifecycle === 'ended') {
@@ -212,7 +216,7 @@ export class MailboxJournal {
     const snapshot = this.snapshot()
     const existing = snapshot.inbox.find(item => item.messageId === envelope.messageId)
     if (existing !== undefined) {
-      return equalMessageEnvelopes(existing.envelope, envelope, existing.digest)
+      return existing.digest === messageEnvelopeDigest(envelope) && equalMessageEnvelopes(existing.envelope, envelope)
         ? Object.freeze({ kind: 'accepted', receipt: inboxReceipt(existing) })
         : Object.freeze({ kind: 'rejected', code: 'message-id-conflict' })
     }
@@ -296,6 +300,12 @@ export class MailboxJournal {
       }
       throw cause
     }
-    return this.snapshot().inbox.find(item => item.messageId === messageId)!
+    const committed = this.snapshot().inbox.find(item => item.messageId === messageId)
+    if (committed === undefined) {
+      throw new CommunicationError('MESSAGE_STATE_INVALID', 'committed Inbox status is missing from projection', {
+        details: { messageId, action },
+      })
+    }
+    return committed
   }
 }

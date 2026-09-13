@@ -1,10 +1,13 @@
 import { describe, expect, it } from 'vitest'
 import {
   CommunicationService,
+  MemorySessionBackend,
+  createInProcessMessageTransport,
   createSessionDirectory,
   parseChannelId,
 } from '../../src/index.js'
-import type { MessageTransport } from '../../src/index.js'
+import type { MessageTransport, SessionBackend, SessionLogPosition, SessionWriter, StoredSessionEvent } from '../../src/index.js'
+import { inboxAcceptedEvent } from '../../src/communication/session-events.js'
 import { createDeferred } from '../helpers/deferred.js'
 import {
   channelIds,
@@ -15,7 +18,76 @@ import {
   requestMessage,
 } from './fixtures.js'
 
+function blockingCommitBackend(
+  eventType: string,
+  started: ReturnType<typeof createDeferred<void>>,
+  release: ReturnType<typeof createDeferred<void>>,
+): SessionBackend {
+  const inner = new MemorySessionBackend({ maxRecordBytes: 8192 })
+  let block = true
+  return {
+    create: header => inner.create(header),
+    readPrefix: (sessionId, through) => inner.readPrefix(sessionId, through),
+    async openWriter(sessionId): Promise<SessionWriter> {
+      const writer = await inner.openWriter(sessionId)
+      return Object.freeze({
+        header: writer.header,
+        readCommitted: () => writer.readCommitted(),
+        async append(position: SessionLogPosition, event: StoredSessionEvent) {
+          if (block && event.type === eventType) {
+            block = false
+            started.resolve()
+            await release.promise
+          }
+          return await writer.append(position, event)
+        },
+        dispose: () => writer.dispose(),
+      })
+    },
+    dispose: () => inner.dispose(),
+  }
+}
+
 describe('communication concurrency', () => {
+  it('deduplicates a retry accepted while the recipient is ending', async () => {
+    const started = createDeferred<void>()
+    const release = createDeferred<void>()
+    const repository = createRepository(blockingCommitBackend(inboxAcceptedEvent.type, started, release))
+    const directory = createSessionDirectory()
+    const transport = createInProcessMessageTransport(directory)
+    const service = new CommunicationService({ directory, transport, limits, identitySource: communicationIdentities() })
+    try {
+      const senderHandle = await repository.create()
+      const recipientHandle = await repository.create()
+      const policy = { canSend: () => ({ kind: 'allow' as const }), canReceive: () => ({ kind: 'allow' as const }) }
+      const sender = await service.attach(senderHandle, { catalog: messageCatalog, policy })
+      const recipient = await service.attach(recipientHandle, { catalog: messageCatalog, policy })
+      const outgoing = await sender.send(requestMessage, {
+        kind: 'root', recipient: recipient.address, channelId: parseChannelId(channelIds[0]),
+      }, { text: 'deduplicate while ending' })
+      const dispatch = service.createDispatcher(sender).dispatch()
+      await started.promise
+
+      const ending = recipient.endSession()
+      expect(recipient.status).toBe('ending')
+      const retry = transport.deliver(outgoing.envelope, { signal: new AbortController().signal })
+      release.resolve()
+
+      expect(await dispatch).toMatchObject({ delivered: 1 })
+      const duplicateOutcome = await retry
+      expect(duplicateOutcome).toMatchObject({ kind: 'accepted', receipt: { messageId: outgoing.messageId } })
+      await expect(ending).rejects.toMatchObject({ code: 'MESSAGE_PENDING' })
+      expect(recipient.status).toBe('open')
+      expect(recipient.snapshot().inbox).toHaveLength(1)
+    } finally {
+      release.resolve()
+      await service.dispose()
+      await transport.dispose()
+      await directory.dispose()
+      await repository.dispose()
+    }
+  })
+
   it('shares one dispatch run and waits for its active attempt before Mailbox disposal', async () => {
     const repository = createRepository()
     const directory = createSessionDirectory()

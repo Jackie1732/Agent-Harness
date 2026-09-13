@@ -1,4 +1,4 @@
-import { parseSessionEventId } from '../session/index.js'
+import { parseSessionAddress, parseSessionEventId } from '../session/index.js'
 import type { CommittedSessionEvent, SessionSnapshot } from '../session/index.js'
 import type { JsonValue } from '../foundation/json.js'
 import { messageEnvelopeDigest } from './canonical-json.js'
@@ -161,7 +161,7 @@ function applyOutboxEvent(
     requireOpenAttempt(state, payload.messageId, payload.attempt)
     const envelope = state.accepted.payload.envelope
     const receiptOwner = parseSessionEventId(payload.inboxEventId).sessionId
-    const recipientId = envelope.recipient.slice('ah-session:'.length)
+    const recipientId = parseSessionAddress(envelope.recipient)
     if (receiptOwner !== recipientId) invalid('delivery receipt belongs to another Session', { messageId: payload.messageId })
     const receipt: MessageDeliveryReceipt = Object.freeze({
       messageId: payload.messageId,

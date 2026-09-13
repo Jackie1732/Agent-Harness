@@ -1,3 +1,4 @@
+import { assertNever } from '../foundation/never.js'
 import type {
   CapabilityKey,
   ComponentId,
@@ -253,12 +254,8 @@ function classify(
     case 'disposed':
       return 'neutral'
     default:
-      return assertNever(declaration.status)
+      return assertNever(declaration.status, 'component status')
   }
-}
-
-function assertNever(value: never): never {
-  throw new TypeError(`unhandled component status: ${String(value)}`)
 }
 
 /**

@@ -1,3 +1,4 @@
+import { assertNever } from '../foundation/never.js'
 import { CommunicationError } from './errors.js'
 import { SessionMailboxImpl } from './mailbox.js'
 import type { MessageTransport } from './transport.js'
@@ -69,13 +70,11 @@ export function createOutboxDispatcher(
       }
       startedAttempts += 1
       let outcome: MessageDeliveryOutcome
-      let sourceFailure: CommunicationError | undefined
+      let deliveryFailure: CommunicationError | undefined
       try {
         outcome = await transport.deliver(prepared.lease.envelope, { signal: prepared.lease.signal })
       } catch (cause) {
-        if (cause instanceof CommunicationError && cause.code === 'MESSAGE_TRANSPORT_SOURCE_INVALID') {
-          sourceFailure = cause
-        }
+        if (cause instanceof CommunicationError) deliveryFailure = cause
         outcome = Object.freeze({ kind: 'retry', code: 'transport-outcome-unknown' })
       }
       const result = await mailbox.completeAttempt(prepared.lease, outcome)
@@ -84,8 +83,9 @@ export function createOutboxDispatcher(
         case 'rejected': rejected += 1; break
         case 'retryable': retryable += 1; blockedChannels.add(channelKey(candidate)); break
         case 'abandoned': abandoned += 1; break
+        default: assertNever(result, 'delivery completion')
       }
-      if (sourceFailure !== undefined) throw sourceFailure
+      if (deliveryFailure !== undefined) throw deliveryFailure
     }
     const remainingPending = mailbox.currentSnapshot().outbox.filter(item => item.status === 'pending').length
     return Object.freeze({

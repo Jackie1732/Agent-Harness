@@ -28,13 +28,7 @@ export function messageEnvelopeDigest(envelope: MessageEnvelope): string {
   return createHash('sha256').update(canonicalJsonBytes(envelope)).digest('hex')
 }
 
-/** Compare complete canonical bytes after an optional digest fast path. */
-export function equalMessageEnvelopes(
-  left: MessageEnvelope,
-  right: MessageEnvelope,
-  leftDigest = messageEnvelopeDigest(left),
-  rightDigest = messageEnvelopeDigest(right),
-): boolean {
-  if (leftDigest !== rightDigest) return false
+/** Compare the complete canonical bytes of two Message Envelopes. */
+export function equalMessageEnvelopes(left: MessageEnvelope, right: MessageEnvelope): boolean {
   return Buffer.compare(Buffer.from(canonicalJsonBytes(left)), Buffer.from(canonicalJsonBytes(right))) === 0
 }
