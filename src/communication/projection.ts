@@ -188,7 +188,9 @@ function applyOutboxEvent(
     const payload = (event as CommittedSessionEvent<OutboxAbandonedPayload>).payload
     const state = requireOutbox(outbox, payload.messageId)
     if (state.terminal !== undefined) invalid('outbox message has conflicting terminal states', { messageId: payload.messageId })
-    delete state.openAttempt
+    if (state.openAttempt !== undefined) {
+      invalid('outbox abandonment does not settle its open attempt', { messageId: payload.messageId, attempt: state.openAttempt })
+    }
     state.terminal = Object.freeze({
       ...outboxTerminalBase(state), status: 'abandoned', abandonReason: payload.reason, terminalEventId: event.stored.eventId,
     })

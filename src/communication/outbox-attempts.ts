@@ -136,7 +136,7 @@ export class OutboxAttemptCoordinator {
         const result = await this.#gate.run(async (): Promise<OutboxMessageSnapshot | ActiveAttempt> => {
           const active = this.#active.get(messageId)
           if (active !== undefined) return active
-          const message = projectMailbox(this.#options.handle.snapshot(), this.#options.catalog)
+          let message = projectMailbox(this.#options.handle.snapshot(), this.#options.catalog)
             .outbox.find(item => item.messageId === messageId)
           if (message === undefined) {
             throw new CommunicationError('MESSAGE_NOT_FOUND', 'Outbox message does not exist', { details: { messageId } })
@@ -146,6 +146,20 @@ export class OutboxAttemptCoordinator {
             throw new CommunicationError('MESSAGE_STATE_INVALID', 'Outbox message already has another terminal state', {
               details: { messageId, status: message.status },
             })
+          }
+          if (message.openAttempt !== undefined) {
+            await this.#appendStatus(outboxAttemptFailedEvent, {
+              messageId,
+              attempt: message.openAttempt,
+              code: 'transport-outcome-unknown',
+            })
+            message = projectMailbox(this.#options.handle.snapshot(), this.#options.catalog)
+              .outbox.find(item => item.messageId === messageId)
+            if (message?.status !== 'pending') {
+              throw new CommunicationError('MESSAGE_STATE_INVALID', 'recovered Outbox attempt did not settle as pending', {
+                details: { messageId },
+              })
+            }
           }
           await this.#appendStatus(outboxAbandonedEvent, { messageId, reason })
           const committed = projectMailbox(this.#options.handle.snapshot(), this.#options.catalog)

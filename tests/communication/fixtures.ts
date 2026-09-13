@@ -21,6 +21,9 @@ import type {
   MessageCatalog,
   SessionBackend,
   SessionIdentitySource,
+  SessionLogPosition,
+  SessionWriter,
+  StoredSessionEvent,
 } from '../../src/index.js'
 
 export interface TextPayload extends JsonObject {
@@ -115,6 +118,32 @@ export function createRepository(
     identitySource: identities,
     clock: { now: () => 1_789_257_600_000 },
   })
+}
+
+/** Wrap a Backend so the first matching committed event loses its acknowledgement. */
+export function loseFirstCommitAcknowledgement(inner: SessionBackend, eventType: string): SessionBackend {
+  let interrupt = true
+  return {
+    create: header => inner.create(header),
+    readPrefix: (sessionId, through) => inner.readPrefix(sessionId, through),
+    async openWriter(sessionId): Promise<SessionWriter> {
+      const writer = await inner.openWriter(sessionId)
+      return Object.freeze({
+        header: writer.header,
+        readCommitted: () => writer.readCommitted(),
+        async append(position: SessionLogPosition, event: StoredSessionEvent) {
+          const committed = await writer.append(position, event)
+          if (interrupt && event.type === eventType) {
+            interrupt = false
+            throw new Error('commit acknowledgement lost')
+          }
+          return committed
+        },
+        dispose: () => writer.dispose(),
+      })
+    },
+    dispose: () => inner.dispose(),
+  }
 }
 
 export function createCommunicationService(overrides: Partial<MailboxLimits> = {}) {

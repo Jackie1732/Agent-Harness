@@ -122,6 +122,53 @@ describe('Session communication', () => {
     expect(sender.snapshot().outbox[0]).toMatchObject({ messageId: outgoing.messageId, attemptCount: 2, status: 'delivered' })
   })
 
+  it('keeps the recipient fact after a lost receipt is followed by recipient end', async () => {
+    const repository = createRepository()
+    const directory = createSessionDirectory()
+    const inner = createInProcessMessageTransport(directory)
+    let loseReceipt = true
+    const lossy: MessageTransport = {
+      async deliver(envelope, options) {
+        const outcome = await inner.deliver(envelope, options)
+        if (loseReceipt && outcome.kind === 'accepted') {
+          loseReceipt = false
+          throw new Error('receipt lost')
+        }
+        return outcome
+      },
+      async dispose() { await inner.dispose() },
+    }
+    const service = new CommunicationService({
+      directory,
+      transport: lossy,
+      limits,
+      identitySource: communicationIdentities(),
+      clock: { now: () => 1_789_257_600_000 },
+    })
+    cleanups.push(() => repository.dispose(), () => service.dispose(), () => lossy.dispose(), () => directory.dispose())
+    const first = await repository.create()
+    const second = await repository.create()
+    const policy = { canSend: () => ({ kind: 'allow' as const }), canReceive: () => ({ kind: 'allow' as const }) }
+    const sender = await service.attach(first, { catalog: messageCatalog, policy })
+    const recipient = await service.attach(second, { catalog: messageCatalog, policy })
+    const outgoing = await sender.send(requestMessage, {
+      kind: 'root', recipient: recipient.address, channelId: parseChannelId(channelIds[0]),
+    }, { text: 'accepted before recipient end' })
+
+    expect(await service.createDispatcher(sender).dispatch()).toMatchObject({ retryable: 1 })
+    expect(await recipient.markProcessed(outgoing.messageId)).toMatchObject({ status: 'processed' })
+    await recipient.endSession()
+    expect(directory.status(recipient.address).kind).toBe('ended')
+
+    expect(await service.createDispatcher(sender).dispatch()).toMatchObject({ rejected: 1 })
+    expect(sender.snapshot().outbox[0]).toMatchObject({
+      status: 'rejected',
+      rejection: 'recipient-ended',
+      attemptCount: 2,
+    })
+    expect(recipient.snapshot().inbox).toMatchObject([{ messageId: outgoing.messageId, status: 'processed' }])
+  })
+
   it('keeps same-Channel messages ordered under Inbox backpressure', async () => {
     const repository = createRepository()
     const runtime = createCommunicationService({ maxPendingInbox: 1 })

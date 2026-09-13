@@ -18,10 +18,13 @@ import {
   projectMailbox,
   sessionSequence,
 } from '../../src/index.js'
-import type { MessageTransport, SessionBackend, SessionLogPosition, SessionWriter, StoredSessionEvent } from '../../src/index.js'
+import type { MessageTransport } from '../../src/index.js'
 import {
   inboxAcceptedEvent,
   outboxAcceptedEvent,
+  outboxAbandonedEvent,
+  outboxAttemptFailedEvent,
+  outboxAttemptStartedEvent,
   outboxDeliveredEvent,
 } from '../../src/communication/session-events.js'
 import {
@@ -30,6 +33,7 @@ import {
   createCommunicationService,
   createRepository,
   limits,
+  loseFirstCommitAcknowledgement,
   messageCatalog,
   requestMessage,
   sessionIdentities,
@@ -55,30 +59,8 @@ function envelope(type = requestMessage.type) {
   })
 }
 
-function ambiguousCommitBackend(eventType: string): SessionBackend {
-  const inner = new MemorySessionBackend({ maxRecordBytes: 8192 })
-  let interrupt = true
-  return {
-    create: header => inner.create(header),
-    readPrefix: (sessionId, through) => inner.readPrefix(sessionId, through),
-    async openWriter(sessionId): Promise<SessionWriter> {
-      const writer = await inner.openWriter(sessionId)
-      return Object.freeze({
-        header: writer.header,
-        readCommitted: () => writer.readCommitted(),
-        async append(position: SessionLogPosition, event: StoredSessionEvent) {
-          const committed = await writer.append(position, event)
-          if (interrupt && event.type === eventType) {
-            interrupt = false
-            throw new Error('commit acknowledgement lost')
-          }
-          return committed
-        },
-        dispose: () => writer.dispose(),
-      })
-    },
-    dispose: () => inner.dispose(),
-  }
+function ambiguousCommitBackend(eventType: string) {
+  return loseFirstCommitAcknowledgement(new MemorySessionBackend({ maxRecordBytes: 8192 }), eventType)
 }
 
 describe('communication state validation', () => {
@@ -121,6 +103,23 @@ describe('communication state validation', () => {
     try {
       const handle = await repository.create()
       await handle.append(outboxAcceptedEvent, { envelope: envelope() })
+      expect(() => projectMailbox(handle.snapshot(), messageCatalog)).toThrowError(
+        expect.objectContaining({ code: 'MESSAGE_STATE_INVALID' }),
+      )
+    } finally {
+      await repository.dispose()
+    }
+  })
+
+  it('rejects an Outbox abandonment that skips an open attempt result', async () => {
+    const repository = createRepository(undefined, sessionIdentities([firstSession]))
+    try {
+      const handle = await repository.create()
+      const accepted = envelope()
+      await handle.append(outboxAcceptedEvent, { envelope: accepted })
+      await handle.append(outboxAttemptStartedEvent, { messageId: accepted.messageId, attempt: 1 })
+      await handle.append(outboxAbandonedEvent, { messageId: accepted.messageId, reason: 'caller-requested' })
+
       expect(() => projectMailbox(handle.snapshot(), messageCatalog)).toThrowError(
         expect.objectContaining({ code: 'MESSAGE_STATE_INVALID' }),
       )
@@ -389,6 +388,77 @@ describe('communication state validation', () => {
       await runtime.service.dispose()
       await runtime.transport.dispose()
       await runtime.directory.dispose()
+      await repository.dispose()
+    }
+  })
+
+  it.each([
+    {
+      label: 'attempt failure',
+      eventType: outboxAttemptFailedEvent.type,
+      recoveredStatus: 'pending',
+    },
+    {
+      label: 'attempt exhaustion abandonment',
+      eventType: outboxAbandonedEvent.type,
+      recoveredStatus: 'abandoned',
+    },
+  ])('recovers an ambiguous final $label without reusing its attempt', async ({ eventType, recoveredStatus }) => {
+    const repository = createRepository(ambiguousCommitBackend(eventType))
+    const firstRuntime = createCommunicationService({ maxDeliveryAttempts: 1 })
+    const senderHandle = await repository.create()
+    const senderId = senderHandle.header.sessionId
+    const offline = formatSessionAddress(parseSessionId('00000000-0000-4000-8000-000000000160'))
+    const declaration = await firstRuntime.directory.declare(offline, 'active')
+    try {
+      const sender = await firstRuntime.service.attach(senderHandle, { catalog: messageCatalog, policy: firstRuntime.policy })
+      const outgoing = await sender.send(requestMessage, {
+        kind: 'root', recipient: offline, channelId: parseChannelId(channelIds[0]),
+      }, { text: `ambiguous ${eventType}` })
+
+      await expect(firstRuntime.service.createDispatcher(sender).dispatch()).rejects.toMatchObject({
+        code: 'MESSAGE_OUTBOX_STATUS_COMMIT_UNKNOWN',
+      })
+      expect(sender.status).toBe('faulted')
+
+      await firstRuntime.service.dispose()
+      await declaration.dispose()
+      await firstRuntime.transport.dispose()
+      await firstRuntime.directory.dispose()
+      await senderHandle.dispose()
+
+      const secondRuntime = createCommunicationService({ maxDeliveryAttempts: 1 })
+      try {
+        const reopenedHandle = await repository.open(senderId)
+        const reopened = await secondRuntime.service.attach(reopenedHandle, {
+          catalog: messageCatalog,
+          policy: secondRuntime.policy,
+        })
+        expect(reopened.snapshot().outbox[0]).toMatchObject({
+          messageId: outgoing.messageId,
+          status: recoveredStatus,
+          attemptCount: 1,
+        })
+        expect(await secondRuntime.service.createDispatcher(reopened).dispatch()).toMatchObject({
+          startedAttempts: 0,
+          abandoned: recoveredStatus === 'pending' ? 1 : 0,
+          remainingPending: 0,
+        })
+        expect(reopened.snapshot().outbox[0]).toMatchObject({ status: 'abandoned', attemptCount: 1 })
+        expect(reopenedHandle.snapshot().history.at(-1)?.events
+          .filter(event => event.stored.type === outboxAttemptStartedEvent.type)).toHaveLength(1)
+        await secondRuntime.service.dispose()
+        await reopenedHandle.dispose()
+      } finally {
+        await secondRuntime.service.dispose()
+        await secondRuntime.transport.dispose()
+        await secondRuntime.directory.dispose()
+      }
+    } finally {
+      await firstRuntime.service.dispose()
+      await declaration.dispose()
+      await firstRuntime.transport.dispose()
+      await firstRuntime.directory.dispose()
       await repository.dispose()
     }
   })

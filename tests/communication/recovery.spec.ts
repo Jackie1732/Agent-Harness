@@ -11,13 +11,19 @@ import {
   parseSessionId,
   projectMailbox,
 } from '../../src/index.js'
-import { outboxAttemptStartedEvent } from '../../src/communication/session-events.js'
+import {
+  inboxAcceptedEvent,
+  outboxAttemptFailedEvent,
+  outboxAttemptStartedEvent,
+  outboxAbandonedEvent,
+} from '../../src/communication/session-events.js'
 import {
   channelIds,
   communicationIdentities,
   createCommunicationService,
   createRepository,
   limits,
+  loseFirstCommitAcknowledgement,
   messageCatalog,
   requestMessage,
   sessionIdentities,
@@ -54,6 +60,55 @@ describe('communication recovery and Session lineage', () => {
       await secondRuntime.service.dispose()
       await secondRuntime.transport.dispose()
       await secondRuntime.directory.dispose()
+      await repository.dispose()
+    }
+  })
+
+  it('settles a recovered open attempt before explicit abandonment', async () => {
+    const repository = createRepository()
+    const firstRuntime = createCommunicationService()
+    const senderHandle = await repository.create()
+    const recipientHandle = await repository.create()
+    const senderId = senderHandle.header.sessionId
+    try {
+      const sender = await firstRuntime.service.attach(senderHandle, { catalog: messageCatalog, policy: firstRuntime.policy })
+      const outgoing = await sender.send(requestMessage, {
+        kind: 'root', recipient: recipientHandle.header.address, channelId: parseChannelId(channelIds[0]),
+      }, { text: 'recover before abandon' })
+      await senderHandle.append(outboxAttemptStartedEvent, { messageId: outgoing.messageId, attempt: 1 })
+      await firstRuntime.service.dispose()
+      await firstRuntime.transport.dispose()
+      await firstRuntime.directory.dispose()
+      await senderHandle.dispose()
+      await recipientHandle.dispose()
+
+      const secondRuntime = createCommunicationService()
+      try {
+        const reopenedHandle = await repository.open(senderId)
+        const reopened = await secondRuntime.service.attach(reopenedHandle, {
+          catalog: messageCatalog,
+          policy: secondRuntime.policy,
+        })
+        expect(await reopened.abandonOutgoing(outgoing.messageId, 'caller-requested')).toMatchObject({
+          status: 'abandoned',
+          attemptCount: 1,
+          lastFailure: { attempt: 1, code: 'transport-outcome-unknown' },
+        })
+        expect(reopenedHandle.snapshot().history.at(-1)?.events.slice(-2).map(event => event.stored.type)).toEqual([
+          outboxAttemptFailedEvent.type,
+          outboxAbandonedEvent.type,
+        ])
+        await secondRuntime.service.dispose()
+        await reopenedHandle.dispose()
+      } finally {
+        await secondRuntime.service.dispose()
+        await secondRuntime.transport.dispose()
+        await secondRuntime.directory.dispose()
+      }
+    } finally {
+      await firstRuntime.service.dispose()
+      await firstRuntime.transport.dispose()
+      await firstRuntime.directory.dispose()
       await repository.dispose()
     }
   })
@@ -131,6 +186,78 @@ describe('communication recovery and Session lineage', () => {
         await service.dispose()
         await transport.dispose()
         await directory.dispose()
+        await secondRepository.dispose()
+      }
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
+  it('recovers an ambiguous File Inbox commit and deduplicates the retry in a fresh object graph', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'atomic-communication-ambiguous-inbox-'))
+    const senderId = parseSessionId(sessionIds[0])
+    const recipientId = parseSessionId(sessionIds[1])
+    try {
+      const firstRepository = createRepository(
+        loseFirstCommitAcknowledgement(
+          new FileSessionBackend({ root, maxRecordBytes: 8192 }),
+          inboxAcceptedEvent.type,
+        ),
+        sessionIdentities([senderId, recipientId]),
+      )
+      const firstRuntime = createCommunicationService()
+      const senderHandle = await firstRepository.create()
+      const recipientHandle = await firstRepository.create()
+      try {
+        const sender = await firstRuntime.service.attach(senderHandle, { catalog: messageCatalog, policy: firstRuntime.policy })
+        const recipient = await firstRuntime.service.attach(recipientHandle, { catalog: messageCatalog, policy: firstRuntime.policy })
+        const outgoing = await sender.send(requestMessage, {
+          kind: 'root', recipient: recipient.address, channelId: parseChannelId(channelIds[0]),
+        }, { text: 'ambiguous inbox commit' })
+
+        expect(await firstRuntime.service.createDispatcher(sender).dispatch()).toMatchObject({
+          retryable: 1,
+          remainingPending: 1,
+        })
+        expect(recipient.status).toBe('faulted')
+        expect(sender.snapshot().outbox[0]).toMatchObject({
+          messageId: outgoing.messageId,
+          lastFailure: { attempt: 1, code: 'receiver-outcome-unknown' },
+        })
+      } finally {
+        await firstRuntime.service.dispose()
+        await firstRuntime.transport.dispose()
+        await firstRuntime.directory.dispose()
+        await senderHandle.dispose()
+        await recipientHandle.dispose()
+        await firstRepository.dispose()
+      }
+
+      const secondRepository = createRepository(new FileSessionBackend({ root, maxRecordBytes: 8192 }))
+      const secondRuntime = createCommunicationService()
+      try {
+        const reopenedSenderHandle = await secondRepository.open(senderId)
+        const reopenedRecipientHandle = await secondRepository.open(recipientId)
+        const sender = await secondRuntime.service.attach(reopenedSenderHandle, {
+          catalog: messageCatalog,
+          policy: secondRuntime.policy,
+        })
+        const recipient = await secondRuntime.service.attach(reopenedRecipientHandle, {
+          catalog: messageCatalog,
+          policy: secondRuntime.policy,
+        })
+
+        expect(recipient.snapshot().inbox).toHaveLength(1)
+        expect(await secondRuntime.service.createDispatcher(sender).dispatch()).toMatchObject({ delivered: 1 })
+        expect(sender.snapshot().outbox[0]).toMatchObject({ status: 'delivered', attemptCount: 2 })
+        expect(recipient.snapshot().inbox).toHaveLength(1)
+        await secondRuntime.service.dispose()
+        await reopenedSenderHandle.dispose()
+        await reopenedRecipientHandle.dispose()
+      } finally {
+        await secondRuntime.service.dispose()
+        await secondRuntime.transport.dispose()
+        await secondRuntime.directory.dispose()
         await secondRepository.dispose()
       }
     } finally {
