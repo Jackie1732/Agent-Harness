@@ -1,10 +1,10 @@
+import { snapshotJson } from '../foundation/json.js'
 import type { JsonValue } from '../foundation/json.js'
 import type { LocalStoredSession } from './backend.js'
 import type { DurableEventCatalog, DurableEventDefinition } from './event-catalog.js'
 import { sessionEndedEvent } from './event-catalog.js'
 import { SessionError } from './errors.js'
 import { formatSessionEventId, sessionLogPosition } from './ids.js'
-import { snapshotJson } from './json.js'
 import type {
   CommittedSessionEvent,
   SessionEventRecord,

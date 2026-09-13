@@ -173,3 +173,23 @@ export function assertJsonValue(value: unknown, label = 'value'): asserts value 
     throw new TypeError(`${label}${problem.path.slice(1)}: ${problem.reason}`)
   }
 }
+
+function freezeJson(value: JsonValue): JsonValue {
+  if (value === null || typeof value !== 'object') return value
+  for (const child of Object.values(value)) freezeJson(child)
+  return Object.freeze(value)
+}
+
+/** Validate, serialize, copy, and deeply freeze one JSON value. */
+export function snapshotJson(value: unknown, label = 'value'): JsonValue {
+  assertJsonValue(value, label)
+  const encoded = JSON.stringify(value)
+  const parsed: unknown = JSON.parse(encoded)
+  assertJsonValue(parsed, label)
+  return freezeJson(parsed)
+}
+
+/** Deeply freeze a newly decoded JSON value without serializing it again. */
+export function freezeDecodedJson(value: JsonValue): JsonValue {
+  return freezeJson(value)
+}

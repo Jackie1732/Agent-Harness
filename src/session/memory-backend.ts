@@ -4,7 +4,7 @@ import { SessionError } from './errors.js'
 import { encodeFrame } from './frame.js'
 import { parseSessionId, sessionLogPosition } from './ids.js'
 import type { SessionId, SessionLogPosition } from './ids.js'
-import { SerialGate } from './serial-gate.js'
+import { SerialGate } from '../foundation/serial-gate.js'
 import { SESSION_HEADER_MAX_BYTES } from './types.js'
 import type { SessionHeader, StoredSessionEvent } from './types.js'
 

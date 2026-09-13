@@ -40,6 +40,7 @@ const projection: SessionProjection<number> = {
 
 declare const handle: SessionHandle
 void handle.append(definition, {})
+void handle.supportsEventDefinition(definition)
 void handle.project(projection)
 void formatSessionAddress(parseSessionId('00000000-0000-4000-8000-000000000001'))
 void repository

@@ -29,6 +29,16 @@ for (const internalName of [
   'loadSessionHistory',
   'scanFileSessionEvents',
   'createFileSessionBackendForTest',
+  'SessionMailboxImpl',
+  'MailboxJournal',
+  'OutboxAttemptCoordinator',
+  'registerDirectoryReceiver',
+  'resolveDirectoryReceiver',
+  'outboxAcceptedEvent',
+  'freezeDecodedJson',
+  'snapshotJson',
+  'isCanonicalUuid',
+  'isCanonicalIsoTimestamp',
 ]) {
   assert.equal(internalName in harness, false, `${internalName} must stay internal`)
 }
@@ -132,5 +142,66 @@ try {
 } finally {
   await rm(sessionRoot, { recursive: true, force: true })
 }
+
+// The Step 5 communication layer must complete a persisted request/reply round trip.
+const communicationCatalog = harness.createDurableEventCatalog(harness.communicationSessionEventDefinitions)
+const requestMessage = harness.createMessageDefinition({
+  type: 'smoke/request',
+  payloadVersion: 1,
+  decode: value => value,
+})
+const replyMessage = harness.createMessageDefinition({
+  type: 'smoke/reply',
+  payloadVersion: 1,
+  decode: value => value,
+})
+const messageCatalog = harness.createMessageCatalog([requestMessage, replyMessage])
+const communicationRepository = new harness.SessionRepository({
+  backend: new harness.MemorySessionBackend({ maxRecordBytes: 8192 }),
+  catalog: communicationCatalog,
+  maxLineageDepth: 2,
+})
+const directory = harness.createSessionDirectory()
+const transport = harness.createInProcessMessageTransport(directory)
+const communication = new harness.CommunicationService({
+  directory,
+  transport,
+  limits: {
+    maxMessageBytes: 4096,
+    maxPendingOutbox: 4,
+    maxPendingInbox: 4,
+    maxDeliveryAttempts: 2,
+    maxAttemptsPerRun: 4,
+  },
+})
+const senderHandle = await communicationRepository.create()
+const recipientHandle = await communicationRepository.create()
+const senderMailbox = await communication.attach(senderHandle, {
+  catalog: messageCatalog,
+  policy: harness.allowAllCommunicationPolicy,
+})
+const recipientMailbox = await communication.attach(recipientHandle, {
+  catalog: messageCatalog,
+  policy: harness.allowAllCommunicationPolicy,
+})
+const channelId = harness.createChannelId()
+const request = await senderMailbox.send(
+  requestMessage,
+  { kind: 'root', recipient: recipientMailbox.address, channelId },
+  { text: 'question' },
+)
+assert.equal(senderMailbox.snapshot().outbox[0].status, 'pending')
+await communication.createDispatcher(senderMailbox).dispatch()
+const receivedRequest = recipientMailbox.snapshot().inbox[0]
+assert.equal(receivedRequest.messageId, request.messageId)
+const response = await recipientMailbox.reply(receivedRequest.messageId, replyMessage, { text: 'answer' })
+await recipientMailbox.markProcessed(receivedRequest.messageId)
+await communication.createDispatcher(recipientMailbox).dispatch()
+assert.equal(senderMailbox.snapshot().inbox[0].messageId, response.messageId)
+assert.equal(recipientMailbox.snapshot().inbox[0].status, 'processed')
+await communication.dispose()
+await transport.dispose()
+await directory.dispose()
+await communicationRepository.dispose()
 
 console.log('built-smoke: dist/index.js loaded with plain Node')

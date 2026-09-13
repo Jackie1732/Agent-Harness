@@ -1,6 +1,7 @@
 import { TextDecoder } from 'node:util'
-import { assertJsonValue } from '../foundation/json.js'
+import { assertJsonValue, freezeDecodedJson, snapshotJson } from '../foundation/json.js'
 import type { JsonObject, JsonValue } from '../foundation/json.js'
+import { isCanonicalIsoTimestamp } from '../foundation/protocol-scalars.js'
 import { SessionError } from './errors.js'
 import {
   formatSessionAddress,
@@ -11,7 +12,6 @@ import {
   sessionLogPosition,
   sessionSequence,
 } from './ids.js'
-import { freezeDecodedJson, snapshotJson } from './json.js'
 import { validateDurableEventType, validatePayloadVersion } from './event-catalog.js'
 import {
   SESSION_ENVELOPE_VERSION,
@@ -70,8 +70,7 @@ function requireNumber(value: JsonValue | undefined, label: string): number {
 
 function requireTimestamp(value: JsonValue | undefined, label: string): string {
   const timestamp = requireString(value, label)
-  const time = Date.parse(timestamp)
-  if (!Number.isFinite(time) || new Date(time).toISOString() !== timestamp) {
+  if (!isCanonicalIsoTimestamp(timestamp)) {
     throw invalidLog(`${label} must be a canonical ISO timestamp`)
   }
   return timestamp

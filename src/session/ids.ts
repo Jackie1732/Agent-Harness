@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto'
 import { brand } from '../foundation/brand.js'
 import type { Brand } from '../foundation/brand.js'
+import { isCanonicalUuid } from '../foundation/protocol-scalars.js'
 import { SessionError } from './errors.js'
 
 /** Stable identity of one durable Session. */
@@ -24,7 +25,6 @@ export interface SessionIdentitySource {
   nextSessionId(): SessionId
 }
 
-const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
 const SESSION_ADDRESS_PREFIX = 'ah-session:'
 const EVENT_ID_PREFIX = 'ah-event:'
 
@@ -38,7 +38,7 @@ function invalidIdentifier(label: string, value: unknown): SessionError {
 
 /** Parse and validate a canonical lower-case UUID Session identity. */
 export function parseSessionId(value: string): SessionId {
-  if (!UUID_PATTERN.test(value)) throw invalidIdentifier('session id', value)
+  if (!isCanonicalUuid(value)) throw invalidIdentifier('session id', value)
   return brand<string, 'SessionId'>(value)
 }
 

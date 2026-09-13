@@ -1,4 +1,6 @@
 import type { Clock } from '../foundation/clock.js'
+import { clockTimestamp } from '../foundation/clock.js'
+import { snapshotJson } from '../foundation/json.js'
 import type { JsonValue } from '../foundation/json.js'
 import type { EffectLease } from '../effect/types.js'
 import type { SessionWriter } from './backend.js'
@@ -7,7 +9,6 @@ import { sessionEndedEvent } from './event-catalog.js'
 import { SessionError } from './errors.js'
 import { extendLocalSegment, isSessionEndedRecord } from './history.js'
 import { formatSessionEventId, sessionSequence } from './ids.js'
-import { snapshotJson } from './json.js'
 import { projectSession } from './projection.js'
 import { SESSION_ENVELOPE_VERSION } from './types.js'
 import type {
@@ -28,6 +29,8 @@ export type SessionHandleStatus = 'open' | 'faulted' | 'disposed'
 export interface SessionHandle {
   readonly header: SessionHeader
   readonly status: SessionHandleStatus
+  /** Check exact Catalog ownership without exposing the Catalog itself. */
+  supportsEventDefinition(definition: DurableEventDefinition): boolean
   /** Validate, serialize, and append one Catalog-owned durable event. */
   append<TPayload extends JsonValue>(definition: DurableEventDefinition<TPayload>, payload: JsonValue): Promise<CommittedSessionEvent<TPayload>>
   /** Append the built-in terminal event; concurrent calls share its result. */
@@ -47,13 +50,6 @@ export interface SessionHandleOwner {
 }
 
 type AcceptanceStatus = 'accepting' | 'ending' | 'ended'
-
-/** Convert one injected wall-clock reading to canonical durable text. */
-export function sessionTimestamp(clock: Clock): string {
-  const value = clock.now()
-  if (!Number.isFinite(value)) throw new TypeError('Clock must return a finite epoch millisecond value')
-  return new Date(value).toISOString()
-}
 
 /** Build the frozen public view from a root-to-target history. */
 export function freezeSessionSnapshot(history: readonly SessionHistorySegment[]): SessionSnapshot {
@@ -121,6 +117,10 @@ export class SessionHandleImpl implements SessionHandle {
 
   get status(): SessionHandleStatus {
     return this.#status
+  }
+
+  supportsEventDefinition(definition: DurableEventDefinition): boolean {
+    return this.#catalog.contains(definition)
   }
 
   append<TPayload extends JsonValue>(
@@ -228,7 +228,7 @@ export class SessionHandleImpl implements SessionHandle {
       sessionId: this.header.sessionId,
       eventId: formatSessionEventId(this.header.sessionId, sequence),
       sequence,
-      recordedAt: sessionTimestamp(this.#clock),
+      recordedAt: clockTimestamp(this.#clock),
       type: definition.type,
       payloadVersion: definition.payloadVersion,
       ...(definition.ignorable ? { ignorable: true as const } : {}),

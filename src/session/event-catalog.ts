@@ -1,6 +1,6 @@
+import { snapshotJson } from '../foundation/json.js'
 import type { JsonValue } from '../foundation/json.js'
 import { SessionError } from './errors.js'
-import { snapshotJson } from './json.js'
 import type { SessionEndedPayload } from './types.js'
 
 /** Runtime definition of one durable event payload version. */

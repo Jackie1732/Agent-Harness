@@ -1,0 +1,278 @@
+import { describe, expect, it } from 'vitest'
+import {
+  CommunicationService,
+  MemorySessionBackend,
+  SessionRepository,
+  createDurableEventCatalog,
+  createInProcessMessageTransport,
+  createMessageCatalog,
+  createSessionDirectory,
+  decodeMessageEnvelope,
+  formatSessionAddress,
+  messageEnvelopeDigest,
+  parseChannelId,
+  parseMessageId,
+  parseSessionId,
+  projectMailbox,
+} from '../../src/index.js'
+import type { SessionBackend, SessionLogPosition, SessionWriter, StoredSessionEvent } from '../../src/index.js'
+import {
+  inboxAcceptedEvent,
+  outboxAcceptedEvent,
+  outboxDeliveredEvent,
+} from '../../src/communication/session-events.js'
+import {
+  channelIds,
+  createCommunicationService,
+  createRepository,
+  limits,
+  messageCatalog,
+  requestMessage,
+  sessionIdentities,
+} from './fixtures.js'
+
+const firstSession = parseSessionId('00000000-0000-4000-8000-000000000151')
+const secondSession = parseSessionId('00000000-0000-4000-8000-000000000152')
+const messageId = parseMessageId('10000000-0000-4000-8000-000000000151')
+
+function envelope(type = requestMessage.type) {
+  return decodeMessageEnvelope({
+    envelopeVersion: 1,
+    messageId,
+    sender: formatSessionAddress(firstSession),
+    recipient: formatSessionAddress(secondSession),
+    channelId: parseChannelId(channelIds[0]),
+    channelSequence: 1,
+    correlationId: messageId,
+    createdAt: '2026-09-13T00:00:00.000Z',
+    type,
+    payloadVersion: 1,
+    payload: { text: 'state' },
+  })
+}
+
+function ambiguousCommitBackend(eventType: string): SessionBackend {
+  const inner = new MemorySessionBackend({ maxRecordBytes: 8192 })
+  let interrupt = true
+  return {
+    create: header => inner.create(header),
+    readPrefix: (sessionId, through) => inner.readPrefix(sessionId, through),
+    async openWriter(sessionId): Promise<SessionWriter> {
+      const writer = await inner.openWriter(sessionId)
+      return Object.freeze({
+        header: writer.header,
+        readCommitted: () => writer.readCommitted(),
+        async append(position: SessionLogPosition, event: StoredSessionEvent) {
+          const committed = await writer.append(position, event)
+          if (interrupt && event.type === eventType) {
+            interrupt = false
+            throw new Error('commit acknowledgement lost')
+          }
+          return committed
+        },
+        dispose: () => writer.dispose(),
+      })
+    },
+    dispose: () => inner.dispose(),
+  }
+}
+
+describe('communication state validation', () => {
+  it('preserves an Inbox record when its Message Definition is unavailable', async () => {
+    const repository = createRepository(undefined, sessionIdentities([secondSession]))
+    try {
+      const handle = await repository.create()
+      const unknown = envelope('test/uninstalled')
+      await handle.append(inboxAcceptedEvent, { envelope: unknown, digest: messageEnvelopeDigest(unknown) })
+
+      const snapshot = projectMailbox(handle.snapshot(), createMessageCatalog())
+      expect(snapshot.inbox[0]).toMatchObject({ status: 'pending', supported: false })
+      expect(snapshot.unsupportedInbox).toEqual([messageId])
+    } finally {
+      await repository.dispose()
+    }
+  })
+
+  it('rejects a durable Outbox whose sender does not own the Session', async () => {
+    const repository = createRepository(undefined, sessionIdentities([secondSession]))
+    try {
+      const handle = await repository.create()
+      await handle.append(outboxAcceptedEvent, { envelope: envelope() })
+      expect(() => projectMailbox(handle.snapshot(), messageCatalog)).toThrowError(
+        expect.objectContaining({ code: 'MESSAGE_STATE_INVALID' }),
+      )
+    } finally {
+      await repository.dispose()
+    }
+  })
+
+  it('fails attachment before writes when the Session Catalog lacks communication events', async () => {
+    const repository = new SessionRepository({
+      backend: new MemorySessionBackend({ maxRecordBytes: 8192 }),
+      catalog: createDurableEventCatalog(),
+      maxLineageDepth: 1,
+      identitySource: sessionIdentities(),
+    })
+    const directory = createSessionDirectory()
+    const transport = createInProcessMessageTransport(directory)
+    const service = new CommunicationService({ directory, transport, limits })
+    try {
+      const handle = await repository.create()
+      await expect(service.attach(handle, { catalog: messageCatalog, policy: {
+        canSend: () => ({ kind: 'allow' }), canReceive: () => ({ kind: 'allow' }),
+      } })).rejects.toMatchObject({ code: 'MESSAGE_SESSION_CATALOG_INCOMPATIBLE' })
+    } finally {
+      await service.dispose()
+      await transport.dispose()
+      await directory.dispose()
+      await repository.dispose()
+    }
+  })
+
+  it('distinguishes unknown, known-offline, online, and ended addresses', async () => {
+    const repository = createRepository()
+    const runtime = createCommunicationService()
+    try {
+      const handle = await repository.create()
+      expect(runtime.directory.status(handle.header.address).kind).toBe('unknown')
+      const declaration = await runtime.directory.declare(handle.header.address, 'active')
+      expect(runtime.directory.status(handle.header.address).kind).toBe('known-offline')
+      const mailbox = await runtime.service.attach(handle, { catalog: messageCatalog, policy: runtime.policy })
+      expect(runtime.directory.status(handle.header.address).kind).toBe('online')
+      await mailbox.endSession()
+      expect(runtime.directory.status(handle.header.address).kind).toBe('ended')
+      await declaration.dispose()
+    } finally {
+      await runtime.service.dispose()
+      await runtime.transport.dispose()
+      await runtime.directory.dispose()
+      await repository.dispose()
+    }
+  })
+
+  it('turns a retry budget exhaustion into local abandonment', async () => {
+    const repository = createRepository()
+    const runtime = createCommunicationService({ maxDeliveryAttempts: 2, maxAttemptsPerRun: 1 })
+    try {
+      const handle = await repository.create()
+      const mailbox = await runtime.service.attach(handle, { catalog: messageCatalog, policy: runtime.policy })
+      const offline = formatSessionAddress(parseSessionId('00000000-0000-4000-8000-000000000159'))
+      const declaration = await runtime.directory.declare(offline, 'active')
+      const outgoing = await mailbox.send(requestMessage, {
+        kind: 'root', recipient: offline, channelId: parseChannelId(channelIds[0]),
+      }, { text: 'bounded' })
+      const dispatcher = runtime.service.createDispatcher(mailbox)
+
+      expect(await dispatcher.dispatch()).toMatchObject({ retryable: 1, remainingPending: 1 })
+      expect(await dispatcher.dispatch()).toMatchObject({ abandoned: 1, remainingPending: 0 })
+      expect(mailbox.snapshot().outbox[0]).toMatchObject({
+        messageId: outgoing.messageId, status: 'abandoned', abandonReason: 'attempts-exhausted', attemptCount: 2,
+      })
+      await declaration.dispose()
+    } finally {
+      await runtime.service.dispose()
+      await runtime.transport.dispose()
+      await runtime.directory.dispose()
+      await repository.dispose()
+    }
+  })
+
+  it('rejects Transport calls that have no active persisted sender attempt', async () => {
+    const directory = createSessionDirectory()
+    const transport = createInProcessMessageTransport(directory)
+    try {
+      await expect(transport.deliver(envelope(), { signal: new AbortController().signal })).rejects.toMatchObject({
+        code: 'MESSAGE_TRANSPORT_SOURCE_INVALID',
+      })
+    } finally {
+      await transport.dispose()
+      await directory.dispose()
+    }
+  })
+
+  it('detects pending communication after a caller bypasses Mailbox endSession', async () => {
+    const repository = createRepository()
+    const firstRuntime = createCommunicationService()
+    const handle = await repository.create()
+    const mailbox = await firstRuntime.service.attach(handle, { catalog: messageCatalog, policy: firstRuntime.policy })
+    await mailbox.send(requestMessage, {
+      kind: 'root',
+      recipient: formatSessionAddress(parseSessionId('00000000-0000-4000-8000-000000000158')),
+      channelId: parseChannelId(channelIds[0]),
+    }, { text: 'stranded' })
+    await handle.end('bypassed mailbox')
+    await firstRuntime.service.dispose()
+    await firstRuntime.transport.dispose()
+    await firstRuntime.directory.dispose()
+
+    const secondRuntime = createCommunicationService()
+    try {
+      await expect(secondRuntime.service.attach(handle, {
+        catalog: messageCatalog,
+        policy: secondRuntime.policy,
+      })).rejects.toMatchObject({ code: 'MESSAGE_STATE_INVALID' })
+    } finally {
+      await secondRuntime.service.dispose()
+      await secondRuntime.transport.dispose()
+      await secondRuntime.directory.dispose()
+      await repository.dispose()
+    }
+  })
+
+  it('faults on an ambiguous Outbox commit and lets a fresh Handle recover the fact', async () => {
+    const repository = createRepository(ambiguousCommitBackend(outboxAcceptedEvent.type))
+    const runtime = createCommunicationService()
+    try {
+      const handle = await repository.create()
+      const mailbox = await runtime.service.attach(handle, { catalog: messageCatalog, policy: runtime.policy })
+      await expect(mailbox.send(requestMessage, {
+        kind: 'root',
+        recipient: formatSessionAddress(parseSessionId('00000000-0000-4000-8000-000000000157')),
+        channelId: parseChannelId(channelIds[0]),
+      }, { text: 'uncertain' })).rejects.toMatchObject({ code: 'MESSAGE_OUTBOX_COMMIT_UNKNOWN' })
+      expect(mailbox.status).toBe('faulted')
+
+      await runtime.service.dispose()
+      await handle.dispose()
+      const reopened = await repository.open(handle.header.sessionId)
+      expect(projectMailbox(reopened.snapshot(), messageCatalog).outbox).toHaveLength(1)
+    } finally {
+      await runtime.service.dispose()
+      await runtime.transport.dispose()
+      await runtime.directory.dispose()
+      await repository.dispose()
+    }
+  })
+
+  it('recovers a delivered terminal state after its sender acknowledgement is lost', async () => {
+    const repository = createRepository(ambiguousCommitBackend(outboxDeliveredEvent.type))
+    const runtime = createCommunicationService()
+    const senderHandle = await repository.create()
+    const recipientHandle = await repository.create()
+    const senderId = senderHandle.header.sessionId
+    try {
+      const sender = await runtime.service.attach(senderHandle, { catalog: messageCatalog, policy: runtime.policy })
+      const recipient = await runtime.service.attach(recipientHandle, { catalog: messageCatalog, policy: runtime.policy })
+      await sender.send(requestMessage, {
+        kind: 'root', recipient: recipient.address, channelId: parseChannelId(channelIds[0]),
+      }, { text: 'delivered despite lost write acknowledgement' })
+
+      await expect(runtime.service.createDispatcher(sender).dispatch()).rejects.toMatchObject({
+        code: 'MESSAGE_OUTBOX_STATUS_COMMIT_UNKNOWN',
+      })
+      expect(sender.status).toBe('faulted')
+      expect(recipient.snapshot().inbox).toHaveLength(1)
+
+      await runtime.service.dispose()
+      await senderHandle.dispose()
+      await recipientHandle.dispose()
+      const reopened = await repository.open(senderId)
+      expect(projectMailbox(reopened.snapshot(), messageCatalog).outbox[0]?.status).toBe('delivered')
+    } finally {
+      await runtime.service.dispose()
+      await runtime.transport.dispose()
+      await runtime.directory.dispose()
+      await repository.dispose()
+    }
+  })
+})

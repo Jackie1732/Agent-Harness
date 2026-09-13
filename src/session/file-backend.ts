@@ -18,7 +18,7 @@ import type { PreparedFileRoot } from './file-store.js'
 import { encodeFrame } from './frame.js'
 import { sessionLogPosition } from './ids.js'
 import type { SessionId, SessionLogPosition } from './ids.js'
-import { SerialGate } from './serial-gate.js'
+import { SerialGate } from '../foundation/serial-gate.js'
 import type { SessionHeader, StoredSessionEvent } from './types.js'
 
 /** Explicit configuration of a local File Session Backend. */

@@ -1,5 +1,5 @@
 import type { Clock } from '../foundation/clock.js'
-import { systemClock } from '../foundation/clock.js'
+import { clockTimestamp, systemClock } from '../foundation/clock.js'
 import { EffectOwner } from '../effect/owner.js'
 import type { EffectLease } from '../effect/types.js'
 import type { LocalStoredSession, SessionBackend, SessionWriter } from './backend.js'
@@ -16,7 +16,6 @@ import { loadSessionHistory } from './lineage.js'
 import {
   freezeSessionSnapshot,
   SessionHandleImpl,
-  sessionTimestamp,
 } from './session-handle.js'
 import type { SessionHandle, SessionHandleOwner } from './session-handle.js'
 import { SESSION_FORMAT_VERSION } from './types.js'
@@ -69,7 +68,7 @@ export class SessionRepository implements SessionHandleOwner {
       formatVersion: SESSION_FORMAT_VERSION,
       sessionId,
       address: formatSessionAddress(sessionId),
-      createdAt: sessionTimestamp(this.#clock),
+      createdAt: clockTimestamp(this.#clock),
     })
     await this.#backend.create(header)
     return await this.#openHeader(header)
@@ -126,7 +125,7 @@ export class SessionRepository implements SessionHandleOwner {
       formatVersion: SESSION_FORMAT_VERSION,
       sessionId,
       address: formatSessionAddress(sessionId),
-      createdAt: sessionTimestamp(this.#clock),
+      createdAt: clockTimestamp(this.#clock),
       parent: Object.freeze({ sessionId: source, through: sourceTarget.through }),
     })
     await this.#backend.create(header)

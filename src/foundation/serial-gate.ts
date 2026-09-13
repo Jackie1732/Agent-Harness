@@ -1,4 +1,4 @@
-/** FIFO critical section used to publish one committed storage boundary at a time. */
+/** FIFO critical section used to publish one state transition at a time. */
 export class SerialGate {
   #tail: Promise<void> = Promise.resolve()
 
@@ -10,5 +10,10 @@ export class SerialGate {
       () => undefined,
     )
     return result
+  }
+
+  /** Wait until every task accepted before this call has settled. */
+  drain(): Promise<void> {
+    return this.#tail
   }
 }
