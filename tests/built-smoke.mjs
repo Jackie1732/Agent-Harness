@@ -12,7 +12,17 @@ assert.equal('detectCycles' in harness, false)
 assert.equal('capabilityKeyName' in harness, false)
 assert.equal('CapabilityUnsatisfiedError' in harness, false)
 assert.equal('assertQuiescentStop' in harness, false)
-assert.equal('ScopeTree' in harness, false)
+for (const internalName of [
+  'ScopeTree',
+  'RegistrationStore',
+  'TaskTracker',
+  'collectSubtree',
+  'emitEvent',
+  'invokeMiddleware',
+  'isWithin',
+]) {
+  assert.equal(internalName in harness, false, `${internalName} must stay internal`)
+}
 assert.equal('eventPayload' in harness, false)
 assert.equal('middlewareTypes' in harness, false)
 

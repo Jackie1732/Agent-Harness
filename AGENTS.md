@@ -52,6 +52,8 @@ This repair is valid only when the old next-stage tip is an ancestor of `main`. 
 
 - Preserve the staged development order in the active Step note.
 - Add only abstractions required by the current Step. Record later ideas as notes instead of placeholder APIs.
+- Keep each source module centered on one cohesive responsibility. Split independently evolving lifecycle, dispatch, storage, and protocol logic into owners with explicit state or invariants; do not hide the same complexity behind pass-through wrappers or accumulate unrelated behavior in one file.
+- Before adding a layer, identify the state, policy, or invariant it owns. During review, inspect the largest changed source modules and require a concrete reason for any unrelated responsibilities that remain together.
 - Keep public types, runtime behavior, tests, and documentation consistent in the same contribution.
 - Keep generated output, dependencies, credentials, and runtime data out of commits.
 
