@@ -13,9 +13,10 @@ export class InvocationControl {
   get decision(): ModelOutcome | undefined { return this.#decision }
 
   requestCancel(): void {
-    if (this.#decision !== undefined) return
+    // A claimed result is immutable, but its transport can still be awaiting EOF.
+    // Cancellation must reach that I/O even after completion won the outcome race.
     this.#desired = 'cancel'
-    this.#decision = 'cancelled'
+    this.#decision ??= 'cancelled'
     this.#abort.abort()
   }
 

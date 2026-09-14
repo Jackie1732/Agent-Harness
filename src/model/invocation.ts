@@ -75,6 +75,10 @@ export async function executeModelInvocation(
     const code = providerFailureCode(reason)
     if (reason instanceof ModelError && (journalFailures.has(code) || prepared === undefined)) {
       fatal = reason
+    } else if (reason instanceof ModelError && code === 'MODEL_CALL_CANCELLED' && control.isCancelled()) {
+      // Expected cancellation of an in-flight read is not malformed trailing data.
+      // A previously claimed completion survives; a genuine protocol error does not.
+      control.claim('cancelled')
     } else {
       failure = normalizeFailure(reason, control.current)
       if (reason instanceof ModelError && assemblyFailures.has(code)) boundaryFailure = reason

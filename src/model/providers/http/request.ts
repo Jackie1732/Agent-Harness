@@ -69,7 +69,14 @@ export class ModelHttpRequest {
         resolve(value)
       })
       this.#signal = signal
-      this.#cancel = () => { this.#response?.destroy(); request.destroy(); reject(new ModelError('MODEL_CALL_CANCELLED', 'model HTTP request cancelled')) }
+      this.#cancel = () => {
+        // Preserve the cancellation classification through the response iterator too.
+        // Destroying without a reason turns an intentional Abort into a protocol error.
+        const cancellation = new ModelError('MODEL_CALL_CANCELLED', 'model HTTP request cancelled')
+        this.#response?.destroy(cancellation)
+        request.destroy(cancellation)
+        reject(cancellation)
+      }
       signal.addEventListener('abort', this.#cancel, { once: true })
       // The request can be cancelled reentrantly by an injected HTTP implementation.
       if (signal.aborted) { this.#cancel(); reject(new ModelError('MODEL_CALL_CANCELLED', 'model HTTP request cancelled')) }
