@@ -8,7 +8,8 @@ import type { DurableEventCatalog, DurableEventDefinition } from './event-catalo
 import { sessionEndedEvent } from './event-catalog.js'
 import { SessionError } from './errors.js'
 import { extendLocalSegment, isSessionEndedRecord } from './history.js'
-import { formatSessionEventId, sessionSequence } from './ids.js'
+import { formatSessionEventId, sessionLogPosition, sessionSequence } from './ids.js'
+import type { SessionLogPosition } from './ids.js'
 import { projectSession } from './projection.js'
 import { SESSION_ENVELOPE_VERSION } from './types.js'
 import type {
@@ -29,6 +30,17 @@ export type SessionHandleStatus = 'open' | 'faulted' | 'disposed'
 export interface SessionHandle {
   readonly header: SessionHeader
   readonly status: SessionHandleStatus
+  /** Actual Backend event-envelope byte ceiling; immutable for this Handle. */
+  readonly maxRecordBytes: number
+  /**
+   * Append only if the queued operation still sees this local committed position.
+   * A precondition failure is definitely unwritten and leaves the Handle healthy.
+   */
+  appendIfPosition<TPayload extends JsonValue>(
+    expectedLocalPosition: SessionLogPosition,
+    definition: DurableEventDefinition<TPayload>,
+    payload: JsonValue,
+  ): Promise<CommittedSessionEvent<TPayload>>
   /** Check exact Catalog ownership without exposing the Catalog itself. */
   supportsEventDefinition(definition: DurableEventDefinition): boolean
   /** Validate, serialize, and append one Catalog-owned durable event. */
@@ -77,6 +89,7 @@ export class SessionHandleImpl implements SessionHandle {
   readonly #owner: SessionHandleOwner
   readonly #catalog: DurableEventCatalog
   readonly #clock: Clock
+  readonly #maxRecordBytes: number
   readonly #writerLease: EffectLease<SessionWriter>
   #view: SessionSnapshot
   #tail: Promise<void> = Promise.resolve()
@@ -92,7 +105,9 @@ export class SessionHandleImpl implements SessionHandle {
     clock: Clock,
     writerLease: EffectLease<SessionWriter>,
     history: readonly SessionHistorySegment[],
+    maxRecordBytes: number,
   ) {
+    this.#maxRecordBytes = maxRecordBytes
     this.#owner = owner
     this.#catalog = catalog
     this.#clock = clock
@@ -119,6 +134,10 @@ export class SessionHandleImpl implements SessionHandle {
     return this.#status
   }
 
+  get maxRecordBytes(): number {
+    return this.#maxRecordBytes
+  }
+
   supportsEventDefinition(definition: DurableEventDefinition): boolean {
     return this.#catalog.contains(definition)
   }
@@ -127,13 +146,27 @@ export class SessionHandleImpl implements SessionHandle {
     definition: DurableEventDefinition<TPayload>,
     payload: JsonValue,
   ): Promise<CommittedSessionEvent<TPayload>> {
+    this.#assertAppendable()
+    return this.#prepareAndQueue(definition, payload)
+  }
+
+  appendIfPosition<TPayload extends JsonValue>(
+    expectedLocalPosition: SessionLogPosition,
+    definition: DurableEventDefinition<TPayload>,
+    payload: JsonValue,
+  ): Promise<CommittedSessionEvent<TPayload>> {
+    this.#assertAppendable()
+    const expected = sessionLogPosition(expectedLocalPosition)
+    return this.#prepareAndQueue(definition, payload, expected)
+  }
+
+  #assertAppendable(): void {
     this.#assertWritable()
     if (this.#acceptance !== 'accepting') {
       throw new SessionError('SESSION_ENDED', `Session ${this.header.sessionId} is ending or ended`, {
         details: { sessionId: this.header.sessionId },
       })
     }
-    return this.#prepareAndQueue(definition, payload)
   }
 
   end(reason?: string): Promise<CommittedSessionEvent<SessionEndedPayload>> {
@@ -193,6 +226,7 @@ export class SessionHandleImpl implements SessionHandle {
   #prepareAndQueue<TPayload extends JsonValue>(
     definition: DurableEventDefinition<TPayload>,
     payload: JsonValue,
+    expectedPosition?: SessionLogPosition,
   ): Promise<CommittedSessionEvent<TPayload>> {
     if (!this.#catalog.contains(definition)) {
       throw new SessionError(
@@ -208,7 +242,7 @@ export class SessionHandleImpl implements SessionHandle {
     } catch (cause) {
       throw eventInvalid(definition, cause)
     }
-    const task = this.#tail.then(() => this.#commit(definition, decoded))
+    const task = this.#tail.then(() => this.#commit(definition, decoded, expectedPosition))
     this.#tail = task.then(
       () => undefined,
       () => undefined,
@@ -219,9 +253,15 @@ export class SessionHandleImpl implements SessionHandle {
   async #commit<TPayload extends JsonValue>(
     definition: DurableEventDefinition<TPayload>,
     payload: TPayload,
+    expectedPosition?: SessionLogPosition,
   ): Promise<CommittedSessionEvent<TPayload>> {
     if (this.#status !== 'open') this.#inactive()
     const position = this.#view.localPosition
+    if (expectedPosition !== undefined && expectedPosition !== position) {
+      throw new SessionError('SESSION_PRECONDITION_FAILED', 'Session local prefix changed before conditional append', {
+        details: { sessionId: this.header.sessionId, expectedPosition, actualPosition: position },
+      })
+    }
     const sequence = sessionSequence(position + 1)
     const stored: StoredSessionEvent = Object.freeze({
       envelopeVersion: SESSION_ENVELOPE_VERSION,

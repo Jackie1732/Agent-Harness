@@ -1,0 +1,29 @@
+{
+  "schemaVersion": 1,
+  "checkedAt": "2026-09-14",
+  "fixtureKind": "hand-authored official-protocol fixtures; NOT recordings of cloud calls",
+  "sourceFiles": [
+    "tests/model/fixtures.ts",
+    "tests/model/protocol.cases.ts",
+    "tests/model/transport-tools.cases.ts"
+  ],
+  "sources": [
+    {
+      "url": "https://api-docs.deepseek.com/api/create-chat-completion/",
+      "basis": "accepted Step 6 plan sections 17, 24, 33 and implementation protocol review; final repeated fetch timed out",
+      "implemented": "one choice, final content/usage, [DONE], explicit supported profile; no claim for other compatible endpoints"
+    },
+    {
+      "url": "https://api-docs.deepseek.com/guides/thinking_mode/",
+      "basis": "official guide checked during implementation",
+      "implemented": "explicit thinking disabled by default; enabled tool history carries persisted reasoning_content; unsupported controls rejected"
+    },
+    {
+      "url": "https://platform.claude.com/docs/en/build-with-claude/streaming",
+      "basis": "official page fetched during implementation and final review",
+      "implemented": "message/block/delta/message_stop, cumulative usage, input_json_delta, ping and stream errors; unsupported fallback/thinking rejected"
+    }
+  ],
+  "liveCloudSmoke": "not-run; no credentials or paid-call authorization used",
+  "testNetwork": "literal IPv4 loopback Node HTTP servers only; no cloud SDK or mock replacing the protocol adapters"
+}

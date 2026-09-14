@@ -26,6 +26,7 @@ function blockingCommitBackend(
   const inner = new MemorySessionBackend({ maxRecordBytes: 8192 })
   let block = true
   return {
+    get maxRecordBytes() { return inner.maxRecordBytes },
     create: header => inner.create(header),
     readPrefix: (sessionId, through) => inner.readPrefix(sessionId, through),
     async openWriter(sessionId): Promise<SessionWriter> {

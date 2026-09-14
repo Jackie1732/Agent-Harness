@@ -37,6 +37,7 @@ export class SessionRepository implements SessionHandleOwner {
   readonly #backend: SessionBackend
   readonly #catalog: DurableEventCatalog
   readonly #maxLineageDepth: number
+  readonly #maxRecordBytes: number
   readonly #clock: Clock
   readonly #identitySource: SessionIdentitySource
   readonly #owner = new EffectOwner('Session Repository')
@@ -49,6 +50,11 @@ export class SessionRepository implements SessionHandleOwner {
     if (!Number.isSafeInteger(options.maxLineageDepth) || options.maxLineageDepth < 0) {
       throw new RangeError('maxLineageDepth must be a non-negative safe integer')
     }
+    const maxRecordBytes = options.backend.maxRecordBytes
+    if (!Number.isSafeInteger(maxRecordBytes) || maxRecordBytes < 1) {
+      throw new RangeError('Session Backend must report its enforced positive maxRecordBytes')
+    }
+    this.#maxRecordBytes = maxRecordBytes
     this.#backend = options.backend
     this.#catalog = options.catalog
     this.#maxLineageDepth = options.maxLineageDepth
@@ -202,7 +208,7 @@ export class SessionRepository implements SessionHandleOwner {
     local: LocalStoredSession,
   ): Promise<SessionHandle> {
     const history = await this.#loadHistory(local)
-    const handle = new SessionHandleImpl(this, this.#catalog, this.#clock, writerLease, history)
+    const handle = new SessionHandleImpl(this, this.#catalog, this.#clock, writerLease, history, this.#maxRecordBytes)
     this.#handles.add(handle)
     return handle
   }

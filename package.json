@@ -25,7 +25,7 @@
     "typecheck": "tsc -p tsconfig.json",
     "test": "vitest run",
     "test:watch": "vitest",
-    "test:built": "node tests/built-smoke.mjs",
+    "test:built": "node tests/built-smoke.mjs && node tests/model-built-smoke.mjs",
     "check": "pnpm run lint && pnpm run typecheck && pnpm run test && pnpm run build && pnpm run test:built"
   },
   "devDependencies": {

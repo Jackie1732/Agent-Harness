@@ -115,6 +115,11 @@ export class FileSessionBackend implements SessionBackend {
     injectedAppendOperations.delete(options)
   }
 
+  /** The same byte ceiling used by the physical record encoder. */
+  get maxRecordBytes(): number {
+    return this.#maxRecordBytes
+  }
+
   async create(header: SessionHeader): Promise<void> {
     this.#assertActive()
     const root = await this.#getRoot()

@@ -65,6 +65,11 @@ export class MemorySessionBackend implements SessionBackend {
     this.#maxRecordBytes = options.maxRecordBytes
   }
 
+  /** The same byte ceiling used by the physical record encoder. */
+  get maxRecordBytes(): number {
+    return this.#maxRecordBytes
+  }
+
   async create(header: SessionHeader): Promise<void> {
     this.#assertActive()
     encodeFrame(encodeSessionHeader(header), SESSION_HEADER_MAX_BYTES)

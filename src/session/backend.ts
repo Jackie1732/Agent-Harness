@@ -25,6 +25,8 @@ export interface SessionWriter {
 
 /** Physical storage interface below Catalog and lineage semantics. */
 export interface SessionBackend {
+  /** Immutable event-envelope byte ceiling actually enforced by this Backend. */
+  readonly maxRecordBytes: number
   /** Atomically create one empty Session and its immutable Header. */
   create(header: SessionHeader): Promise<void>
   /** Acquire the sole process-local writer for one Session. */

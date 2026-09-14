@@ -1,5 +1,6 @@
 import { HarnessError } from '../foundation/error.js'
-import type { HarnessErrorOptions, JsonObject } from '../index.js'
+import type { HarnessErrorOptions } from '../foundation/error.js'
+import type { JsonObject } from '../foundation/json.js'
 
 /** Stable error codes reported by the Step 1 effect lifecycle kernel. */
 export type EffectErrorCode =

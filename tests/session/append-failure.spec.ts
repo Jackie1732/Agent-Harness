@@ -46,6 +46,7 @@ describe('Session append failures', () => {
   it('faults a Handle whose Backend reports an ambiguous append and keeps its old snapshot', async () => {
     class AmbiguousBackend implements SessionBackend {
       readonly inner = new MemorySessionBackend({ maxRecordBytes: 4096 })
+      get maxRecordBytes(): number { return this.inner.maxRecordBytes }
       writerLive = false
       unknown = false
 

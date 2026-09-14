@@ -51,6 +51,7 @@ describe('Session Repository and Handle', () => {
     const releaseAppend = createDeferred<void>()
     let firstAppend = true
     const backend: SessionBackend = {
+      get maxRecordBytes() { return inner.maxRecordBytes },
       create: header => inner.create(header),
       openWriter: async sessionId => {
         const writer = await inner.openWriter(sessionId)
@@ -110,6 +111,7 @@ describe('Session Repository and Handle', () => {
     let blockReads = false
     let backendDisposed = false
     const backend: SessionBackend = {
+      get maxRecordBytes() { return inner.maxRecordBytes },
       create: header => inner.create(header),
       openWriter: sessionId => inner.openWriter(sessionId),
       readPrefix: async (sessionId, through) => {
