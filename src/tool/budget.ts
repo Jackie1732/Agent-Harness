@@ -1,6 +1,6 @@
 import type { SessionHandle } from '../session/session-handle.js'
 import type { JsonValue } from '../foundation/json.js'
-import type { ToolInvocationLimits } from './contract.js'
+import type { ToolDefinition, ToolInvocationLimits } from './contract.js'
 import { ToolError } from './errors.js'
 import type { ToolInvocationId } from './ids.js'
 import { jsonBytes } from './validation.js'
@@ -20,13 +20,68 @@ export function assertRecordCapacity(handle: SessionHandle, type: string, payloa
   }
 }
 
-/** Reserve maximum canonical result plus every optional diagnostic/receipt/cleanup field. */
-export function assertSettlementCapacity(handle: SessionHandle, invocationId: ToolInvocationId, limits: ToolInvocationLimits): void {
-  const shell = { invocationId, outcome: 'interrupted', execution: 'execution-observed', emission: 'may-have-occurred',
-    result: null, cleanup: { status: 'unknown-after-process-loss', attempted: Number.MAX_SAFE_INTEGER, failed: Number.MAX_SAFE_INTEGER },
-    failure: { code: 'X'.repeat(64), phase: 'authorizing' }, receipt: 'X'.repeat(128),
-  }
-  if (envelopeOverhead(handle, 'tool/invocation-settled') + jsonBytes(shell) - 4 + limits.maxResultBytes > handle.maxRecordBytes) {
+/** Reserve a terminal failure record before the provider-specific result ceiling is known. */
+export function assertMinimalSettlementCapacity(handle: SessionHandle, invocationId: ToolInvocationId): void {
+  const failed = {
+    invocationId,
+    outcome: 'failed',
+    execution: 'not-started',
+    emission: 'none',
+    result: { kind: 'error', code: 'X'.repeat(64) },
+    cleanup: { status: 'complete', attempted: 0, failed: 0 },
+    failure: { code: 'X'.repeat(64), phase: 'preparing' },
+  } as const
+  const interrupted = {
+    invocationId,
+    outcome: 'interrupted',
+    execution: 'not-started',
+    emission: 'none',
+    result: { kind: 'none' },
+    cleanup: { status: 'unknown-after-process-loss', attempted: null, failed: null },
+  } as const
+  assertRecordCapacity(handle, 'tool/invocation-settled', failed)
+  assertRecordCapacity(handle, 'tool/invocation-settled', interrupted)
+}
+
+/** Reserve the largest legal runtime settlement after provider-specific limits are known. */
+export function assertSettlementCapacity(
+  handle: SessionHandle,
+  invocationId: ToolInvocationId,
+  limits: ToolInvocationLimits,
+  operationClass: ToolDefinition['operationClass'],
+): void {
+  const external = operationClass === 'external'
+  const evidence = external ? { emission: 'observed' as const, receipt: 'X'.repeat(128) }
+    : { emission: 'none' as const }
+  const resultShell = {
+    invocationId,
+    outcome: 'succeeded',
+    execution: 'execution-observed',
+    ...evidence,
+    result: null,
+    cleanup: { status: 'incomplete', attempted: 1, failed: 1 },
+  } as const
+  const failed = {
+    invocationId,
+    outcome: 'failed',
+    execution: 'execution-observed',
+    emission: external ? 'may-have-occurred' as const : 'none' as const,
+    result: { kind: 'error', code: 'X'.repeat(64) },
+    cleanup: { status: 'incomplete', attempted: 1, failed: 1 },
+    failure: { code: 'X'.repeat(64), phase: 'executing' },
+  } as const
+  const interrupted = {
+    invocationId,
+    outcome: 'interrupted',
+    execution: 'may-have-executed',
+    emission: external ? 'may-have-occurred' as const : 'none' as const,
+    result: { kind: 'none' },
+    cleanup: { status: 'unknown-after-process-loss', attempted: null, failed: null },
+  } as const
+  const available = handle.maxRecordBytes - envelopeOverhead(handle, 'tool/invocation-settled')
+  const resultOverhead = jsonBytes(resultShell) - 4
+  if (available < 0 || resultOverhead > available || limits.maxResultBytes > available - resultOverhead
+    || jsonBytes(failed) > available || jsonBytes(interrupted) > available) {
     throw new ToolError('TOOL_RECORD_BUDGET', 'maximum tool settlement cannot fit the actual Session record ceiling')
   }
 }

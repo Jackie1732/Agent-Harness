@@ -228,10 +228,43 @@ for (const point of ['tool/invocation-requested', 'tool/authorization-decided', 
   })
 }
 
-test('T7-58 actual Session ceiling rejects before policy/acquisition/execution', async () => fixture(async f => {
+test('T7-58 a Session ceiling below the request and minimum settlement rejects before CP0', async () => fixture(async f => {
   await assert.rejects(f.runner.invoke({ name: 'echo', input: { n: 1 } }), { code: 'TOOL_RECORD_BUDGET' })
   assert.equal(toolEvents(f.session).length, 0); assert.equal(f.trace.starts, 0); assert.equal(f.trace.approvals, 0)
+}, { maxRecordBytes: 512 }))
+
+test('T7-58 a full result ceiling that cannot fit fails durably before provider work', async () => fixture(async f => {
+  const result = await f.runner.invoke({ name: 'echo', input: { n: 1 } })
+  assert.equal(result.payload.outcome, 'failed'); assert.equal(result.payload.result.code, 'TOOL_RECORD_BUDGET')
+  assert.deepEqual(toolEvents(f.session).map(event => event.stored.type), [
+    'tool/invocation-requested', 'tool/invocation-settled',
+  ])
+  assert.equal(f.trace.prepares, 0); assert.equal(f.trace.approvals, 0); assert.equal(f.trace.starts, 0)
 }, { maxRecordBytes: 2048 }))
+
+test('T7-58 the provider result ceiling prevents an oversized caller ceiling from rejecting a valid call', async () => fixture(async f => {
+  const result = await f.runner.invoke({ name: 'echo', input: { n: 1 } })
+  assert.equal(result.payload.outcome, 'succeeded')
+  const invocation = f.runner.snapshot().invocations[0]
+  assert.equal(invocation.requested.payload.limits.maxResultBytes, 300000)
+  assert.equal(invocation.authorization.payload.plan.limits.maxResultBytes, 8192)
+  assert.equal(f.trace.starts, 1)
+}, { limits: { ...toolLimits, maxResultBytes: 300000 } }))
+
+test('T7-06 provider argument limits reject input before prepare without faulting the runner', async () => {
+  const definition = echoDefinition({
+    inputSchema: { type: 'object', properties: { n: { type: 'integer' }, padding: { type: 'string' } },
+      required: ['n', 'padding'], additionalProperties: false },
+    outputSchema: { type: 'object' },
+  })
+  await fixture(async f => {
+    const rejected = await f.runner.invoke({ name: 'echo', input: { n: 1, padding: 'x'.repeat(256) } })
+    assert.equal(rejected.payload.outcome, 'rejected'); assert.equal(rejected.payload.result.code, 'invalid-arguments')
+    assert.equal(f.trace.prepares, 0); assert.equal(f.trace.approvals, 0); assert.equal(f.trace.starts, 0)
+    const accepted = await f.runner.invoke({ name: 'echo', input: { n: 2, padding: '' } })
+    assert.equal(accepted.payload.outcome, 'succeeded'); assert.equal(f.trace.starts, 1)
+  }, { definition, descriptorOverrides: { maxArgumentsBytes: 128 } })
+})
 
 test('T7-59 escaped result budget failure is durable and does not reverse external effects', async () => fixture(async f => {
   const result = await f.runner.invoke({ name: 'echo', input: { n: 1 } })

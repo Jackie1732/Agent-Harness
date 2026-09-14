@@ -64,10 +64,11 @@ export function boundedJson(value: unknown, limits: JsonValidationLimits): JsonV
     if (!array && prototype !== null && (typeof prototype !== 'object' || Object.getPrototypeOf(prototype) !== null)) {
       throw new JsonBoundaryError('invalid')
     }
+    if (array && item.length > limits.maxNodes) throw new JsonBoundaryError('nodes')
     if (Object.getOwnPropertySymbols(item).length !== 0) throw new JsonBoundaryError('invalid')
     const names = Object.getOwnPropertyNames(item)
     if (names.length > limits.maxNodes + (array ? 1 : 0)) throw new JsonBoundaryError('nodes')
-    if (array && (item.length > limits.maxNodes || names.length !== item.length + 1)) throw new JsonBoundaryError('invalid')
+    if (array && names.length !== item.length + 1) throw new JsonBoundaryError('invalid')
     active.add(item)
     stack.push({ value: item, depth: frame.depth, exit: true })
     addBytes(2)

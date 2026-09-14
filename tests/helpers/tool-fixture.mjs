@@ -42,7 +42,8 @@ export async function fixture(body, options = {}) {
       return options.decide === undefined ? { kind: 'allow', reasonCode: 'research' } : options.decide(input, signal)
     },
   }
-  const provider = options.provider ?? new h.ScriptedToolProvider({ descriptor: descriptor(definition, options.capacity ?? 1),
+  const provider = options.provider ?? new h.ScriptedToolProvider({
+    descriptor: descriptor(definition, options.capacity ?? 1, options.descriptorOverrides),
     onPrepare: plan => { trace.prepares++; options.onPrepare?.(plan) },
     acquire: async (plan, signal) => {
       trace.acquisitions++; trace.signals.push(signal)

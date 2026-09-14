@@ -4,7 +4,7 @@ import { snapshotJson } from '../foundation/json.js'
 import { boundedJson, JsonBoundaryError } from '../schema/bounded-json.js'
 import type { SessionHandle } from '../session/session-handle.js'
 import type { CommittedSessionEvent } from '../session/types.js'
-import { assertRecordCapacity, assertSettlementCapacity } from './budget.js'
+import { assertMinimalSettlementCapacity, assertRecordCapacity, assertSettlementCapacity } from './budget.js'
 import type {
   ToolAuthorizationPayload, ToolExecution, ToolExecutionResult, ToolInvocationLimits,
   ToolPhase, ToolPolicy, ToolPolicyIdentity, ToolRequestedPayload, ToolSettlement,
@@ -15,7 +15,7 @@ import { assertPlanBinding, decodePlan } from './plan.js'
 import type { ToolBorrow } from './registry.js'
 import { decodeDecision, toolAuthorizationEvent, toolRequestedEvent, toolSettledEvent, toolStartedEvent } from './session-events.js'
 import { requestedArguments, selectionRejection, validateRequestSource } from './source.js'
-import { choice, effectiveLimits, exact, jsonBytes, object, safeCode, text } from './validation.js'
+import { argumentBudget, choice, effectiveLimits, exact, jsonBytes, object, safeCode, text } from './validation.js'
 
 export interface ToolInvocationContext {
   readonly session: SessionHandle
@@ -113,7 +113,7 @@ export async function runToolInvocation(context: ToolInvocationContext): Promise
   try {
     if (cancelled()) throw new ToolError('TOOL_CANCELLED', 'tool request was cancelled before durable acceptance')
     assertRecordCapacity(session, toolRequestedEvent.type, request)
-    assertSettlementCapacity(session, request.invocationId, request.limits)
+    assertMinimalSettlementCapacity(session, request.invocationId)
     const cp0 = await journal.request(request)
     if (cp0.kind === 'existing') return cp0.invocation.settled
     accepted = true
@@ -135,9 +135,13 @@ export async function runToolInvocation(context: ToolInvocationContext): Promise
       if (!borrow.compiled.input(input)) { reject('invalid-arguments'); return }
       if (cancelled()) return
 
-      phase('preparing')
       const limits = effectiveLimits(committedRequest.limits, borrow.descriptor)
-      assertSettlementCapacity(session, request.invocationId, limits)
+      try { input = boundedJson(input, argumentBudget(limits)) }
+      catch { reject('invalid-arguments'); return }
+      if (cancelled()) return
+
+      phase('preparing')
+      assertSettlementCapacity(session, request.invocationId, limits, borrow.definition.operationClass)
       const prepared = borrow.provider.prepare(borrow.definition, input, limits)
       if (prepared === null || typeof prepared !== 'object' || typeof prepared.acquire !== 'function') {
         throw new ToolError('TOOL_PROVIDER_INVALID', 'provider prepare did not return an execution binding')

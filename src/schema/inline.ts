@@ -14,12 +14,15 @@ function list(value: JsonValue | undefined, label: string): readonly JsonValue[]
   return value as readonly JsonValue[]
 }
 
+const inlineSchemaFields = new Set([
+  'type', 'description', 'properties', 'required', 'additionalProperties', 'enum', 'items',
+])
+
 /** The exact inline subset inherited from Model; callers preflight untrusted JSON first. */
 export function validateInlineSchema(schema: JsonObject, depth = 0, maximumDepth = 32): void {
   if (depth > maximumDepth) invalid(`tool schema nesting exceeds ${maximumDepth}`)
-  const allowed = new Set(['type', 'description', 'properties', 'required', 'additionalProperties', 'enum', 'items'])
-  if (!Object.hasOwn(schema, 'type') || Object.keys(schema).some(key => !allowed.has(key))) {
-    invalid('model value has missing or unsupported fields')
+  if (!Object.hasOwn(schema, 'type') || Object.keys(schema).some(key => !inlineSchemaFields.has(key))) {
+    invalid('schema has missing or unsupported fields')
   }
   const type = schema.type
   if (typeof type !== 'string' || !['object', 'array', 'string', 'number', 'integer', 'boolean', 'null'].includes(type)) {
