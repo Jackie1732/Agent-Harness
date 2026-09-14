@@ -7,7 +7,7 @@ import { parseModelInvocationId } from '../../src/model/ids.js'
 import { createPreparedSubmission, assertSameSubmission } from '../../src/model/submission.js'
 import { repository, scripted, runnerLimits, streamLimits, request, textFrames, hasCode, tool } from './fixtures.js'
 import type { RegisterCase } from './fixtures.js'
-import type { ModelFrame, ModelRequest, ModelRunnerLimits } from '../../src/model/contract.js'
+import type { ModelFrame, ModelProvider, ModelRequest, ModelRunnerLimits } from '../../src/model/contract.js'
 
 export function boundaryCases(test: RegisterCase): void {
   test('S6-03/08: malformed JSON inputs, IDs, Schema keywords and tool links reject', () => {
@@ -29,6 +29,21 @@ export function boundaryCases(test: RegisterCase): void {
       const other = createPreparedSubmission(request(), bound.submission.binding, { different: true })
       assert.throws(() => assertSameSubmission(bound.submission, other), hasCode('MODEL_BINDING_MISMATCH'))
     } finally { await provider.dispose() }
+  })
+  test('S6-09: a Provider cannot replace its selected binding during preparation', async () => {
+    const selected = scripted({ providerId: 'selected' })
+    const substituted = scripted({ providerId: 'substituted' })
+    const provider: ModelProvider = {
+      descriptor: selected.descriptor,
+      prepare: input => substituted.prepare(input),
+      dispose: async () => { await Promise.all([selected.dispose(), substituted.dispose()]) },
+    }
+    const repo = repository(); const session = await repo.create()
+    const runner = new SessionModelRunner({ session, provider, limits: runnerLimits })
+    try {
+      await assert.rejects(runner.invoke(request()), hasCode('MODEL_BINDING_MISMATCH'))
+      assert.equal(session.snapshot().localPosition, 0)
+    } finally { await runner.dispose(); await provider.dispose(); await repo.dispose() }
   })
   test('S6-16: provider-local partial acquisition cleanup occurs before its failure settlement', async () => {
     let temporaryLive = false; let starts = 0; const repo = repository()

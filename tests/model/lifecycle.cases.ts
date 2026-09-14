@@ -1,6 +1,7 @@
 import { strict as assert } from 'node:assert'
 import { SessionModelRunner } from '../../src/model/runner.js'
 import { ModelError } from '../../src/model/errors.js'
+import { parseModelInvocationId } from '../../src/model/ids.js'
 import { encodeModelWireBody } from '../../src/model/submission.js'
 import type { ModelFrame } from '../../src/model/contract.js'
 import { deferred, hasCode, repository, request, runnerLimits, scripted, textFrames, tool } from './fixtures.js'
@@ -46,6 +47,24 @@ export function lifecycleCases(test: RegisterCase): void {
     const first = a.invoke(request()); const second = b.invoke(request()); void second.catch(() => undefined)
     try { await entered.promise; await assert.rejects(second, hasCode('MODEL_SESSION_BUSY')); assert.equal(a.snapshot().invocations.length, 1) }
     finally { release.resolve(); await first; await a.dispose(); await b.dispose(); await provider.dispose(); await repo.dispose() }
+  })
+  test('S6-04: a colliding identity remains a busy admission while its invocation is pending', async () => {
+    const entered = deferred(); const release = deferred(); const repo = repository()
+    const provider = scripted({ maxConcurrentExchanges: 2, script: async function* () { entered.resolve(); await release.promise; yield* textFrames() } })
+    const session = await repo.create()
+    const invocationId = parseModelInvocationId('11111111-1111-4111-8111-111111111111')
+    const identities = { nextInvocationId: () => invocationId }
+    const a = new SessionModelRunner({ session, provider, limits: runnerLimits, identities })
+    const b = new SessionModelRunner({ session, provider, limits: runnerLimits, identities })
+    const first = a.invoke(request())
+    try {
+      await entered.promise
+      await assert.rejects(b.invoke(request()), hasCode('MODEL_SESSION_BUSY'))
+      assert.equal(b.status, 'accepting')
+      assert.equal(session.snapshot().localPosition, 2)
+    } finally {
+      release.resolve(); await first; await a.dispose(); await b.dispose(); await provider.dispose(); await repo.dispose()
+    }
   })
   test('S6-17: pre-aborted invocation has no facts or resources', async () => {
     const repo = repository(); let acquired = 0; const provider = scripted({ onAcquire: () => { acquired++ } })

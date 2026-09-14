@@ -36,8 +36,8 @@ export class ModelJournal {
       throw new ModelError('MODEL_REQUEST_INVALID', 'complete prepared submission cannot fit its durable input budget')
     }
     return this.#append(modelPreparedEvent, payload, state => {
-      if (state.invocations.some(item => item.invocationId === payload.invocationId)) throw new ModelError('MODEL_STATE_INVALID', 'model invocation identity was already used')
       if (state.pendingInvocationId !== null) throw new ModelError('MODEL_SESSION_BUSY', 'Session already owns an unsettled model invocation')
+      if (state.invocations.some(item => item.invocationId === payload.invocationId)) throw new ModelError('MODEL_STATE_INVALID', 'model invocation identity was already used')
       if (payload.retryOf !== undefined && !state.invocations.some(item => item.invocationId === payload.retryOf && item.state === 'settled')) {
         throw new ModelError('MODEL_STATE_INVALID', 'retry reference is not a local settled model invocation')
       }

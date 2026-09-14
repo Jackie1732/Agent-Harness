@@ -124,6 +124,7 @@ export function createRepository(
 export function loseFirstCommitAcknowledgement(inner: SessionBackend, eventType: string): SessionBackend {
   let interrupt = true
   return {
+    get maxRecordBytes() { return inner.maxRecordBytes },
     create: header => inner.create(header),
     readPrefix: (sessionId, through) => inner.readPrefix(sessionId, through),
     async openWriter(sessionId): Promise<SessionWriter> {

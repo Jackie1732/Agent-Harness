@@ -2,7 +2,7 @@ import { canonicalJsonBytes } from '../foundation/canonical-json.js'
 import { snapshotJson } from '../foundation/json.js'
 import type { SessionHandle } from '../session/session-handle.js'
 import type { CommittedSessionEvent } from '../session/types.js'
-import type { ModelProvider, ModelRequest, ModelRunnerLimits, PreparedModelCall } from './contract.js'
+import type { ModelProvider, ModelProviderDescriptor, ModelRequest, ModelRunnerLimits, PreparedModelCall } from './contract.js'
 import { jsonBytes, validateSettlementBudget } from './budget.js'
 import { InvocationControl } from './control.js'
 import { ModelError, providerFailureCode } from './errors.js'
@@ -16,7 +16,7 @@ import type { ModelSessionSnapshot } from './projection.js'
 import { snapshotModelRequest } from './request.js'
 import type { ModelPreparedPayload } from './session-events.js'
 import type { ModelSettlement } from './settlement.js'
-import { decodePreparedSubmission } from './submission.js'
+import { decodePreparedSubmission, decodeProviderDescriptor } from './submission.js'
 import { inheritsModelTask, inModelTask } from './task-context.js'
 
 export interface SessionModelRunnerOptions {
@@ -53,6 +53,7 @@ const faultingCodes = new Set<ModelErrorCode>([
 export class SessionModelRunner {
   readonly #session: SessionHandle
   readonly #prepare: ModelProvider['prepare']
+  readonly #providerDescriptor: ModelProviderDescriptor
   readonly #limits: ModelRunnerLimits
   readonly #identities: ModelIdentitySource
   readonly #lifetime: AbortSignal | undefined
@@ -73,6 +74,8 @@ export class SessionModelRunner {
     this.#session = options.session
     this.#limits = validateSettlementBudget(options.limits, options.session.maxRecordBytes)
     this.#journal = new ModelJournal(options.session, this.#limits.maxJournalConflicts)
+    try { this.#providerDescriptor = decodeProviderDescriptor(snapshotJson(options.provider.descriptor)) }
+    catch { throw new ModelError('MODEL_REQUEST_INVALID', 'model provider descriptor is invalid') }
     this.#prepare = options.provider.prepare.bind(options.provider)
     this.#identities = options.identities ?? systemModelIdentitySource
     this.#lifetime = options.signal
@@ -122,6 +125,9 @@ export class SessionModelRunner {
         const submission = decodePreparedSubmission(snapshotJson(candidate.submission))
         if (!Buffer.from(canonicalJsonBytes(input)).equals(Buffer.from(canonicalJsonBytes(submission.request)))) {
           throw new ModelError('MODEL_BINDING_MISMATCH', 'provider changed the neutral request during preparation')
+        }
+        if (!Buffer.from(canonicalJsonBytes(this.#providerDescriptor)).equals(Buffer.from(canonicalJsonBytes(submission.binding)))) {
+          throw new ModelError('MODEL_BINDING_MISMATCH', 'provider changed the selected binding during preparation')
         }
         const binding = Object.freeze({ submission, acquire: candidate.acquire.bind(candidate) })
         const payload: ModelPreparedPayload = { invocationId, submission, limits: this.#limits, ...(retryOf === undefined ? {} : { retryOf }) }

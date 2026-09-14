@@ -47,6 +47,21 @@ export function protocolCases(test: RegisterCase): void {
       })
     }
   }
+  for (const adapter of adapters) {
+    test(`S6-47: ${adapter.name} connection loss is recorded once without retry`, async () => {
+      const fixture = await httpFixture(response => response.destroy())
+      const repo = repository()
+      const provider = adapter.create({ providerId: 'fixture', endpoint: fixture.endpoint, apiKey: 'key', maxConcurrentExchanges: 1, streamLimits })
+      const runner = new SessionModelRunner({ session: await repo.create(), provider, limits: runnerLimits })
+      try {
+        const result = await runner.invoke(request())
+        assert.equal(result.payload.outcome, 'failed')
+        assert.equal(result.payload.failure?.code, 'MODEL_HTTP_FAILED')
+        assert.equal(result.payload.failure?.retryable, false)
+        assert.equal(fixture.requests.length, 1)
+      } finally { await runner.dispose(); await provider.dispose(); await repo.dispose(); await fixture.close() }
+    })
+  }
   test('S6-23/58: every UTF-8 and CRLF split, coalescing and multiline data decode identically', async () => {
     const bytes = Buffer.from(': ping\r\nevent: message\r\ndata: 中文🌍\r\ndata: next\r\n\r\n')
     const expected = [{ event: 'message', data: '中文🌍\nnext' }]
