@@ -64,7 +64,8 @@ export async function executeModelInvocation(
           if (control.isCancelled()) break
           const frame = await iterator.next()
           if (frame.done) break
-          if (control.isCancelled()) break
+          // A frame returned after a terminal claim still belongs to protocol validation.
+          if (control.isCancelled() && control.decision === 'cancelled') break
           response.accept(frame.value)
           if (response.protocolComplete) control.claim(response.stopReason === 'length' ? 'incomplete' : 'completed')
         }

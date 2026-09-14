@@ -13,7 +13,7 @@ import type { RegisterCase } from './fixtures.js'
 
 type TerminalReason = 'stop' | 'length'
 
-/** Signals only after the consumer has processed the terminal frame and pulled again. */
+/** Yields the normal text sequence with the selected terminal reason. */
 async function* terminalFrames(reason: TerminalReason): AsyncGenerator<ModelFrame> {
   for await (const frame of textFrames()) {
     yield frame.kind === 'complete' ? { ...frame, stopReason: reason } : frame
@@ -158,6 +158,32 @@ export function terminalCancellationCases(test: RegisterCase): void {
       entered.resolve()
       await release.promise
       throw new ModelError('MODEL_PROTOCOL_INVALID', 'invalid tail already observed')
+    } })
+    const repo = repository()
+    const runner = new SessionModelRunner({ session: await repo.create(), provider, limits: runnerLimits })
+    const caller = new AbortController()
+    const invocation = runner.invoke(request(), { signal: caller.signal })
+    try {
+      await entered.promise
+      caller.abort()
+      release.resolve()
+      const result = await invocation
+      assert.equal(result.payload.outcome, 'failed')
+      assert.equal(result.payload.failure?.code, 'MODEL_PROTOCOL_INVALID')
+    } finally {
+      release.resolve(); await invocation.catch(() => undefined)
+      await runner.dispose(); await provider.dispose(); await repo.dispose()
+    }
+  })
+
+  test('R6-T04: late cancellation does not discard an invalid frame already returned by the transport', async () => {
+    const entered = deferred()
+    const release = deferred()
+    const provider = scripted({ script: async function* () {
+      yield* textFrames()
+      entered.resolve()
+      await release.promise
+      yield { kind: 'text-delta', index: 0, text: 'invalid trailing content' }
     } })
     const repo = repository()
     const runner = new SessionModelRunner({ session: await repo.create(), provider, limits: runnerLimits })
