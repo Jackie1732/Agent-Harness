@@ -3,7 +3,7 @@ import { formatSessionEventId, sessionSequence } from '../session/ids.js'
 import type { CommittedSessionEvent, SessionProjectionCoverage, SessionSnapshot } from '../session/types.js'
 import { boundedJson } from '../schema/bounded-json.js'
 import type { ToolAuthorizationPayload, ToolRequestedPayload, ToolSettlement, ToolStartedPayload } from './contract.js'
-import { compileDefinition } from './schema-validator.js'
+import { compileDefinition, validateToolSuccessValue } from './schema-validator.js'
 import { ToolError } from './errors.js'
 import type { ToolInvocationId } from './ids.js'
 import { assertPlanBinding, schemaLimits } from './plan.js'
@@ -119,7 +119,9 @@ function validateSettlement(before: Exclude<ToolInvocationSnapshot, { state: 'se
   if (settled.cleanup.status !== 'unknown-after-process-loss' && before.state === 'started' && settled.cleanup.attempted === 0) invalid()
   if (settled.outcome === 'succeeded') {
     if (before.state !== 'started' || requested.selection.kind !== 'resolved' || settled.result.kind !== 'success') invalid()
-    if (!compileDefinition(requested.selection.definition, schemaLimits(limits)).output(settled.result.value)) invalid()
+    const definition = requested.selection.definition
+    validateToolSuccessValue(settled.result.value, limits,
+      value => compileDefinition(definition, schemaLimits(limits)).output(value))
   }
 }
 function invalid(): never { throw new ToolError('TOOL_STATE_INVALID', 'tool history is invalid') }

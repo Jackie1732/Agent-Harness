@@ -13,6 +13,7 @@ import { ToolError } from './errors.js'
 import { ToolJournal } from './journal.js'
 import { assertPlanBinding, decodePlan } from './plan.js'
 import type { ToolBorrow } from './registry.js'
+import { validateToolSuccessValue } from './schema-validator.js'
 import { decodeDecision, toolAuthorizationEvent, toolRequestedEvent, toolSettledEvent, toolStartedEvent } from './session-events.js'
 import { requestedArguments, selectionRejection, validateRequestSource } from './source.js'
 import { argumentBudget, choice, effectiveLimits, exact, jsonBytes, object, safeCode, text } from './validation.js'
@@ -59,10 +60,7 @@ function executionResult(value: unknown, limits: ToolInvocationLimits, borrow: T
     if (kind === 'error') safeCode(copy.code)
     const canonical = kind === 'success' ? { kind, value: copy.value! } : { kind, code: copy.code! }
     if (jsonBytes(canonical) > limits.maxResultBytes) throw new ToolError('TOOL_RESULT_LIMIT', 'canonical tool result exceeds its ceiling')
-    if (kind === 'success') {
-      const data = boundedJson(copy.value, { maxBytes: limits.maxResultBytes, maxDepth: limits.maxJsonDepth, maxNodes: limits.maxJsonNodes })
-      if (!borrow.compiled.output(data)) throw new ToolError('TOOL_RESULT_INVALID', 'tool success does not satisfy its output schema')
-    }
+    if (kind === 'success') validateToolSuccessValue(copy.value, limits, borrow.compiled.output)
     return copy as ToolExecutionResult
   } catch (reason) {
     if (reason instanceof ToolError && ['TOOL_RESULT_LIMIT', 'TOOL_RESULT_INVALID'].includes(reason.code)) throw reason

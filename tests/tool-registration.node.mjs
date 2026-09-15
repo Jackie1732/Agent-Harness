@@ -14,6 +14,33 @@ test('T7-20/22 same name conflicts locally, while another registry grants no inh
   } finally { await registration.dispose(); await other.dispose() }
 }, { noRegister: true }))
 
+test('T7-41 cleanup failure disables one provider across registries and Sessions', async () => {
+  const a = echoDefinition({ name: 'cleanup_a', operationClass: 'pure', inputSchema: { type: 'object' }, outputSchema: { type: 'object' } })
+  const b = echoDefinition({ name: 'cleanup_b', operationClass: 'pure', inputSchema: { type: 'object' }, outputSchema: { type: 'object' } })
+  const starts = { cleanup_a: 0, cleanup_b: 0 }
+  const provider = new h.ScriptedToolProvider({ descriptor: {
+    providerId: 'shared-cleanup', adapterVersion: '1', resourceId: 'ledger',
+    tools: [a, b].map(definition => ({ name: definition.name, version: definition.version })),
+    maxConcurrentExecutions: 2, maxArgumentsBytes: 4096, maxResultBytes: 8192,
+  }, acquire: plan => h.createScriptedToolExecution(() => {
+    starts[plan.definition.name]++; return { kind: 'success', value: {} }
+  }, () => { if (plan.definition.name === a.name) throw new Error('injected cleanup failure') }) })
+  await fixture(async f => {
+    const otherRegistry = new h.ToolRegistry(schemaLimits)
+    const first = f.registry.register(f.scope, a, provider); f.registrations.push(first)
+    const second = otherRegistry.register(f.scope, b, provider); f.registrations.push(second)
+    const otherSession = await f.repository.create()
+    const otherRunner = f.makeRunner({ session: otherSession, registry: otherRegistry })
+    try {
+      await assert.rejects(f.runner.invoke({ name: a.name, input: {} }), { code: 'TOOL_CLEANUP_FAILED' })
+      await assert.rejects(otherRunner.invoke({ name: b.name, input: {} }), { code: 'TOOL_PROVIDER_INACTIVE' })
+      assert.equal(starts.cleanup_a, 1); assert.equal(starts.cleanup_b, 0)
+      const settlement = otherRunner.snapshot().invocations[0]
+      assert.equal(settlement.state, 'settled'); assert.equal(settlement.settled.payload.result.code, 'TOOL_PROVIDER_INACTIVE')
+    } finally { await otherRegistry.dispose() }
+  }, { definition: a, provider, noRegister: true, allowCleanupFailure: true })
+})
+
 for (const failActivation of [false, true]) {
   test(`T7-21 real Component staging is hidden and ${failActivation ? 'rollback never publishes' : 'commit publishes'}`, async () => {
     const entered = deferred(), release = deferred()

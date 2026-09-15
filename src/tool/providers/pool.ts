@@ -21,7 +21,16 @@ export class ToolExecutionPool {
   constructor(capacity: number) { this.#capacity = capacity }
 
   assertAccepting(): void {
-    if (this.#retiring) throw new ToolError('TOOL_PROVIDER_INACTIVE', 'tool provider is retiring')
+    if (this.#retiring || this.#cleanupFailed) {
+      throw new ToolError('TOOL_PROVIDER_INACTIVE', 'tool provider is retiring or retains an incomplete cleanup')
+    }
+  }
+
+  #markCleanupFailed(): void {
+    if (this.#cleanupFailed) return
+    this.#cleanupFailed = true
+    // Store the failure before cancellation listeners can reenter an admission path.
+    for (const slot of this.#slots) slot.controller.abort()
   }
 
   prepare(plan: PreparedToolPlan, acquire: (plan: PreparedToolPlan, signal: AbortSignal) => Awaitable<ToolExecution>): PreparedToolCall {
@@ -30,7 +39,8 @@ export class ToolExecutionPool {
     return Object.freeze({ plan, acquire: async (committed: PreparedToolPlan, signal: AbortSignal): Promise<ToolExecution> => {
       if (acquired || !equalJson(plan, committed)) throw new ToolError('TOOL_BINDING_MISMATCH', 'prepared tool binding is single-use and content-bound')
       acquired = true
-      if (this.#retiring || signal.aborted) throw new ToolError('TOOL_PROVIDER_INACTIVE', 'tool binding is no longer active')
+      this.assertAccepting()
+      if (signal.aborted) throw new ToolError('TOOL_PROVIDER_INACTIVE', 'tool binding is no longer active')
       if (this.#slots.size >= this.#capacity) throw new ToolError('TOOL_PROVIDER_BUSY', 'tool provider capacity is exhausted')
       const controller = new AbortController()
       let release!: () => void
@@ -46,8 +56,10 @@ export class ToolExecutionPool {
       return Object.freeze({
         start: (): Promise<ToolExecutionResult> => {
           if (startTask !== undefined || closeTask !== undefined || combined.aborted) throw new ToolError('TOOL_PROVIDER_INACTIVE', 'execution cannot start again or after cancellation')
+          this.assertAccepting()
           // Publish the task before calling possibly reentrant implementation code.
           startTask = Promise.resolve().then(() => {
+            this.assertAccepting()
             if (combined.aborted) throw new ToolError('TOOL_CANCELLED', 'execution was cancelled before its body started')
             return inSlot(slot, () => inner.start())
           })
@@ -60,7 +72,7 @@ export class ToolExecutionPool {
               if (startTask !== undefined) await startTask.catch(() => undefined)
               await inSlot(slot, () => inner.close())
             }).catch(() => {
-              this.#cleanupFailed = true
+              this.#markCleanupFailed()
               throw new ToolError('TOOL_CLEANUP_FAILED', 'tool execution did not close completely')
             }).finally(() => { this.#slots.delete(slot); release() })
             void closeTask.catch(() => undefined)

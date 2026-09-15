@@ -233,6 +233,77 @@ test('T7-41/42 close failure is sticky and is never retried', async () => fixtur
   await assert.rejects(provider.dispose(), error => error.code === 'TOOL_CLEANUP_FAILED')
   assert.equal(trace.closes, 1); assert.equal(trace.active, 0)
 }))
+test('T7-41 provider cleanup failure closes every admission path and aborts sibling slots', async () => {
+  const tool = createToolDefinition({ name: 'cleanup-gate', version: 1, description: '', operationClass: 'pure',
+    inputSchema: { type: 'object' }, outputSchema: { type: 'null' } }, schemaLimits)
+  const providerDescriptor = { providerId: 'cleanup-gate', adapterVersion: '1', resourceId: 'ledger',
+    tools: [{ name: tool.name, version: tool.version }], maxConcurrentExecutions: 2,
+    maxArgumentsBytes: 4096, maxResultBytes: 65536 }
+  let acquisitions = 0, starts = 0, closes = 0, reentrantError
+  const provider = new ScriptedToolProvider({ descriptor: providerDescriptor, acquire: (_plan, signal) => {
+    const ordinal = ++acquisitions
+    if (ordinal === 2) signal.addEventListener('abort', () => {
+      try { provider.prepare(tool, {}, limits) } catch (reason) { reentrantError = reason }
+    }, { once: true })
+    return createScriptedToolExecution(() => { starts++; return { kind: 'success', value: null } }, () => {
+      closes++
+      if (ordinal === 1) throw new Error('injected cleanup failure')
+    })
+  } })
+  const firstBinding = provider.prepare(tool, {}, limits)
+  const oldBinding = provider.prepare(tool, {}, limits)
+  const siblingBinding = provider.prepare(tool, {}, limits)
+  const first = await firstBinding.acquire(firstBinding.plan, new AbortController().signal)
+  const sibling = await siblingBinding.acquire(siblingBinding.plan, new AbortController().signal)
+  const closing = first.close(); assert.equal(first.close(), closing)
+  await assert.rejects(closing, { code: 'TOOL_CLEANUP_FAILED' })
+  assert.equal(reentrantError?.code, 'TOOL_PROVIDER_INACTIVE')
+  assert.throws(() => sibling.start(), { code: 'TOOL_PROVIDER_INACTIVE' })
+  await sibling.close()
+  await assert.rejects(oldBinding.acquire(oldBinding.plan, new AbortController().signal), { code: 'TOOL_PROVIDER_INACTIVE' })
+  assert.throws(() => provider.prepare(tool, {}, limits), { code: 'TOOL_PROVIDER_INACTIVE' })
+  assert.equal(acquisitions, 2); assert.equal(starts, 0); assert.equal(closes, 2)
+  await assert.rejects(provider.dispose(), { code: 'TOOL_CLEANUP_FAILED' })
+})
+test('T7-41 acquisition already inside the provider remains owned after cleanup failure', async () => {
+  const tool = createToolDefinition({ name: 'late-acquire', version: 1, description: '', operationClass: 'pure',
+    inputSchema: { type: 'object' }, outputSchema: { type: 'null' } }, schemaLimits)
+  const providerDescriptor = { providerId: 'late-acquire', adapterVersion: '1', resourceId: 'ledger',
+    tools: [{ name: tool.name, version: tool.version }], maxConcurrentExecutions: 2,
+    maxArgumentsBytes: 4096, maxResultBytes: 65536 }
+  const entered = deferred(), release = deferred()
+  let acquisitions = 0, starts = 0, closes = 0, lateSignal
+  const provider = new ScriptedToolProvider({ descriptor: providerDescriptor, acquire: async (_plan, signal) => {
+    const ordinal = ++acquisitions
+    if (ordinal === 2) { lateSignal = signal; entered.resolve(); await release.promise }
+    return createScriptedToolExecution(() => { starts++; return { kind: 'success', value: null } }, () => {
+      closes++
+      if (ordinal === 1) throw new Error('injected cleanup failure')
+    })
+  } })
+  let late, pending
+  try {
+    const firstBinding = provider.prepare(tool, {}, limits)
+    const lateBinding = provider.prepare(tool, {}, limits)
+    const first = await firstBinding.acquire(firstBinding.plan, new AbortController().signal)
+    pending = lateBinding.acquire(lateBinding.plan, new AbortController().signal)
+    await entered.promise
+    await assert.rejects(first.close(), { code: 'TOOL_CLEANUP_FAILED' })
+    assert.equal(lateSignal.aborted, true)
+    release.resolve(); late = await pending
+    assert.throws(() => late.start(), { code: 'TOOL_PROVIDER_INACTIVE' })
+    await late.close(); late = undefined
+    assert.equal(acquisitions, 2); assert.equal(starts, 0); assert.equal(closes, 2)
+    await assert.rejects(provider.dispose(), { code: 'TOOL_CLEANUP_FAILED' })
+  } finally {
+    release.resolve()
+    if (late === undefined && pending !== undefined) late = await pending.catch(() => undefined)
+    await late?.close()
+    await provider.dispose().catch(error => {
+      if (error?.code !== 'TOOL_CLEANUP_FAILED') throw error
+    })
+  }
+})
 test('T7-60 native capacity is one and released capacity is reusable', async () => fixture(async ({ workspace, options }) => {
   await writeFile(join(workspace, 'file'), 'test')
   const provider = await createWorkspaceReadTextProvider(options)

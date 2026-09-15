@@ -3,7 +3,7 @@ import { test } from 'node:test'
 import { mkdtemp, rm, appendFile, readFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { h, fixture, toolLimits, catalog, descriptor, FaultBackend, toolEvents } from './helpers/tool-fixture.mjs'
+import { h, fixture, schemaLimits, toolLimits, catalog, descriptor, FaultBackend, toolEvents } from './helpers/tool-fixture.mjs'
 import { createFileSessionBackendForTest } from '../dist/session/file-backend.js'
 import { writeAll } from '../dist/session/file-store.js'
 
@@ -240,3 +240,24 @@ test('T7-57 privileged Session end with pending Tool work is stranded and not re
   await assert.rejects(h.recoverToolSession(f.session, { predecessorStopped: true, maxJournalConflicts: 4 }), { code: 'TOOL_STATE_INVALID' })
   assert.equal(f.session.snapshot().localPosition, position); assert.equal(f.trace.starts, 0)
 }))
+
+for (const variant of [
+  { name: 'depth', limits: { ...toolLimits, maxJsonDepth: 1 }, valid: { n: 1 }, invalid: { inner: { n: 1 } } },
+  { name: 'node count', limits: { ...toolLimits, maxJsonNodes: 2 }, valid: { n: 1 }, invalid: { a: 1, b: 2 } },
+]) {
+  test(`T7-55 replay applies the exact success-value ${variant.name} limit`, async () => {
+    const tool = h.createToolDefinition({ name: 'bounded-result', version: 1, description: '', operationClass: 'pure',
+      inputSchema: { type: 'object' }, outputSchema: { type: 'object' } }, schemaLimits)
+    await fixture(async f => {
+      const settled = await f.runner.invoke({ name: tool.name, input: {} })
+      assert.equal(settled.payload.outcome, 'succeeded')
+      const snapshot = structuredClone(f.session.snapshot())
+      assert.doesNotThrow(() => h.projectToolSession(snapshot))
+      const terminal = snapshot.history.at(-1).events.find(event => event.stored.type === settledEvent.type)
+      assert.ok(terminal)
+      terminal.payload = { ...terminal.payload, result: { kind: 'success', value: variant.invalid } }
+      terminal.stored = { ...terminal.stored, payload: terminal.payload }
+      assert.throws(() => h.projectToolSession(snapshot), { code: 'TOOL_STATE_INVALID' })
+    }, { definition: tool, limits: variant.limits, execute: () => ({ kind: 'success', value: variant.valid }) })
+  })
+}
