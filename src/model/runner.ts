@@ -9,6 +9,8 @@ import { ModelError, providerFailureCode } from './errors.js'
 import type { ModelErrorCode } from './errors.js'
 import { parseModelInvocationId, systemModelIdentitySource } from './ids.js'
 import type { ModelIdentitySource, ModelInvocationId } from './ids.js'
+import { assertInputPrecondition, snapshotInputPrecondition } from './input-precondition.js'
+import type { ModelInputPrecondition } from './input-precondition.js'
 import { executeModelInvocation } from './invocation.js'
 import { ModelJournal } from './journal.js'
 import { projectModelSession } from './projection.js'
@@ -31,6 +33,7 @@ export interface SessionModelRunnerOptions {
 export interface ModelInvokeOptions {
   readonly signal?: AbortSignal
   readonly retryOf?: ModelInvocationId
+  readonly inputPrecondition?: ModelInputPrecondition
 }
 
 export type ModelRunnerStatus = 'accepting' | 'disposing' | 'faulted' | 'disposed'
@@ -42,7 +45,7 @@ interface ActiveInvocation {
 }
 
 type Preparation =
-  | { readonly ok: true; readonly payload: ModelPreparedPayload; readonly binding: PreparedModelCall }
+  | { readonly ok: true; readonly payload: ModelPreparedPayload; readonly binding: PreparedModelCall; readonly inputPrecondition?: ModelInputPrecondition }
   | { readonly ok: false; readonly reason: ModelError }
 
 const faultingCodes = new Set<ModelErrorCode>([
@@ -99,7 +102,7 @@ export class SessionModelRunner {
     const task = inModelTask(token, () => Promise.resolve().then(async () => {
       if (preparation === undefined) throw new ModelError('MODEL_STATE_INVALID', 'model preparation was not published')
       if (!preparation.ok) throw preparation.reason
-      return await executeModelInvocation(this.#journal, preparation.payload, preparation.binding, control, signals)
+      return await executeModelInvocation(this.#journal, preparation.payload, preparation.binding, control, signals, preparation.inputPrecondition)
     }))
     const active = { token, control, task }
     this.#active = active
@@ -116,6 +119,12 @@ export class SessionModelRunner {
     // Task identity is visible before any provider callback; snapshotting remains sync.
     inModelTask(token, () => {
       try {
+        const inputPrecondition = options.inputPrecondition === undefined ? undefined : snapshotInputPrecondition(options.inputPrecondition)
+        if (inputPrecondition !== undefined) {
+          assertInputPrecondition(this.#session.snapshot(), this.#providerDescriptor, inputPrecondition)
+          if (this.#session.status !== 'open') throw new ModelError('MODEL_INPUT_STALE', 'model input Session is no longer writable')
+          if (this.snapshot().pendingInvocationId !== null) throw new ModelError('MODEL_SESSION_BUSY', 'Session already owns an unsettled model invocation')
+        }
         const input = snapshotModelRequest(request)
         if (jsonBytes(input) > this.#limits.maxInputBytes) throw new ModelError('MODEL_REQUEST_INVALID', 'model input exceeds its explicit byte budget')
         const invocationId = parseModelInvocationId(this.#identities.nextInvocationId())
@@ -131,7 +140,7 @@ export class SessionModelRunner {
         }
         const binding = Object.freeze({ submission, acquire: candidate.acquire.bind(candidate) })
         const payload: ModelPreparedPayload = { invocationId, submission, limits: this.#limits, ...(retryOf === undefined ? {} : { retryOf }) }
-        preparation = { ok: true, payload, binding }
+        preparation = { ok: true, payload, binding, ...(inputPrecondition === undefined ? {} : { inputPrecondition }) }
       } catch (reason) {
         // Provider preparation errors may carry request bodies or runtime credentials.
         // Preserve a stable code, never the arbitrary message, details, or cause.

@@ -26,10 +26,10 @@ export function validateJsonLimits(limits: JsonValidationLimits): void {
 }
 
 /**
- * Iterative preflight, followed by the existing immutable JSON boundary. Accessors and
+ * Iterative preflight with exact JSON byte/node counts, without copying the value. Accessors and
  * proxies are rejected without evaluation. Shared acyclic values are counted per occurrence.
  */
-export function boundedJson(value: unknown, limits: JsonValidationLimits): JsonValue {
+export function inspectBoundedJson(value: unknown, limits: JsonValidationLimits): { readonly bytes: number; readonly nodes: number } {
   validateJsonLimits(limits)
   type Frame = { value: unknown; depth: number; exit?: boolean }
   const stack: Frame[] = [{ value, depth: 0 }]
@@ -86,7 +86,12 @@ export function boundedJson(value: unknown, limits: JsonValidationLimits): JsonV
       stack.push({ value: descriptor.value, depth: frame.depth + 1 })
     }
   }
-  // Preflight has made the existing recursive assertion/copy bounded and getter-free.
+  return Object.freeze({ bytes, nodes })
+}
+
+/** Validate and copy after the same preflight used by bounded source and request accounting. */
+export function boundedJson(value: unknown, limits: JsonValidationLimits): JsonValue {
+  inspectBoundedJson(value, limits)
   return snapshotJson(value)
 }
 

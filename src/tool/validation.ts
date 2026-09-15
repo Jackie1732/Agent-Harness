@@ -101,6 +101,9 @@ export function readDescriptor(value: unknown): ToolProviderDescriptor {
   return copy as ToolProviderDescriptor
 }
 
+/** Decode the safe declarative fields that may cross a Tool consumer boundary. */
+export const decodeToolProviderDescriptor = readDescriptor
+
 /** The policy sees the same already-resolved limits later passed to acquire/start. */
 export function effectiveLimits(limits: ToolInvocationLimits, provider: ToolProviderDescriptor): ToolInvocationLimits {
   return Object.freeze({ ...limits,

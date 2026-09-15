@@ -12,7 +12,7 @@ export { CommunicationError } from './errors.js'
 export { decodeMessageEnvelope } from './envelope.js'
 export { channelSequence, createChannelId, parseChannelId, parseMessageId, systemCommunicationIdentitySource } from './ids.js'
 export { createMessageCatalog, createMessageDefinition, decodeMessagePayload } from './message-catalog.js'
-export { projectMailbox } from './projection.js'
+export { projectCommunicationFacts, projectMailbox } from './projection.js'
 export { CommunicationService } from './service.js'
 export { communicationSessionEventDefinitions } from './session-events.js'
 export { createInProcessMessageTransport } from './transport.js'
@@ -28,8 +28,10 @@ export type { CommunicationServiceOptions, MailboxAttachmentOptions } from './se
 export type { MessageTransport } from './transport.js'
 export type {
   CommunicationPolicy,
+  CommunicationFacts,
   InboxAbandonReason,
   InboxMessageSnapshot,
+  InboxMessageFact,
   IncomingMessagePolicyInput,
   MailboxLimits,
   MailboxSnapshot,

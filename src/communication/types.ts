@@ -154,15 +154,25 @@ interface InboxSnapshotBase {
   readonly digest: string
   readonly acceptedEventId: SessionEventId
   readonly acceptedSequence: SessionSequence
-  readonly supported: boolean
 }
 
 /** Reconstructed state of one recipient-owned Inbox message. */
-export type InboxMessageSnapshot = InboxSnapshotBase & (
+export type InboxMessageFact = InboxSnapshotBase & (
   | { readonly status: 'pending' }
   | { readonly status: 'processed'; readonly terminalEventId: SessionEventId }
   | { readonly status: 'abandoned'; readonly abandonReason: InboxAbandonReason; readonly terminalEventId: SessionEventId }
 )
+
+/** Current support decorates facts; it cannot revise a past processed/abandoned state. */
+export type InboxMessageSnapshot = InboxMessageFact & { readonly supported: boolean }
+
+/** Durable communication state independent of installed message decoders. */
+export interface CommunicationFacts {
+  readonly sessionId: SessionId
+  readonly address: SessionAddress
+  readonly outbox: readonly OutboxMessageSnapshot[]
+  readonly inbox: readonly InboxMessageFact[]
+}
 
 /** Immutable communication projection for one Session's local history segment. */
 export interface MailboxSnapshot {

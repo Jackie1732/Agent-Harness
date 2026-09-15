@@ -7,6 +7,8 @@ import type { CommittedSessionEvent } from '../session/types.js'
 import { emptyModelResult, jsonBytes, modelEnvelopeBytes } from './budget.js'
 import { ModelError } from './errors.js'
 import type { ModelInvocationId } from './ids.js'
+import { assertInputPrecondition } from './input-precondition.js'
+import type { ModelInputPrecondition } from './input-precondition.js'
 import { projectModelSession } from './projection.js'
 import type { ModelSessionSnapshot } from './projection.js'
 import { modelPreparedEvent, modelSessionEventDefinitions, modelSettledEvent, modelStartedEvent } from './session-events.js'
@@ -30,19 +32,40 @@ export class ModelJournal {
     this.#conflicts = maxJournalConflicts
   }
 
-  prepare(payload: ModelPreparedPayload): Promise<CommittedSessionEvent<ModelPreparedPayload>> {
+  prepare(payload: ModelPreparedPayload, inputPrecondition?: ModelInputPrecondition): Promise<CommittedSessionEvent<ModelPreparedPayload>> {
     if (jsonBytes(payload) > payload.limits.maxInputBytes
       || modelEnvelopeBytes(modelPreparedEvent.type, payload) > this.#handle.maxRecordBytes) {
       throw new ModelError('MODEL_REQUEST_INVALID', 'complete prepared submission cannot fit its durable input budget')
     }
-    return this.#append(modelPreparedEvent, payload, state => {
+    const decide = (state: ModelSessionSnapshot): undefined => {
       if (state.pendingInvocationId !== null) throw new ModelError('MODEL_SESSION_BUSY', 'Session already owns an unsettled model invocation')
       if (state.invocations.some(item => item.invocationId === payload.invocationId)) throw new ModelError('MODEL_STATE_INVALID', 'model invocation identity was already used')
       if (payload.retryOf !== undefined && !state.invocations.some(item => item.invocationId === payload.retryOf && item.state === 'settled')) {
         throw new ModelError('MODEL_STATE_INVALID', 'retry reference is not a local settled model invocation')
       }
       return undefined
-    })
+    }
+    if (inputPrecondition === undefined) return this.#append(modelPreparedEvent, payload, decide)
+    return this.#prepareAtInput(payload, inputPrecondition, decide)
+  }
+
+  /** A pinned CP0 makes one CAS attempt; conflicts never recapture a newer input cut. */
+  async #prepareAtInput(
+    payload: ModelPreparedPayload,
+    precondition: ModelInputPrecondition,
+    decide: (state: ModelSessionSnapshot) => undefined,
+  ): Promise<CommittedSessionEvent<ModelPreparedPayload>> {
+    const snapshot = this.#handle.snapshot()
+    assertInputPrecondition(snapshot, payload.submission.binding, precondition)
+    decide(projectModelSession(snapshot))
+    try {
+      return await this.#handle.appendIfPosition(precondition.expectedLocalPosition, modelPreparedEvent, payload)
+    } catch (reason) {
+      if (reason instanceof SessionError && reason.code === 'SESSION_PRECONDITION_FAILED') {
+        throw new ModelError('MODEL_INPUT_STALE', 'model input changed before its prepared event committed')
+      }
+      throw journalWriteFailure(reason, modelPreparedEvent.type)
+    }
   }
 
   start(prepared: CommittedSessionEvent<ModelPreparedPayload>): Promise<CommittedSessionEvent<ModelStartedPayload>> {
@@ -117,11 +140,7 @@ export class ModelJournal {
           if (conflicts < this.#conflicts) continue
           throw new ModelError('MODEL_SESSION_CHANGED', 'model journal exhausted its local conflict budget', { eventType: definition.type, maxJournalConflicts: this.#conflicts })
         }
-        const unknown = !(reason instanceof SessionError) || reason.code === 'SESSION_APPEND_OUTCOME_UNKNOWN'
-        throw new ModelError(unknown ? 'MODEL_JOURNAL_COMMIT_UNKNOWN' : 'MODEL_JOURNAL_WRITE_FAILED', unknown ? 'model journal commit is unknown; release and reopen the Session' : 'model journal write did not commit', {
-          eventType: definition.type,
-          ...(reason instanceof SessionError ? { sessionCode: reason.code } : {}),
-        })
+        throw journalWriteFailure(reason, definition.type)
       }
     }
   }
@@ -129,4 +148,13 @@ export class ModelJournal {
 
 function same(left: JsonValue, right: JsonValue): boolean {
   return Buffer.from(canonicalJsonBytes(left)).equals(Buffer.from(canonicalJsonBytes(right)))
+}
+
+function journalWriteFailure(reason: unknown, eventType: string): ModelError {
+  const unknown = !(reason instanceof SessionError) || reason.code === 'SESSION_APPEND_OUTCOME_UNKNOWN'
+  return new ModelError(unknown ? 'MODEL_JOURNAL_COMMIT_UNKNOWN' : 'MODEL_JOURNAL_WRITE_FAILED',
+    unknown ? 'model journal commit is unknown; release and reopen the Session' : 'model journal write did not commit', {
+      eventType,
+      ...(reason instanceof SessionError ? { sessionCode: reason.code } : {}),
+    })
 }

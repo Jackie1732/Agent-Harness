@@ -6,7 +6,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { createHash } from 'node:crypto'
 import { runInNewContext } from 'node:vm'
-import { boundedJson, parseBoundedJson, JsonBoundaryError } from '../dist/schema/bounded-json.js'
+import { boundedJson, inspectBoundedJson, parseBoundedJson, JsonBoundaryError } from '../dist/schema/bounded-json.js'
 import { validateInlineSchema } from '../dist/schema/inline.js'
 import { validationData, validationSchema, validationKey } from '../dist/schema/validation-keys.js'
 import { createToolDefinition } from '../dist/tool/definition.js'
@@ -93,6 +93,18 @@ test('T7-06 finite depth/node/raw-text budgets precede recursive helpers', () =>
   assert.throws(() => boundedJson([1, 2, 3], { ...jsonLimits, maxNodes: 3 }), JsonBoundaryError)
   assert.throws(() => parseBoundedJson('not-json'.repeat(1000), { ...jsonLimits, maxBytes: 8 }), error => error.reason === 'bytes')
   assert.throws(() => boundedJson('\0'.repeat(10), { ...jsonLimits, maxBytes: 20 }), error => error.reason === 'bytes')
+})
+test('S8-041 bounded inspection reports exact escaped UTF-8 bytes and nodes', () => {
+  const value = { emoji: '研究🙂', escaped: '"\n\\', list: [true, null, 1] }
+  const expectedBytes = Buffer.byteLength(JSON.stringify(value), 'utf8')
+  assert.deepEqual(inspectBoundedJson(value, { maxBytes: expectedBytes, maxDepth: 4, maxNodes: 7 }), {
+    bytes: expectedBytes,
+    nodes: 7,
+  })
+  assert.throws(
+    () => inspectBoundedJson(value, { maxBytes: expectedBytes - 1, maxDepth: 4, maxNodes: 7 }),
+    error => error instanceof JsonBoundaryError && error.reason === 'bytes',
+  )
 })
 test('T7-08 structural validation-key transform is injective and does not pollute prototypes', () => {
   const value = JSON.parse('{"__proto__":{"polluted":true},"constructor":7,"p005f":4}')

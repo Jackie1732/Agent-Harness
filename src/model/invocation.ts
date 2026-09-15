@@ -5,6 +5,7 @@ import type { ModelExchange, PreparedModelCall } from './contract.js'
 import { InvocationControl } from './control.js'
 import { ModelError, providerFailureCode } from './errors.js'
 import type { ModelErrorCode } from './errors.js'
+import type { ModelInputPrecondition } from './input-precondition.js'
 import { ModelJournal } from './journal.js'
 import { ModelResponseAccumulator } from './response.js'
 import type { ModelPreparedPayload } from './session-events.js'
@@ -24,6 +25,7 @@ export async function executeModelInvocation(
   binding: PreparedModelCall,
   control: InvocationControl,
   signals: readonly AbortSignal[],
+  inputPrecondition?: ModelInputPrecondition,
 ): Promise<CommittedSessionEvent<ModelSettlement>> {
   const resources = new EffectOwner('model invocation')
   const response = new ModelResponseAccumulator(payload.submission.request, payload.submission.binding, payload.limits)
@@ -42,7 +44,7 @@ export async function executeModelInvocation(
     ))
     if (control.isCancelled()) throw new ModelError('MODEL_CALL_CANCELLED', 'model call cancelled before persistent acceptance')
     control.current = 'recording'
-    prepared = await journal.prepare(payload)
+    prepared = await journal.prepare(payload, inputPrecondition)
     if (!control.isCancelled()) {
       control.current = 'acquiring'
       const lease = await resources.run('model exchange', effect => effect.apply(

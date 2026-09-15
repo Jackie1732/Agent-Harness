@@ -6,6 +6,7 @@ import { CommunicationError } from './errors.js'
 import { decodeMessagePayload } from './message-catalog.js'
 import type { MessageCatalog } from './message-catalog.js'
 import {
+  communicationSessionEventDefinitions,
   inboxAbandonedEvent,
   inboxAcceptedEvent,
   inboxProcessedEvent,
@@ -28,7 +29,8 @@ import type {
   OutboxRejectedPayload,
 } from './session-events.js'
 import type {
-  InboxMessageSnapshot,
+  InboxMessageFact,
+  CommunicationFacts,
   MailboxSnapshot,
   MessageDeliveryReceipt,
   OutboxFailureSnapshot,
@@ -45,8 +47,7 @@ interface MutableOutbox {
 
 interface MutableInbox {
   readonly accepted: CommittedSessionEvent<InboxAcceptedPayload>
-  readonly supported: boolean
-  terminal?: InboxMessageSnapshot
+  terminal?: InboxMessageFact
 }
 
 function invalid(message: string, details: Record<string, JsonValue> = {}): never {
@@ -113,7 +114,6 @@ function inboxBase(state: MutableInbox) {
     digest: state.accepted.payload.digest,
     acceptedEventId: state.accepted.stored.eventId,
     acceptedSequence: state.accepted.stored.sequence,
-    supported: state.supported,
   }
 }
 
@@ -202,7 +202,6 @@ function applyOutboxEvent(
 function applyInboxEvent(
   event: CommittedSessionEvent,
   inbox: Map<string, MutableInbox>,
-  catalog: MessageCatalog,
   address: string,
 ): boolean {
   if (matches(event, inboxAcceptedEvent.type, inboxAcceptedEvent.payloadVersion)) {
@@ -211,23 +210,12 @@ function applyInboxEvent(
     if (envelope.recipient !== address) invalid('inbox envelope recipient does not own the Session', { messageId: envelope.messageId })
     if (inbox.has(envelope.messageId)) invalid('inbox contains a duplicate message identity', { messageId: envelope.messageId })
     if (messageEnvelopeDigest(envelope) !== accepted.payload.digest) invalid('inbox envelope digest does not match its content', { messageId: envelope.messageId })
-    const definition = catalog.resolve(envelope.type, envelope.payloadVersion)
-    if (definition !== undefined) {
-      try {
-        decodeMessagePayload(definition, envelope.payload)
-      } catch {
-        throw new CommunicationError('MESSAGE_STATE_INVALID', 'historical inbox payload fails its installed definition', {
-          details: { messageId: envelope.messageId, type: envelope.type, payloadVersion: envelope.payloadVersion },
-        })
-      }
-    }
-    inbox.set(envelope.messageId, { accepted, supported: definition !== undefined })
+    inbox.set(envelope.messageId, { accepted })
     return true
   }
   if (matches(event, inboxProcessedEvent.type, inboxProcessedEvent.payloadVersion)) {
     const payload = (event as CommittedSessionEvent<InboxProcessedPayload>).payload
     const state = requireInbox(inbox, payload.messageId)
-    if (!state.supported) invalid('unsupported inbox message cannot be processed', { messageId: payload.messageId })
     if (state.terminal !== undefined) invalid('inbox message has conflicting terminal states', { messageId: payload.messageId })
     state.terminal = Object.freeze({ ...inboxBase(state), status: 'processed', terminalEventId: event.stored.eventId })
     return true
@@ -245,7 +233,7 @@ function applyInboxEvent(
 }
 
 /** Reconstruct and validate one Session's locally owned communication state. */
-export function projectMailbox(snapshot: SessionSnapshot, catalog: MessageCatalog): MailboxSnapshot {
+export function projectCommunicationFacts(snapshot: SessionSnapshot): CommunicationFacts {
   const outbox = new Map<string, MutableOutbox>()
   const inbox = new Map<string, MutableInbox>()
   const sequences = new Map<string, number>()
@@ -253,12 +241,19 @@ export function projectMailbox(snapshot: SessionSnapshot, catalog: MessageCatalo
   if (target === undefined) invalid('Session snapshot does not contain its target segment')
   for (const record of target.events) {
     if (record.kind === 'opaque') {
-      if (record.stored.type.startsWith('communication/')) invalid('communication event cannot be opaque')
+      if (record.stored.type.startsWith('communication/') && record.stored.ignorable !== true) {
+        invalid('required communication event cannot be opaque')
+      }
       continue
     }
-    const handled = applyOutboxEvent(record, outbox, sequences, snapshot.address)
-      || applyInboxEvent(record, inbox, catalog, snapshot.address)
+    const definition = communicationSessionEventDefinitions.find(item => item.type === record.stored.type
+      && item.payloadVersion === record.stored.payloadVersion)
+    if (definition !== undefined && record.stored.ignorable === true) invalid('communication facts must be required')
+    const decoded = definition === undefined ? record : { ...record, payload: definition.decode(record.payload) }
+    const handled = applyOutboxEvent(decoded, outbox, sequences, snapshot.address)
+      || applyInboxEvent(decoded, inbox, snapshot.address)
     if (!handled && record.stored.type.startsWith('communication/')) {
+      if (record.stored.ignorable === true) continue
       invalid('unsupported communication event version', { type: record.stored.type, payloadVersion: record.stored.payloadVersion })
     }
   }
@@ -273,6 +268,26 @@ export function projectMailbox(snapshot: SessionSnapshot, catalog: MessageCatalo
     address: snapshot.address,
     outbox: Object.freeze(outboxSnapshots),
     inbox: Object.freeze(inboxSnapshots),
-    unsupportedInbox: Object.freeze(inboxSnapshots.filter(item => !item.supported).map(item => item.messageId)),
+  })
+}
+
+/** Apply current decoder availability without changing the durable state machine. */
+export function projectMailbox(snapshot: SessionSnapshot, catalog: MessageCatalog): MailboxSnapshot {
+  const facts = projectCommunicationFacts(snapshot)
+  const inbox = facts.inbox.map(item => {
+    const envelope = item.envelope
+    const definition = catalog.resolve(envelope.type, envelope.payloadVersion)
+    if (definition !== undefined) {
+      try { decodeMessagePayload(definition, envelope.payload) }
+      catch {
+        throw new CommunicationError('MESSAGE_STATE_INVALID', 'historical inbox payload fails its installed definition', {
+          details: { messageId: envelope.messageId, type: envelope.type, payloadVersion: envelope.payloadVersion },
+        })
+      }
+    }
+    return Object.freeze({ ...item, supported: definition !== undefined })
+  })
+  return Object.freeze({ ...facts, inbox: Object.freeze(inbox),
+    unsupportedInbox: Object.freeze(inbox.filter(item => !item.supported).map(item => item.messageId)),
   })
 }
