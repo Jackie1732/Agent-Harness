@@ -88,6 +88,9 @@ export class SessionModelRunner {
     return this.#status === 'accepting' && this.#lifetime?.aborted === true ? 'disposing' : this.#status
   }
 
+  /** Validated immutable limits, exposed for a composing owner's durable settlement admission. */
+  get limits(): ModelRunnerLimits { return this.#limits }
+
   /** Observe only committed facts; no network or implicit recovery is performed. */
   snapshot(): ModelSessionSnapshot { return projectModelSession(this.#session.snapshot()) }
 

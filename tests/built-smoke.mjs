@@ -171,7 +171,7 @@ const communication = new harness.CommunicationService({
     maxPendingOutbox: 4,
     maxPendingInbox: 4,
     maxDeliveryAttempts: 2,
-    maxAttemptsPerRun: 4,
+    maxAttemptsPerRun: 4, maxSendJournalConflicts: 4,
   },
 })
 const senderHandle = await communicationRepository.create()

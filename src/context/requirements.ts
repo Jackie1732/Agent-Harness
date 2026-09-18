@@ -1,4 +1,4 @@
-import type { JsonValue } from '../foundation/json.js'
+import { pendingOutboxContext } from './communication-history.js'
 import type { ContextCapturedFacts, ContextDeferredInbox, ContextPendingOutbox, ContextProfile, ContextSelectionSpec, ContextUnitReference, ContextBuildFailure } from './contract.js'
 import { invalidSource } from './errors.js'
 import type { ContextFacts } from './history.js'
@@ -64,25 +64,7 @@ export function resolveRequirements(facts: ContextFacts, profile: ContextProfile
       take({ eventId: item.acceptedEventId, selector: 'peer-message' }, ['peer-message'], inbox, true)
     }
   }
-  const previouslyUnknown = new Set<string>()
-  const localHistory = facts.local.snapshot.history.at(-1)
-  if (localHistory === undefined) invalidSource('empty-history')
-  for (const event of localHistory.events) {
-    if (event.kind !== 'known' || event.stored.type !== 'communication/outbox-attempt-failed' || event.stored.payloadVersion !== 1) continue
-    const payload = event.payload
-    if (payload !== null && !Array.isArray(payload) && typeof payload === 'object') {
-      const object = payload as Readonly<Record<string, JsonValue>>
-      if ((object.code === 'transport-outcome-unknown' || object.code === 'receiver-outcome-unknown')
-        && typeof object.messageId === 'string') previouslyUnknown.add(object.messageId)
-    }
-  }
-  const pendingOutbox: ContextPendingOutbox[] = facts.local.communication.outbox.filter(item => item.status === 'pending').map(item => {
-    const e = item.envelope
-    return { messageId: item.messageId, acceptedEventId: item.acceptedEventId, recipient: e.recipient, channelId: e.channelId,
-      channelSequence: e.channelSequence, correlationId: e.correlationId, causationId: e.causationId ?? null, replyTo: e.replyTo ?? null,
-      attemptCount: item.attemptCount, openAttempt: item.openAttempt ?? null, lastFailure: item.lastFailure?.code ?? null,
-      outcomeUnknown: item.openAttempt !== undefined || previouslyUnknown.has(item.messageId) }
-  })
+  const pendingOutbox = pendingOutboxContext(facts.local.communication, facts.local.snapshot)
   const units = [...input.sort(compareUnits), ...inbox.sort(compareUnits), ...other.sort(compareUnits)]
   deferred.sort((a, b) => resolveUnit(facts, { eventId: a.acceptedEventId, selector: 'peer-message' }).closureSequence
     - resolveUnit(facts, { eventId: b.acceptedEventId, selector: 'peer-message' }).closureSequence)

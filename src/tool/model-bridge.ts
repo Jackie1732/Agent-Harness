@@ -1,7 +1,8 @@
 import type { JsonObject } from '../foundation/json.js'
 import { snapshotJson } from '../foundation/json.js'
-import type { ModelInputMessage, ModelIntentReference, ModelToolDefinition, ModelToolResultBlock } from '../model/contract.js'
+import type { ModelInputMessage, ModelToolDefinition, ModelToolResultBlock } from '../model/contract.js'
 import type { ModelInvocationId } from '../model/ids.js'
+import { composeModelExchange } from '../model/history-exchange.js'
 import { projectModelSession } from '../model/projection.js'
 import type { SessionSnapshot } from '../session/types.js'
 import type { ToolDefinition } from './contract.js'
@@ -55,33 +56,19 @@ export function modelToolHistory(snapshot: SessionSnapshot, invocationId: ModelI
     throw new ToolError('TOOL_SOURCE_NOT_ACTIONABLE', 'model history is not a complete local tool-call result')
   }
   const tools = projectToolSession(snapshot).invocations
-  const content: Extract<ModelInputMessage, { role: 'assistant' }>['content'][number][] = []
   const results: ModelToolResultBlock[] = []
-  let continuation: Extract<ModelInputMessage, { role: 'assistant' }>['continuation']
   for (const block of model.settled.payload.result.blocks) {
-    if (!block.complete) throw new ToolError('TOOL_HISTORY_INCOMPLETE', 'assistant history contains an incomplete block')
-    if (block.kind === 'text') content.push({ kind: 'text', text: block.text })
-    else if (block.kind === 'continuation') {
-      if (continuation !== undefined) throw new ToolError('TOOL_HISTORY_INCOMPLETE', 'assistant continuation cannot be represented losslessly')
-      continuation = block.capsule
-    } else {
-      const reference: ModelIntentReference = { invocationId, outputBlockIndex: block.index }
-      const matches = tools.filter(item => {
-        const source = item.requested.payload.source
-        return source.kind === 'model' && source.intent.invocationId === invocationId && source.intent.outputBlockIndex === block.index
-      })
-      if (matches.length !== 1 || matches[0]?.state !== 'settled') {
-        throw new ToolError('TOOL_HISTORY_INCOMPLETE', 'every original assistant tool call requires exactly one committed result')
-      }
-      const result = resultBlock(matches[0])
-      if (result.callId !== block.callId) throw new ToolError('TOOL_STATE_INVALID', 'tool result differs from the original call identity')
-      content.push({ kind: 'tool-call', callId: block.callId, name: block.name, argumentsText: block.argumentsText, source: reference })
-      results.push(result)
-    }
+    if (block.kind !== 'tool-call') continue
+    const matches = tools.filter(item => {
+      const source = item.requested.payload.source
+      return source.kind === 'model' && source.intent.invocationId === invocationId && source.intent.outputBlockIndex === block.index
+    })
+    if (matches.length !== 1 || matches[0]?.state !== 'settled') throw new ToolError('TOOL_HISTORY_INCOMPLETE', 'every original assistant tool call requires exactly one committed result')
+    const result = resultBlock(matches[0])
+    if (result.callId !== block.callId) throw new ToolError('TOOL_STATE_INVALID', 'tool result differs from the original call identity')
+    results.push(result)
   }
-  if (results.length === 0) throw new ToolError('TOOL_HISTORY_INCOMPLETE', 'assistant result contains no tool calls')
-  return Object.freeze({
-    assistant: Object.freeze({ role: 'assistant', content: Object.freeze(content), ...(continuation === undefined ? {} : { continuation }) }),
-    results: Object.freeze({ role: 'user', content: Object.freeze(results) }),
+  return composeModelExchange(invocationId, model.settled.payload.result, results, reason => {
+    throw new ToolError('TOOL_HISTORY_INCOMPLETE', reason)
   })
 }

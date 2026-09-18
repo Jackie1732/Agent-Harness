@@ -18,6 +18,7 @@ export function validateMailboxLimits(limits: MailboxLimits): MailboxLimits {
   safeInteger(limits.maxPendingInbox, 'maxPendingInbox', true)
   safeInteger(limits.maxDeliveryAttempts, 'maxDeliveryAttempts', false)
   safeInteger(limits.maxAttemptsPerRun, 'maxAttemptsPerRun', false)
+  safeInteger(limits.maxSendJournalConflicts, 'maxSendJournalConflicts', true)
   return Object.freeze({ ...limits })
 }
 

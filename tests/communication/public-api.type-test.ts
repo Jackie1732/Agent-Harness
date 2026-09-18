@@ -26,7 +26,7 @@ const limits: MailboxLimits = {
   maxPendingOutbox: 1,
   maxPendingInbox: 1,
   maxDeliveryAttempts: 1,
-  maxAttemptsPerRun: 1,
+  maxAttemptsPerRun: 1, maxSendJournalConflicts: 4,
 }
 const service = new CommunicationService({ directory, transport, limits })
 const catalog: MessageCatalog = createMessageCatalog()

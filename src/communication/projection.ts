@@ -2,6 +2,9 @@ import { parseSessionAddress, parseSessionEventId } from '../session/index.js'
 import type { CommittedSessionEvent, SessionSnapshot } from '../session/index.js'
 import type { JsonValue } from '../foundation/json.js'
 import { messageEnvelopeDigest } from './canonical-json.js'
+import { keyedOutboxAcceptedEvent } from './keyed-event.js'
+import type { KeyedOutboxAcceptedPayload } from './keyed-event.js'
+import { sendKeyText } from './send-command.js'
 import { CommunicationError } from './errors.js'
 import { decodeMessagePayload } from './message-catalog.js'
 import type { MessageCatalog } from './message-catalog.js'
@@ -38,7 +41,7 @@ import type {
 } from './types.js'
 
 interface MutableOutbox {
-  readonly accepted: CommittedSessionEvent<OutboxAcceptedPayload>
+  readonly accepted: CommittedSessionEvent<OutboxAcceptedPayload | KeyedOutboxAcceptedPayload>
   attemptCount: number
   openAttempt?: number
   lastFailure?: OutboxFailureSnapshot
@@ -85,6 +88,7 @@ function pendingOutbox(state: MutableOutbox): OutboxMessageSnapshot {
   return Object.freeze({
     messageId: envelope.messageId,
     envelope,
+    ...keyedFields(state),
     acceptedEventId: state.accepted.stored.eventId,
     acceptedSequence: state.accepted.stored.sequence,
     attemptCount: state.attemptCount,
@@ -99,11 +103,18 @@ function outboxTerminalBase(state: MutableOutbox): Omit<OutboxMessageSnapshot, '
   return {
     messageId: envelope.messageId,
     envelope,
+    ...keyedFields(state),
     acceptedEventId: state.accepted.stored.eventId,
     acceptedSequence: state.accepted.stored.sequence,
     attemptCount: state.attemptCount,
     ...(state.lastFailure === undefined ? {} : { lastFailure: state.lastFailure }),
   }
+}
+
+function keyedFields(state: MutableOutbox) {
+  if (state.accepted.stored.payloadVersion !== 2) return {}
+  const payload = state.accepted.payload as KeyedOutboxAcceptedPayload
+  return { sendKey: payload.sendKey, command: payload.command }
 }
 
 function inboxBase(state: MutableInbox) {
@@ -123,11 +134,27 @@ function applyOutboxEvent(
   sequences: Map<string, number>,
   address: string,
 ): boolean {
-  if (matches(event, outboxAcceptedEvent.type, outboxAcceptedEvent.payloadVersion)) {
-    const accepted = event as CommittedSessionEvent<OutboxAcceptedPayload>
+  if (matches(event, outboxAcceptedEvent.type, outboxAcceptedEvent.payloadVersion) || matches(event, keyedOutboxAcceptedEvent.type, 2)) {
+    const accepted = event as CommittedSessionEvent<OutboxAcceptedPayload | KeyedOutboxAcceptedPayload>
     const envelope = accepted.payload.envelope
     if (envelope.sender !== address) invalid('outbox envelope sender does not own the Session', { messageId: envelope.messageId })
     if (outbox.has(envelope.messageId)) invalid('outbox contains a duplicate message identity', { messageId: envelope.messageId })
+    if (event.stored.payloadVersion === 2) {
+      const payload = accepted.payload as KeyedOutboxAcceptedPayload
+      const key = parseSessionEventId(payload.sendKey.eventId)
+      if (key.sessionId !== event.stored.sessionId || key.sequence >= event.stored.sequence) invalid('send key must name an earlier local event')
+      if ([...outbox.values()].some(prior => {
+        const fields = keyedFields(prior)
+        return fields.sendKey !== undefined && sendKeyText(fields.sendKey) === sendKeyText(payload.sendKey)
+      })) invalid('duplicate send key')
+      if (payload.command.type !== envelope.type || payload.command.payloadVersion !== envelope.payloadVersion) invalid('command message type mismatch')
+      if (payload.command.kind === 'send') {
+        const request = payload.command.request
+        if (request.recipient !== envelope.recipient || request.channelId !== envelope.channelId || envelope.replyTo !== undefined
+          || (request.kind === 'root' ? envelope.correlationId !== envelope.messageId || envelope.causationId !== undefined
+            : request.correlationId !== envelope.correlationId || request.causationId !== envelope.causationId)) invalid('command routing mismatch')
+      } else if (envelope.replyTo !== payload.command.inboxMessageId) invalid('reply command mismatch')
+    }
     const key = channelKey(envelope.recipient, envelope.channelId)
     const expected = (sequences.get(key) ?? 0) + 1
     if (envelope.channelSequence !== expected) {
@@ -250,6 +277,14 @@ export function projectCommunicationFacts(snapshot: SessionSnapshot): Communicat
       && item.payloadVersion === record.stored.payloadVersion)
     if (definition !== undefined && record.stored.ignorable === true) invalid('communication facts must be required')
     const decoded = definition === undefined ? record : { ...record, payload: definition.decode(record.payload) }
+    if (matches(decoded, keyedOutboxAcceptedEvent.type, 2)) {
+      const payload = keyedOutboxAcceptedEvent.decode(decoded.payload)
+      if (payload.command.kind === 'reply') {
+        const original = requireInbox(inbox, payload.command.inboxMessageId).accepted.payload.envelope
+        if (payload.envelope.recipient !== original.sender || payload.envelope.channelId !== original.channelId
+          || payload.envelope.correlationId !== original.correlationId || payload.envelope.causationId !== original.messageId) invalid('reply command must inherit Inbox routing')
+      }
+    }
     const handled = applyOutboxEvent(decoded, outbox, sequences, snapshot.address)
       || applyInboxEvent(decoded, inbox, snapshot.address)
     if (!handled && record.stored.type.startsWith('communication/')) {

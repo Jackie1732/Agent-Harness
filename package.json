@@ -25,7 +25,7 @@
     "typecheck": "tsc -p tsconfig.json",
     "test": "vitest run",
     "test:watch": "vitest",
-    "test:built": "node tests/built-smoke.mjs && node tests/model-built-smoke.mjs && node --test tests/tool-native.node.mjs tests/tool-pipeline.node.mjs tests/tool-model.node.mjs tests/tool-registration.node.mjs tests/tool-recovery.node.mjs tests/tool-coexistence.node.mjs tests/context-materials.node.mjs && node tests/tool-built-smoke.mjs && node tests/context-built-smoke.mjs && node examples/context-offline-replay.mjs && node examples/context-agent-roundtrip.mjs && node examples/context-compaction.mjs",
+    "test:built": "node tests/built-smoke.mjs && node tests/model-built-smoke.mjs && node --test tests/tool-native.node.mjs tests/tool-pipeline.node.mjs tests/tool-model.node.mjs tests/tool-registration.node.mjs tests/tool-recovery.node.mjs tests/tool-coexistence.node.mjs tests/context-materials.node.mjs && node tests/tool-built-smoke.mjs && node tests/context-built-smoke.mjs && node examples/context-offline-replay.mjs && node examples/context-agent-roundtrip.mjs && node examples/context-compaction.mjs && node --test tests/agent-built.node.mjs tests/agent-read-text.node.mjs && node examples/agent-ask-user.mjs",
     "check": "pnpm run lint && pnpm run typecheck && pnpm run test && pnpm run build && pnpm run test:built",
     "test:tool:built": "node --test tests/tool-native.node.mjs tests/tool-pipeline.node.mjs tests/tool-model.node.mjs tests/tool-registration.node.mjs tests/tool-recovery.node.mjs tests/tool-coexistence.node.mjs && node tests/tool-built-smoke.mjs"
   },

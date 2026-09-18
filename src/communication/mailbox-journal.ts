@@ -1,18 +1,16 @@
-import { clockTimestamp } from '../foundation/clock.js'
-import type { Clock, JsonValue } from '../foundation/index.js'
+import type { Clock } from '../foundation/index.js'
 import { SerialGate } from '../foundation/serial-gate.js'
 import type { SessionAddress, SessionHandle } from '../session/index.js'
-import { parseSessionAddress, SessionError } from '../session/index.js'
+import { SessionError } from '../session/index.js'
 import { canonicalJsonBytes, equalMessageEnvelopes, messageEnvelopeDigest } from './canonical-json.js'
 import { evaluatePolicyDecision } from './configuration.js'
 import { decodeMessageEnvelope } from './envelope.js'
 import { CommunicationError } from './errors.js'
 import type { CommunicationIdentitySource, MessageId } from './ids.js'
-import { channelSequence, parseChannelId, parseMessageId } from './ids.js'
-import type { MessageCatalog, MessageDefinition } from './message-catalog.js'
+import type { MessageCatalog } from './message-catalog.js'
 import { decodeMessagePayload } from './message-catalog.js'
 import { projectMailbox } from './projection.js'
-import { inboxAbandonedEvent, inboxAcceptedEvent, inboxProcessedEvent, outboxAcceptedEvent } from './session-events.js'
+import { inboxAbandonedEvent, inboxAcceptedEvent, inboxProcessedEvent } from './session-events.js'
 import type {
   CommunicationPolicy,
   InboxAbandonReason,
@@ -21,8 +19,6 @@ import type {
   MailboxSnapshot,
   MessageDeliveryOutcome,
   MessageEnvelope,
-  MessageSendRequest,
-  OutgoingMessageAccepted,
 } from './types.js'
 
 /** Dependencies of the private durable Mailbox transition owner. */
@@ -51,7 +47,6 @@ function inboxReceipt(message: InboxMessageSnapshot) {
 /** Serializes checks with the exact durable Inbox or Outbox transition they authorize. */
 export class MailboxJournal {
   readonly #options: MailboxJournalOptions
-  readonly #sendGate = new SerialGate()
   readonly #receiveGate = new SerialGate()
 
   constructor(options: MailboxJournalOptions) {
@@ -60,39 +55,6 @@ export class MailboxJournal {
 
   snapshot(): MailboxSnapshot {
     return projectMailbox(this.#options.handle.snapshot(), this.#options.catalog)
-  }
-
-  acceptSend<TPayload extends JsonValue>(
-    definition: MessageDefinition<TPayload>,
-    request: MessageSendRequest,
-    payload: TPayload,
-  ): Promise<OutgoingMessageAccepted<TPayload>> {
-    return this.#sendGate.run(() => this.#commitSend(definition, request, payload))
-  }
-
-  acceptReply<TPayload extends JsonValue>(
-    inboxMessageId: MessageId,
-    definition: MessageDefinition<TPayload>,
-    payload: TPayload,
-  ): Promise<OutgoingMessageAccepted<TPayload>> {
-    return this.#sendGate.run(async () => {
-      const incoming = this.snapshot().inbox.find(item => item.messageId === inboxMessageId)
-      if (incoming === undefined) {
-        throw new CommunicationError('MESSAGE_NOT_FOUND', 'Inbox message does not exist', { details: { messageId: inboxMessageId } })
-      }
-      if (!incoming.supported) {
-        throw new CommunicationError('MESSAGE_STATE_INVALID', 'unsupported Inbox message cannot be replied to', {
-          details: { messageId: inboxMessageId },
-        })
-      }
-      return await this.#commitSend(definition, {
-        kind: 'derived',
-        recipient: incoming.envelope.sender,
-        channelId: incoming.envelope.channelId,
-        correlationId: incoming.envelope.correlationId,
-        causationId: incoming.messageId,
-      }, payload, incoming.messageId)
-    })
   }
 
   acceptDelivery(
@@ -112,91 +74,7 @@ export class MailboxJournal {
   }
 
   async drain(): Promise<void> {
-    await Promise.all([this.#sendGate.drain(), this.#receiveGate.drain()])
-  }
-
-  async #commitSend<TPayload extends JsonValue>(
-    definition: MessageDefinition<TPayload>,
-    request: MessageSendRequest,
-    payload: TPayload,
-    replyTo?: MessageId,
-  ): Promise<OutgoingMessageAccepted<TPayload>> {
-    const recipient = request.recipient
-    try {
-      parseSessionAddress(recipient)
-    } catch (cause) {
-      throw new CommunicationError('MESSAGE_ENVELOPE_INVALID', 'message recipient is not canonical', { cause })
-    }
-    const channelId = parseChannelId(request.channelId)
-    const snapshot = this.snapshot()
-    if (this.#options.handle.snapshot().lifecycle === 'ended') {
-      throw new CommunicationError('MESSAGE_SESSION_ENDED', 'Session is already ended', {
-        details: { address: this.#options.handle.header.address },
-      })
-    }
-    if (pendingCount(snapshot.outbox) >= this.#options.limits.maxPendingOutbox) {
-      throw new CommunicationError('MESSAGE_OUTBOX_FULL', 'Outbox pending limit is reached', {
-        details: { address: this.#options.handle.header.address },
-      })
-    }
-    const decision = evaluatePolicyDecision(() => this.#options.policy.canSend({
-      sender: this.#options.handle.header.address,
-      recipient,
-      channelId,
-      type: definition.type,
-      payloadVersion: definition.payloadVersion,
-    }))
-    if (decision.kind === 'deny') {
-      throw new CommunicationError('MESSAGE_SEND_FORBIDDEN', 'outgoing communication policy denied the message', {
-        details: { address: this.#options.handle.header.address, recipient, reasonCode: decision.reasonCode },
-      })
-    }
-    const messageId = parseMessageId(this.#options.identitySource.nextMessageId())
-    if (snapshot.outbox.some(item => item.messageId === messageId) || snapshot.inbox.some(item => item.messageId === messageId)) {
-      throw new CommunicationError('MESSAGE_ID_CONFLICT', 'generated Message identity already exists locally', {
-        details: { messageId },
-      })
-    }
-    const priorSequence = snapshot.outbox
-      .filter(item => item.envelope.recipient === recipient && item.envelope.channelId === channelId)
-      .reduce((maximum, item) => Math.max(maximum, item.envelope.channelSequence), 0)
-    if (priorSequence >= Number.MAX_SAFE_INTEGER) {
-      throw new CommunicationError('MESSAGE_SEQUENCE_EXHAUSTED', 'Channel sequence is exhausted', {
-        details: { recipient, channelId },
-      })
-    }
-    const envelope = decodeMessageEnvelope({
-      envelopeVersion: 1,
-      messageId,
-      sender: this.#options.handle.header.address,
-      recipient,
-      channelId,
-      channelSequence: channelSequence(priorSequence + 1),
-      correlationId: request.kind === 'root' ? messageId : parseMessageId(request.correlationId),
-      ...(request.kind === 'derived' ? { causationId: parseMessageId(request.causationId) } : {}),
-      ...(replyTo === undefined ? {} : { replyTo }),
-      createdAt: clockTimestamp(this.#options.clock),
-      type: definition.type,
-      payloadVersion: definition.payloadVersion,
-      payload,
-    }) as MessageEnvelope<TPayload>
-    if (canonicalJsonBytes(envelope).byteLength > this.#options.limits.maxMessageBytes) {
-      throw new CommunicationError('MESSAGE_ENVELOPE_INVALID', 'Message Envelope exceeds maxMessageBytes', {
-        details: { messageId, maxMessageBytes: this.#options.limits.maxMessageBytes },
-      })
-    }
-    try {
-      const event = await this.#options.handle.append(outboxAcceptedEvent, { envelope })
-      return Object.freeze({ messageId, envelope, outboxEventId: event.stored.eventId })
-    } catch (cause) {
-      if (cause instanceof SessionError && cause.code === 'SESSION_APPEND_OUTCOME_UNKNOWN') {
-        this.#options.fault()
-        throw new CommunicationError('MESSAGE_OUTBOX_COMMIT_UNKNOWN', 'Outbox commit outcome is unknown', {
-          details: { messageId }, cause,
-        })
-      }
-      throw cause
-    }
+    await this.#receiveGate.drain()
   }
 
   async #receive(

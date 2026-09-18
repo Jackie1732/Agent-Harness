@@ -104,7 +104,7 @@ export const limits: MailboxLimits = Object.freeze({
   maxPendingOutbox: 8,
   maxPendingInbox: 8,
   maxDeliveryAttempts: 3,
-  maxAttemptsPerRun: 8,
+  maxAttemptsPerRun: 8, maxSendJournalConflicts: 4,
 })
 
 export function createRepository(

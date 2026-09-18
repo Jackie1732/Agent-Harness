@@ -1,6 +1,7 @@
 import type { JsonObject, JsonValue } from '../foundation/json.js'
 import type { SessionAddress, SessionEventId, SessionId, SessionSequence } from '../session/index.js'
 import type { ChannelId, ChannelSequence, MessageId } from './ids.js'
+import type { MessageSendCommand, MessageSendKey } from './send-command.js'
 
 /** Current outer Message Envelope version. */
 export const MESSAGE_ENVELOPE_VERSION = 1 as const
@@ -81,6 +82,7 @@ export interface MailboxLimits {
   readonly maxPendingInbox: number
   readonly maxDeliveryAttempts: number
   readonly maxAttemptsPerRun: number
+  readonly maxSendJournalConflicts: number
 }
 
 /** Input supplied to an outgoing communication policy. */
@@ -131,6 +133,8 @@ export interface OutboxFailureSnapshot extends JsonObject {
 }
 
 interface OutboxSnapshotBase {
+  readonly sendKey?: MessageSendKey
+  readonly command?: MessageSendCommand
   readonly messageId: MessageId
   readonly envelope: MessageEnvelope
   readonly acceptedEventId: SessionEventId

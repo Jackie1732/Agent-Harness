@@ -8,6 +8,7 @@ import { contextAssemblyCommittedEvent, contextCompactionCommittedEvent, context
 import { assertEventCut, knownEvent } from './sources.js'
 import type { SourceIndex } from './sources.js'
 import { compareText, equalJson } from './validation.js'
+import { agentContextProfileRecordedEvent, agentContextAssemblyCommittedEvent } from './session-events.js'
 
 export interface ContextMaterialState {
   readonly profiles: readonly CommittedSessionEvent<ContextProfile>[]
@@ -62,7 +63,7 @@ export function projectMaterials(index: SourceIndex): ContextMaterialState {
       throw new ContextError('CONTEXT_STATE_INVALID', 'context-payload', { eventId: event.stored.eventId })
     }
     const id = event.stored.eventId
-    if (definition === contextProfileRecordedEvent) {
+    if (definition === contextProfileRecordedEvent || definition === agentContextProfileRecordedEvent) {
       const value = payload as ContextProfile
       if ((profileHeads.get(value.profileKey) ?? null) !== value.previousEventId) invalidState('profile-head')
       const committed = Object.freeze({ ...event, payload: value })
@@ -95,7 +96,7 @@ export function projectMaterials(index: SourceIndex): ContextMaterialState {
         for (const source of [value.algorithm.assemblyEventId, value.algorithm.preparedEventId, value.algorithm.settledEventId]) assertEarlier(index, source, id)
       }
       compactions.push(Object.freeze({ ...event, payload: value }))
-    } else if (definition === contextAssemblyCommittedEvent) {
+    } else if (definition === contextAssemblyCommittedEvent || definition === agentContextAssemblyCommittedEvent) {
       const value = payload as ContextAssembly
       assertEventCut(index.snapshot, event, value.coverage); assertEarlier(index, value.selection.profileEventId, id)
       for (const ref of [...value.required, ...value.selected.map(item => item.reference), ...value.omitted.map(item => item.reference)]) assertEarlier(index, ref.eventId, id)

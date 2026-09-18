@@ -31,11 +31,22 @@ function accounting(value: unknown): ContextTokenAccounting {
 
 /** No templates or ambient defaults. The persisted revision contains the final literals. */
 export function decodeContextProfile(value: unknown): ContextProfile {
+  return decodeProfile(value, 'context-neutral/v1')
+}
+
+/** Generation profiles for claimed Agent inputs; v1 decoding remains unchanged. */
+export function decodeAgentContextProfile(value: unknown): ContextProfile {
+  const result = decodeProfile(value, 'context-neutral/v2')
+  if (result.purpose !== 'generation' || result.historyScope !== 'local-only') invalidContext('agent-profile-purpose')
+  return result
+}
+
+function decodeProfile(value: unknown, renderer: ContextProfile['rendererVersion']): ContextProfile {
   const input = record(contextJson(value))
   exact(input, ['profileKey', 'purpose', 'previousEventId', 'sections', 'toolNames', 'rendererVersion', 'historyScope', 'tokenAccounting', 'budget'])
   identifier(input.profileKey); previous(input.previousEventId)
   const purpose = choice(input.purpose, ['generation', 'compaction'])
-  choice(input.rendererVersion, ['context-neutral/v1'])
+  choice(input.rendererVersion, [renderer])
   choice(input.historyScope, ['local-only', 'allow-lineage'])
   budget(input.budget); accounting(input.tokenAccounting)
   const sections = array(input.sections, 64).map(item => {

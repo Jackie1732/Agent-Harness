@@ -15,6 +15,9 @@ export { createMessageCatalog, createMessageDefinition, decodeMessagePayload } f
 export { projectCommunicationFacts, projectMailbox } from './projection.js'
 export { CommunicationService } from './service.js'
 export { communicationSessionEventDefinitions } from './session-events.js'
+export { keyedOutboxAcceptedEvent } from './keyed-event.js'
+export type { KeyedOutboxAcceptedPayload } from './keyed-event.js'
+export type { MessageSendKey, MessageSendCommand, MessageCommandContent } from './send-command.js'
 export { createInProcessMessageTransport } from './transport.js'
 
 export type { CommunicationServiceComponentOptions } from './component.js'

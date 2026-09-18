@@ -37,7 +37,7 @@ test('T7-47/69 actual Mailbox appends between all Tool transitions without repea
   await fixture(async f => {
     const directory = h.createSessionDirectory(), transport = h.createInProcessMessageTransport(directory)
     const service = new h.CommunicationService({ directory, transport, limits: {
-      maxMessageBytes: 4096, maxPendingOutbox: 8, maxPendingInbox: 8, maxDeliveryAttempts: 4, maxAttemptsPerRun: 8,
+      maxMessageBytes: 4096, maxPendingOutbox: 8, maxPendingInbox: 8, maxDeliveryAttempts: 4, maxAttemptsPerRun: 8, maxSendJournalConflicts: 4,
     } })
     const definition = h.createMessageDefinition({ type: 'research/progress', payloadVersion: 1, decode: value => value })
     const messages = h.createMessageCatalog([definition])

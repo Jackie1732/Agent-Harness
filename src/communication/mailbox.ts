@@ -15,6 +15,8 @@ import { MailboxJournal } from './mailbox-journal.js'
 import type { MessageCatalog, MessageDefinition } from './message-catalog.js'
 import { decodeMessagePayload } from './message-catalog.js'
 import { OutboxAttemptCoordinator } from './outbox-attempts.js'
+import { OutboxAcceptance } from './outbox-acceptance.js'
+import type { MessageCommandContent, MessageSendKey } from './send-command.js'
 import type { DeliveryAttemptLease, PrepareAttemptResult } from './outbox-attempts.js'
 import type {
   CommunicationPolicy,
@@ -33,6 +35,10 @@ import type {
 
 /** Public local communication port bound to one Session Handle. */
 export interface SessionMailbox {
+  /** Accept one durable local command, or return its original acceptance without new authorization. */
+  sendOnce(key: MessageSendKey, request: MessageSendRequest, content: MessageCommandContent): Promise<OutgoingMessageAccepted>
+  /** Idempotent reply; the original Inbox owns recipient and causation fields. */
+  replyOnce(key: MessageSendKey, inboxMessageId: MessageId, content: MessageCommandContent): Promise<OutgoingMessageAccepted>
   readonly sessionId: SessionId
   readonly address: SessionAddress
   readonly status: SessionMailboxStatus
@@ -94,6 +100,7 @@ export class SessionMailboxImpl implements SessionMailbox, DirectoryReceiver {
   readonly #operations = new Set<Promise<unknown>>()
   readonly #disposalController = new AbortController()
   readonly #journal: MailboxJournal
+  readonly #outbox: OutboxAcceptance
   readonly #attempts: OutboxAttemptCoordinator
   #status: SessionMailboxStatus = 'open'
   #disposeTask: Promise<void> | undefined
@@ -107,7 +114,7 @@ export class SessionMailboxImpl implements SessionMailbox, DirectoryReceiver {
     this.#onDispose = options.onDispose
     const clock = options.clock ?? systemClock
     const identitySource = options.identitySource ?? systemCommunicationIdentitySource
-    this.#journal = new MailboxJournal({
+    const journalOptions = {
       handle: this.#handle,
       catalog: this.#catalog,
       policy: options.policy,
@@ -115,7 +122,9 @@ export class SessionMailboxImpl implements SessionMailbox, DirectoryReceiver {
       clock,
       identitySource,
       fault: () => this.fault(),
-    })
+    }
+    this.#journal = new MailboxJournal(journalOptions)
+    this.#outbox = new OutboxAcceptance(journalOptions)
     this.#attempts = new OutboxAttemptCoordinator({
       handle: this.#handle,
       catalog: this.#catalog,
@@ -139,7 +148,7 @@ export class SessionMailboxImpl implements SessionMailbox, DirectoryReceiver {
     this.#assertAccepting()
     this.#assertDefinition(definition)
     const decoded = decodeMessagePayload(definition, payload)
-    return this.#track(this.#journal.acceptSend(definition, request, decoded))
+    return this.#track(this.#outbox.send(definition, request, decoded))
   }
 
   reply<TPayload extends JsonValue>(
@@ -151,7 +160,17 @@ export class SessionMailboxImpl implements SessionMailbox, DirectoryReceiver {
     parseMessageId(inboxMessageId)
     this.#assertDefinition(definition)
     const decoded = decodeMessagePayload(definition, payload)
-    return this.#track(this.#journal.acceptReply(inboxMessageId, definition, decoded))
+    return this.#track(this.#outbox.reply(inboxMessageId, definition, decoded))
+  }
+
+  sendOnce(key: MessageSendKey, request: MessageSendRequest, content: MessageCommandContent): Promise<OutgoingMessageAccepted> {
+    this.#assertAccepting()
+    return this.#track(this.#outbox.sendOnce(key, { ...content, kind: 'send', request }))
+  }
+
+  replyOnce(key: MessageSendKey, inboxMessageId: MessageId, content: MessageCommandContent): Promise<OutgoingMessageAccepted> {
+    this.#assertAccepting()
+    return this.#track(this.#outbox.sendOnce(key, { ...content, kind: 'reply', inboxMessageId }))
   }
 
   markProcessed(messageId: MessageId): Promise<InboxMessageSnapshot> {

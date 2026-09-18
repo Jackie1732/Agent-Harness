@@ -1,6 +1,9 @@
 export { ContextError } from './errors.js'
 export type { ContextErrorCode } from './errors.js'
 export { assembleContext } from './assembler.js'
+export { assembleAgentContext } from './agent-assembler.js'
+export type { AgentContextBuild } from './agent-assembler.js'
+export type { AgentContextAssembly, AgentContextConsumer } from './agent-contract.js'
 export { previewCompaction } from './compaction-preview.js'
 export { retrieveSessionMemory } from './memory.js'
 export type { ContextMemorySearchCandidate } from './memory.js'
@@ -18,6 +21,8 @@ export {
   contextMemoryRetractedEvent,
   contextProfileRecordedEvent,
   contextSessionEventDefinitions,
+  agentContextProfileRecordedEvent,
+  agentContextAssemblyCommittedEvent,
 } from './session-events.js'
 export type {
   CommittedCompactionResult,

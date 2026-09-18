@@ -10,6 +10,14 @@ import type { SessionHandle } from '../session/session-handle.js'
 import type { CommittedSessionEvent, DurableEventDefinition } from '../session/index.js'
 import type { ToolRegistry } from '../tool/registry.js'
 import { buildCapturedContext } from './assembler.js'
+import { assembleAgentContext } from './agent-assembler.js'
+import { decodeAgentContextConsumer } from './agent-codec.js'
+import type { AgentContextConsumer } from './agent-contract.js'
+import { decodeAgentContextProfile } from './profile.js'
+import { agentContextProfileRecordedEvent, agentContextAssemblyCommittedEvent } from './session-events.js'
+import { projectAgentSession } from '../agent/projection.js'
+import { describeToolForModel } from '../tool/model-bridge.js'
+import { decodeMessagePayload } from '../communication/message-catalog.js'
 import { captureContextFacts } from './capture.js'
 import { previewCompaction as previewRuleCompaction } from './compaction-preview.js'
 import { modelCompactionCandidate } from './compaction-replay.js'
@@ -45,7 +53,7 @@ import {
   contextSessionEventDefinitions,
 } from './session-events.js'
 import { requireSourceIndex } from './sources.js'
-import { contextJson, digest, unitReferences } from './validation.js'
+import { contextJson, digest, record, unitReferences } from './validation.js'
 
 export type SessionContextStatus = 'accepting' | 'disposing' | 'faulted' | 'disposed'
 
@@ -102,13 +110,15 @@ export class SessionContext {
   /** Append one complete Profile revision after checking its exact local head. */
   recordProfile(value: ContextProfile, options: ContextOperationOptions = {}): Promise<CommittedSessionEvent<ContextProfile>> {
     return this.#start(options, async assertNotCancelled => {
-      const profile = decodeContextProfile(value)
+      const copied = record(contextJson(value))
+      const definition = copied.rendererVersion === 'context-neutral/v2' ? agentContextProfileRecordedEvent : contextProfileRecordedEvent
+      const profile = definition === agentContextProfileRecordedEvent ? decodeAgentContextProfile(copied) : decodeContextProfile(copied)
       const snapshot = this.#session.snapshot()
       const state = projectContextSession(snapshot)
       const current = state.profileHeads.find(item => item.profileKey === profile.profileKey)?.eventId ?? null
       if (current !== profile.previousEventId) throw new ContextError('CONTEXT_REVISION_CONFLICT', 'profile-head')
       assertNotCancelled()
-      return await this.#append(snapshot.localPosition, contextProfileRecordedEvent, profile, 'CONTEXT_REVISION_CONFLICT')
+      return await this.#append(snapshot.localPosition, definition, profile, 'CONTEXT_REVISION_CONFLICT')
     })
   }
 
@@ -163,6 +173,35 @@ export class SessionContext {
   /** Compile and conditionally commit one generation request without invoking its Model. */
   assemble(value: ContextSelectionSpec, options: ContextOperationOptions = {}): Promise<CommittedContextBuildResult> {
     return this.#assemble(value, 'generation', options)
+  }
+
+  /** Capture metadata once, then commit the exact v2 request at its source cut. */
+  assembleAgent(value: AgentContextConsumer, options: ContextOperationOptions = {}): Promise<CommittedContextBuildResult> {
+    const consumer = decodeAgentContextConsumer(value)
+    return this.#start(options, async assertNotCancelled => {
+      const snapshot = this.#session.snapshot()
+      const state = projectAgentSession(snapshot)
+      if (state.spec === null) invalidSource('agent-spec-missing')
+      const registry = this.#toolRegistry?.snapshot() ?? []
+      const tools = state.spec.payload.toolNames.flatMap(name => {
+        const item = registry.find(item => item.definition.name === name && item.status === 'active')
+        return item === undefined ? [] : [{ definition: item.definition, provider: item.provider, model: describeToolForModel(item.definition) }]
+      })
+      const messageSupport = state.spec.payload.messages.map(kind => {
+        const definition = this.#messageCatalog.resolve(kind.type, kind.payloadVersion)
+        if (definition !== undefined) for (const input of state.inputs) {
+          if (input.status === 'claimed' && input.message?.type === kind.type && input.message.payloadVersion === kind.payloadVersion) decodeMessagePayload(definition, input.message.payload)
+        }
+        return { type: kind.type, payloadVersion: kind.payloadVersion, supported: definition !== undefined }
+      })
+      const built = assembleAgentContext(snapshot, consumer, { tools, messageSupport }, this.#session.maxRecordBytes)
+      if (built.kind !== 'ready') return built
+      assertNotCancelled()
+      const committed = await this.#append(snapshot.localPosition, agentContextAssemblyCommittedEvent, built.assembly, 'CONTEXT_SOURCE_CHANGED')
+      return { kind: 'ready', committed, request: built.request, inputPrecondition: snapshotInputPrecondition({ sessionId: snapshot.header.sessionId,
+        expectedLocalPosition: committed.stored.sequence, expectedProviderDescriptor: built.assembly.selection.target.provider }),
+        committedEnvelopeBytes: canonicalJsonBytes(committed.stored as unknown as JsonValue).byteLength }
+    })
   }
 
   /** Compile and conditionally commit one model-summary input without invoking its Model. */

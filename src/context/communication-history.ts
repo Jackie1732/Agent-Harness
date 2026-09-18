@@ -1,3 +1,7 @@
+import type { JsonValue } from '../foundation/json.js'
+import type { SessionSnapshot } from '../session/types.js'
+import type { ContextPendingOutbox } from './contract.js'
+import { invalidSource } from './errors.js'
 import type { CommunicationFacts, InboxMessageFact, OutboxMessageSnapshot } from '../communication/types.js'
 import { parseSessionEventId } from '../session/ids.js'
 import type { ContextPeerMetadata } from './contract.js'
@@ -27,4 +31,28 @@ function make(message: InboxMessageFact | OutboxMessageSnapshot, selector: 'peer
     rawMessages: [dataNote(selector, reference, metadata, message.envelope.payload)],
     optionalHistory: selector === 'peer-message' && message.status !== 'pending',
     compactable: selector === 'peer-message' && message.status !== 'pending' }
+}
+
+/** Retain earlier unknown attempts even when the newest attempt has another result. */
+export function pendingOutboxContext(facts: CommunicationFacts, snapshot: SessionSnapshot): readonly ContextPendingOutbox[] {
+  const previouslyUnknown = new Set<string>()
+  const localHistory = snapshot.history.at(-1)
+  if (localHistory === undefined) invalidSource('empty-history')
+  for (const event of localHistory.events) {
+    if (event.kind !== 'known' || event.stored.type !== 'communication/outbox-attempt-failed' || event.stored.payloadVersion !== 1) continue
+    const payload = event.payload
+    if (payload !== null && !Array.isArray(payload) && typeof payload === 'object') {
+      const object = payload as Readonly<Record<string, JsonValue>>
+      if ((object.code === 'transport-outcome-unknown' || object.code === 'receiver-outcome-unknown')
+        && typeof object.messageId === 'string') previouslyUnknown.add(object.messageId)
+    }
+  }
+  const pendingOutbox: ContextPendingOutbox[] = facts.outbox.filter(item => item.status === 'pending').map(item => {
+    const e = item.envelope
+    return { messageId: item.messageId, acceptedEventId: item.acceptedEventId, recipient: e.recipient, channelId: e.channelId,
+      channelSequence: e.channelSequence, correlationId: e.correlationId, causationId: e.causationId ?? null, replyTo: e.replyTo ?? null,
+      attemptCount: item.attemptCount, openAttempt: item.openAttempt ?? null, lastFailure: item.lastFailure?.code ?? null,
+      outcomeUnknown: item.openAttempt !== undefined || previouslyUnknown.has(item.messageId) }
+  })
+  return pendingOutbox
 }

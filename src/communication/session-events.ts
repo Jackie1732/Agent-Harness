@@ -1,4 +1,5 @@
 import type { JsonObject, JsonValue } from '../foundation/json.js'
+import { keyedOutboxAcceptedEvent } from './keyed-event.js'
 import { createDurableEventDefinition, parseSessionEventId } from '../session/index.js'
 import type { DurableEventDefinition, SessionEventId } from '../session/index.js'
 import { requireExactKeys, requireNumber, requireRecord, requireString } from './codec-fields.js'
@@ -214,6 +215,7 @@ export const inboxAbandonedEvent = createDurableEventDefinition<InboxAbandonedPa
 /** Required Durable Event Definitions contributed by Session communication. */
 export const communicationSessionEventDefinitions: readonly DurableEventDefinition[] = Object.freeze([
   outboxAcceptedEvent,
+  keyedOutboxAcceptedEvent,
   outboxAttemptStartedEvent,
   outboxAttemptFailedEvent,
   outboxDeliveredEvent,

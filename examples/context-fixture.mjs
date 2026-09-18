@@ -36,7 +36,7 @@ export function contextSelection(profileEventId, provider, overrides = {}) {
   }
 }
 
-export function sessionRepository(backend) {
+export function sessionRepository(backend, extraDefinitions = []) {
   return new h.SessionRepository({
     backend,
     catalog: h.createDurableEventCatalog([
@@ -44,6 +44,7 @@ export function sessionRepository(backend) {
       ...h.communicationSessionEventDefinitions,
       ...h.modelSessionEventDefinitions,
       ...h.toolSessionEventDefinitions,
+      ...extraDefinitions,
     ]),
     maxLineageDepth: 8,
   })

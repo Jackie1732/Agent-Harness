@@ -8,7 +8,7 @@ const directory = h.createSessionDirectory()
 const transport = h.createInProcessMessageTransport(directory)
 const service = new h.CommunicationService({ directory, transport, limits: {
   maxMessageBytes: 4096, maxPendingOutbox: 8, maxPendingInbox: 8,
-  maxDeliveryAttempts: 3, maxAttemptsPerRun: 8,
+  maxDeliveryAttempts: 3, maxAttemptsPerRun: 8, maxSendJournalConflicts: 4,
 } })
 const message = h.createMessageDefinition({
   type: 'example/question', payloadVersion: 1,
