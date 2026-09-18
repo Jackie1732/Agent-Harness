@@ -1,3 +1,4 @@
+import { hasPendingAgentAbandon } from './input-ownership.js'
 import type { CommittedSessionEvent } from '../session/types.js'
 import type { AgentEventPayloads } from './event-contract.js'
 import { emptyAgentBudget } from './budget.js'
@@ -30,6 +31,7 @@ export function applyTurnStarted(state: AgentProjectionState, event: CommittedSe
   if (state.openTurn !== null || state.openRecovery !== null || state.closing !== null) invalidAgent('turn-not-admissible')
   const spec = requireSpec(state).payload
   const input = requireEntry(state.inputs, inputKey(payload.input), 'missing-turn-input')
+  if (hasPendingAgentAbandon(state.controls.values(), input, 2)) invalidAgent('input-disposition-owned')
   if (input.lane !== payload.lane || payload.ordinal !== state.turns.size + 1) invalidAgent('turn-order')
   if ([...state.turns.values()].filter(turn => turn.started.payload.run === payload.run).length >= spec.limits.maxTurnsPerRun) invalidAgent('run-turn-budget')
   if (payload.root === null) {

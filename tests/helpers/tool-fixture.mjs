@@ -31,7 +31,7 @@ export async function fixture(body, options = {}) {
   const scope = capabilities.scope.derive('tool-test')
   const registry = new h.ToolRegistry(options.schemaLimits ?? schemaLimits)
   const backend = options.backend ?? new h.MemorySessionBackend({ maxRecordBytes: options.maxRecordBytes ?? 262144 })
-  const repository = new h.SessionRepository({ backend, catalog: options.catalog ?? catalog(), maxLineageDepth: 8 })
+  const repository = new h.SessionRepository({ backend, catalog: options.catalog ?? catalog(), maxLineageDepth: 8, ...(options.clock === undefined ? {} : { clock: options.clock }) })
   const session = await repository.create()
   const definition = options.definition ?? echoDefinition()
   const trace = { prepares: 0, approvals: 0, acquisitions: 0, starts: 0, closes: 0, ledger: 0, plans: [], approved: [], signals: [] }

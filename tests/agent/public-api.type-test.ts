@@ -7,7 +7,7 @@ function publicTypes(options: SessionAgentOptions, spec: AgentSpec, session: Ses
   void agent.submitInput({ kind: 'task', text: 'task', originLabel: 'test' })
   void agent.cancel(eventId)
   void recoverAgentSession(session, { predecessorStopped: true, supersedes: null, maxRecoveryWrites: 10, maxJournalConflicts: 4, clock })
-  void createSessionAgentComponent({ label: 'agent', requires: [], key: SessionAgentKey, create: () => agent })
+  void createSessionAgentComponent({ label: 'agent', requires: [], key: SessionAgentKey, create: () => options })
   // @ts-expect-error Message identities cannot target root control.
   void agent.cancel(messageId)
   // @ts-expect-error Arbitrary text is not a committed Event identity.

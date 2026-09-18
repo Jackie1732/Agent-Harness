@@ -65,6 +65,16 @@ for (const scenario of cases) test(`Agent built: ${scenario.name}`, async () => 
     for (const event of f.session.snapshot().history.at(-1).events.filter(event => event.stored.type === 'context/assembly-committed')) assert.equal(h.rebuildAssembly(f.session.snapshot(), event.stored.eventId).kind, 'rebuilt')
     if (scenario.outcome === 'completed') {
       assert.equal(result.final.text, 'done')
+      const assembly = f.session.snapshot().history.at(-1).events.filter(event => event.stored.type === 'context/assembly-committed').at(-1)
+      const request = h.rebuildAssembly(f.session.snapshot(), assembly.stored.eventId).request
+      for (const create of [h.createDeepSeekModelProvider, h.createAnthropicModelProvider]) {
+        const adapter = create({ providerId: 'offline-prepare', endpoint: 'https://example.invalid/model', apiKey: 'offline-placeholder', maxConcurrentExchanges: 1,
+          streamLimits: { maxFrameBytes: 16384, maxStreamBytes: 262144, maxFrames: 1000 } })
+        try {
+          if (scenario.name === 'invalid original JSON feedback' && create === h.createAnthropicModelProvider) assert.throws(() => adapter.prepare(request), error => error.code === 'MODEL_FEATURE_UNSUPPORTED')
+          else assert.ok(adapter.prepare(request).submission)
+        } finally { await adapter.dispose() }
+      }
       const decision = agent.snapshot().steps[0].decided
       const exchange = h.agentActionHistory(f.session.snapshot(), decision.stored.eventId)
       assert.equal(exchange[0].content.length, scenario.calls.length)
@@ -74,3 +84,36 @@ for (const scenario of cases) test(`Agent built: ${scenario.name}`, async () => 
   } finally { await agent.dispose() }
 }, { catalog: catalog([...h.contextSessionEventDefinitions, ...h.communicationSessionEventDefinitions, ...h.agentSessionEventDefinitions]),
   decide: scenario.deny ? () => ({ kind: 'deny', reasonCode: 'test-denial' }) : undefined }))
+
+
+test('Agent built: Tool cleanup failure stops the Run before the next queued input', async () => fixture(async f => {
+  let calls = 0
+  const provider = new h.ScriptedModelProvider({ providerId: 'agent-cleanup', maxConcurrentExchanges: 1,
+    streamLimits: { maxFrameBytes: 16384, maxStreamBytes: 262144, maxFrames: 1000 },
+    script: async function* () {
+      calls++
+      yield { kind: 'message-start', reportedModel: 'fixture-model', responseId: 'tool' }
+      yield { kind: 'block-start', index: 0, block: 'tool-call', callId: 'echo', name: 'echo' }
+      yield { kind: 'arguments-delta', index: 0, text: '{"n":1}' }
+      yield { kind: 'block-end', index: 0 }; yield { kind: 'complete', stopReason: 'tool-calls' }
+    } })
+  f.providers.push(provider)
+  const context = new h.SessionContext({ session: f.session, messageCatalog: h.createMessageCatalog(), toolRegistry: f.registry })
+  const profile = await context.recordProfile(contextProfile('generation', { rendererVersion: 'context-neutral/v2', toolNames: ['echo'] }))
+  await h.installAgentSpec(f.session, agentSpec(profile.stored.eventId, provider.descriptor, { toolNames: ['echo'] }), h.systemClock)
+  const agent = new h.SessionAgent({ session: f.session, model: new h.SessionModelRunner({ session: f.session, provider, limits: modelLimits }),
+    context, tools: f.runner, messageCatalog: h.createMessageCatalog(), clock: h.systemClock })
+  try {
+    for (const text of ['first', 'second']) await agent.submitInput({ kind: 'task', text, originLabel: 'built-audit' })
+    const result = await agent.start()
+    assert.equal(calls, 1); assert.equal(f.trace.starts, 1); assert.equal(f.trace.closes, 1)
+    assert.equal(result.run.settled.payload.stoppedBy, 'faulted')
+    assert.equal(result.roots[0].outcome, 'result-unknown')
+    assert.deepEqual(result.inputs.map(item => item.status), ['review-required', 'queued'])
+    assert.equal(agent.failure.code, 'AGENT_CLEANUP_FAILED')
+    const settlement = f.runner.snapshot().invocations[0].settled.payload
+    assert.notEqual(settlement.cleanup.status, 'complete')
+    assert.equal(settlement.execution, 'execution-observed')
+  } finally { await agent.dispose().catch(() => undefined) }
+}, { catalog: catalog([...h.contextSessionEventDefinitions, ...h.communicationSessionEventDefinitions, ...h.agentSessionEventDefinitions]),
+  close: () => { throw new Error('owned resource release failed') }, allowCleanupFailure: true }))

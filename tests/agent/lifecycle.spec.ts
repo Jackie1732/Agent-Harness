@@ -31,7 +31,7 @@ it('allows exactly one durable owner when independent Agent objects race to star
   const a = runtime(f); const b = runtime(f, new SessionContext({ session: f.session, messageCatalog: emptyMessageCatalog }))
   try {
     await a.submitInput({ kind: 'task', text: 'task', originLabel: 'test' })
-    const first = a.start(); const rejected = expect(b.start()).rejects.toMatchObject({ code: 'AGENT_STATE_INVALID' })
+    const first = a.start(); const rejected = expect(b.start()).rejects.toMatchObject({ code: 'AGENT_BUSY' })
     await held.entered.promise; await rejected
     expect(held.counts().issued).toBe(1)
     held.release.resolve(); await first

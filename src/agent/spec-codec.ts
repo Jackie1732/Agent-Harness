@@ -17,7 +17,7 @@ export const agentLimitFields = [
 export function decodeAgentLimits(value: unknown): AgentLimits {
   const input = record(value); exact(input, agentLimitFields)
   for (const field of agentLimitFields) integer(input[field])
-  for (const field of ['maxTurnsPerRun', 'maxManagementPerRun', 'maxLanes', 'maxInputBytes', 'maxActionBytes', 'maxResultBytes', 'maxReportEntries', 'maxWaitMs']) integer(input[field], 1)
+  for (const field of ['maxTurnsPerRun', 'maxManagementPerRun', 'maxLanes', 'maxInputBytes', 'maxActionBytes', 'maxResultBytes', 'maxWaitMs']) integer(input[field], 1)
   for (const field of ['maxInputBytes', 'maxActionBytes', 'maxResultBytes']) integer(input[field], 1, 1024 * 1024)
   integer(input.maxActionsPerStep, 0, 64)
   return input as AgentLimits

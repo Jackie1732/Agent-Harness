@@ -1,3 +1,4 @@
+import { invalidAgent } from './errors.js'
 import { createDurableEventDefinition } from '../session/event-catalog.js'
 import type { AgentEventPayloads } from './event-contract.js'
 import { decodeAgentSpec } from './spec-codec.js'
@@ -22,9 +23,16 @@ export const agentCommandAcceptedEvent = definition('command-accepted', decodeCo
 export const agentControlRequestedEvent = definition('control-requested', decodeControlRequest)
 export const agentControlSettledEvent = definition('control-settled', decodeControlSettled)
 
+/** Version 2 acquires input disposition before a driver can claim it. */
+export const agentInputAbandonRequestedEvent = createDurableEventDefinition({ type: 'agent/control-requested', payloadVersion: 2, ignorable: false,
+  decode: (value: unknown) => { const request = decodeControlRequest(value); if (request.kind !== 'abandon-input') invalidAgent('abandon-request-version'); return request } })
+/** Explicit compatibility settlement for a version 1 abandonment that lost to a claim. */
+export const agentLegacyAbandonSettledEvent = createDurableEventDefinition({ type: 'agent/control-settled', payloadVersion: 2, ignorable: false,
+  decode: (value: unknown) => { const result = decodeControlSettled(value); if (result.outcome !== 'no-op') invalidAgent('legacy-abandon-outcome'); return result } })
+
 /** Required event versions keep data replay independent from execution providers. */
 export const agentSessionEventDefinitions = Object.freeze([
   agentSpecRecordedEvent, agentInputAcceptedEvent, agentRunStartedEvent, agentRunSettledEvent,
   agentTurnStartedEvent, agentTurnSettledEvent, agentStepOpenedEvent, agentStepDecidedEvent,
-  agentActionSettledEvent, agentWaitSettledEvent, agentCommandAcceptedEvent, agentControlRequestedEvent, agentControlSettledEvent,
+  agentActionSettledEvent, agentWaitSettledEvent, agentCommandAcceptedEvent, agentControlRequestedEvent, agentControlSettledEvent, agentInputAbandonRequestedEvent, agentLegacyAbandonSettledEvent,
 ])

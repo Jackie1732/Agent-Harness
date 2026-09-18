@@ -1,3 +1,4 @@
+import { hasPendingAgentAbandon } from './input-ownership.js'
 import type { MessageCatalog } from '../communication/message-catalog.js'
 import type { AgentSessionSnapshot } from './state.js'
 import { AgentError } from './errors.js'
@@ -8,6 +9,7 @@ export function selectAgentInput(state: AgentSessionSnapshot, catalog: MessageCa
   const spec = state.spec?.payload
   if (spec === undefined) throw new AgentError('AGENT_STATE_INVALID', 'missing-spec')
   const candidates = state.inputs.filter(input => {
+    if (hasPendingAgentAbandon(state.controls, input)) return false
     if (input.message !== null && (catalog.resolve(input.message.type, input.message.payloadVersion) === undefined
       || !spec.messages.some(message => message.type === input.message!.type && message.payloadVersion === input.message!.payloadVersion))) return false
     if (input.status === 'queued') return input.input?.kind !== 'answer'

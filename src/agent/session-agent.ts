@@ -18,13 +18,13 @@ import { executeAgentSend } from './action-driver.js'
 import { manageAgentWaits, settleAgentStops, synchronizeAgentReceipts } from './management.js'
 import * as events from './session-events.js'
 
-const driverTask = new AsyncLocalStorage<symbol>()
+const driverTask = new AsyncLocalStorage<ReadonlySet<symbol>>()
 
 /** Local lifecycle owner; cross-instance ownership is exclusively the durable open Run. */
 export class SessionAgent {
   #runtime: AgentRuntime
   #ownsMailbox = false
-  readonly #token = Symbol('Agent driver')
+  #token: symbol | undefined
   #status: 'accepting' | 'disposing' | 'disposed' | 'faulted' = 'accepting'
   #desired: 'continue' | 'pause' = 'continue'
   #task: Promise<AgentRunReport> | undefined
@@ -64,6 +64,7 @@ export class SessionAgent {
   /** Drive bounded work. Concurrent calls on this instance join its current drive, with no new cancellation authority. */
   start(options: { readonly signal?: AbortSignal } = {}): Promise<AgentRunReport> {
     this.#accepting()
+    if (this.#isReentrant()) throw new AgentError('AGENT_REENTRANT_WAIT', 'driver-cannot-join-itself')
     if (this.#task !== undefined) {
       if (this.#taskKind !== 'drive') throw new AgentError('AGENT_BUSY', 'command-active')
       return this.#task
@@ -71,13 +72,13 @@ export class SessionAgent {
     if (options.signal?.aborted === true) throw new AgentError('AGENT_CANCELLED', 'run-cancelled-before-admission')
     this.#desired = 'continue'
     this.#driveController = new AbortController()
-    const signals = [this.#driveController.signal, options.signal, this.#runtime.signal].filter((value): value is AbortSignal => value !== undefined)
+    const signals = [this.#driveController.signal, options.signal, this.#runtime.signal, this.#runtime.scope?.signal].filter((value): value is AbortSignal => value !== undefined)
     return this.#launch('drive', () => this.#drive(AbortSignal.any(signals)))
   }
   /** Stop claiming inputs after the current Turn reaches its durable checkpoint. */
   pause(): void { this.#accepting(); this.#desired = 'pause' }
   wait(): Promise<AgentRunReport> {
-    if (driverTask.getStore() === this.#token && this.#task !== undefined) throw new AgentError('AGENT_REENTRANT_WAIT', 'driver-cannot-join-itself')
+    if (this.#isReentrant() && this.#task !== undefined) throw new AgentError('AGENT_REENTRANT_WAIT', 'driver-cannot-join-itself')
     return this.#task ?? Promise.resolve(this.report())
   }
 
@@ -88,6 +89,7 @@ export class SessionAgent {
       const root = this.snapshot().roots.find(root => root.id === rootTurnId)
       if (root === undefined) throw new AgentError('AGENT_SOURCE_INVALID', 'unknown-root')
       if (root.outcome !== null) return this.report()
+      if (this.#turn?.root === rootTurnId) this.#turn.controller.abort()
       if (root.stopControl === null) {
         try { await this.#runtime.journal.append(events.agentControlRequestedEvent, () => ({ kind: 'cancel-work' as const, root: rootTurnId, reason })) }
         catch (error) {
@@ -95,7 +97,6 @@ export class SessionAgent {
           if (this.#runtime.journal.faulted || current.outcome === null && current.stopControl === null) throw error
         }
       }
-      if (this.#turn?.root === rootTurnId) this.#turn.controller.abort()
       if (this.snapshot().openRun === null) await settleAgentStops(this.#runtime)
       return this.report()
     })())
@@ -106,7 +107,7 @@ export class SessionAgent {
     this.#accepting()
     const copied = inputReference(input)
     return this.#track((async () => {
-      const control = await this.#runtime.journal.append(events.agentControlRequestedEvent, () => ({ kind: 'abandon-input' as const, input: copied, reason }))
+      const control = await this.#runtime.journal.append(events.agentInputAbandonRequestedEvent, () => ({ kind: 'abandon-input' as const, input: copied, reason }))
       await this.#runtime.journal.append(events.agentControlSettledEvent, () => ({ control: control.stored.eventId, outcome: 'completed' as const,
         reason, rootOutcome: null, responseDisposition: null }))
       await synchronizeAgentReceipts(this.#runtime)
@@ -122,7 +123,10 @@ export class SessionAgent {
     return this.#launch('command', async () => {
       let runtime = this.#runtime
       assertAgentExecutionQuiescent(runtime.session.snapshot())
-      const run = await runtime.journal.append(events.agentRunStartedEvent, state => ({ spec: state.spec!.stored.eventId, kind: 'command' as const }))
+      const run = await runtime.journal.append(events.agentRunStartedEvent, state => {
+        if (state.openRun !== null) throw new AgentError('AGENT_BUSY', 'driver-active')
+        return { spec: state.spec!.stored.eventId, kind: 'command' as const }
+      })
       this.#ownedRun = run.stored.eventId
       await this.#attachCommunication(run.stored.eventId)
       runtime = this.#runtime
@@ -141,7 +145,7 @@ export class SessionAgent {
 
   /** Join this instance's current Turn and end only after all durable work and communication are settled. */
   endSession(reason = 'agent-ended') {
-    if (driverTask.getStore() === this.#token) throw new AgentError('AGENT_REENTRANT_WAIT', 'driver-cannot-end-itself')
+    if (this.#isReentrant()) throw new AgentError('AGENT_REENTRANT_WAIT', 'driver-cannot-end-itself')
     if (this.#endTask !== undefined) return this.#endTask
     this.#accepting()
     if (this.#taskKind === 'command') throw new AgentError('AGENT_BUSY', 'command-active')
@@ -174,8 +178,10 @@ export class SessionAgent {
 
   /** Request cancellation and join owned resources; borrowed Session/Service/providers and durable waits survive. */
   dispose(): Promise<void> {
-    if (driverTask.getStore() === this.#token) throw new AgentError('AGENT_REENTRANT_WAIT', 'driver-cannot-dispose-itself')
-    if (this.#disposeTask !== undefined) return this.#disposeTask
+    if (this.#disposeTask !== undefined) {
+      if (this.#isReentrant()) throw new AgentError('AGENT_REENTRANT_WAIT', 'driver-cannot-dispose-itself')
+      return this.#disposeTask
+    }
     this.#status = 'disposing'; this.#desired = 'pause'; this.#driveController?.abort(); this.#turn?.controller.abort()
     this.#disposeTask = (async () => {
       await Promise.allSettled([...this.#operations, ...(this.#task === undefined ? [] : [this.#task])])
@@ -187,32 +193,44 @@ export class SessionAgent {
         throw this.#failure
       }
     })()
+    void this.#disposeTask.catch(() => { /* The shared task retains cleanup failure for external joiners. */ })
+    if (this.#isReentrant()) throw new AgentError('AGENT_REENTRANT_WAIT', 'driver-cannot-dispose-itself')
     return this.#disposeTask
   }
 
+  #isReentrant() { return this.#token !== undefined && driverTask.getStore()?.has(this.#token) === true }
+  #fault(error: unknown) {
+    if (this.#status === 'accepting') this.#status = 'faulted'
+    this.#desired = 'pause'
+    this.#driveController?.abort(); this.#turn?.controller.abort()
+    this.#failure ??= error instanceof AgentError ? error : new AgentError('AGENT_RECOVERY_REQUIRED', 'driver-transition-incomplete')
+  }
   #accepting() {
-    if (this.#endTask !== undefined || this.snapshot().closing !== null || this.#status !== 'accepting' || this.#runtime.signal?.aborted === true || this.#runtime.session.snapshot().lifecycle !== 'active') throw new AgentError('AGENT_INACTIVE', 'agent-not-accepting')
+    if (this.#runtime.scope !== undefined && this.#runtime.scope.status !== 'accepting' || this.#endTask !== undefined || this.snapshot().closing !== null || this.#status !== 'accepting' || this.#runtime.signal?.aborted === true || this.#runtime.session.snapshot().lifecycle !== 'active') throw new AgentError('AGENT_INACTIVE', 'agent-not-accepting')
   }
   #track<T>(task: Promise<T>): Promise<T> {
     this.#operations.add(task)
     void task.then(() => this.#operations.delete(task), error => {
       this.#operations.delete(task)
       if (this.#status === 'accepting' && this.#runtime.journal.faulted) {
-        this.#status = 'faulted'; this.#failure ??= error instanceof AgentError ? error : new AgentError('AGENT_COMMIT_UNKNOWN', 'management-write-not-confirmed')
+        this.#fault(error)
       }
     })
     return task
   }
   #launch(kind: 'drive' | 'command', operation: () => Promise<AgentRunReport>): Promise<AgentRunReport> {
-    const task = driverTask.run(this.#token, () => Promise.resolve().then(operation))
+    this.#token = Symbol('Agent task')
+    const chain = new Set(driverTask.getStore()); chain.add(this.#token)
+    const task = driverTask.run(chain, () => Promise.resolve().then(operation))
     this.#task = task
     this.#taskKind = kind
-    void task.then(() => { this.#task = undefined; this.#taskKind = undefined; this.#ownedRun = null; this.#driveController = undefined }, error => {
+    void task.then(() => { this.#token = undefined; this.#task = undefined; this.#taskKind = undefined; this.#ownedRun = null; this.#driveController = undefined }, error => {
+      this.#token = undefined
       this.#task = undefined
       this.#taskKind = undefined
       this.#driveController = undefined
       if (this.#runtime.journal.faulted || this.#ownedRun !== null && this.snapshot().openRun === this.#ownedRun) {
-        this.#status = 'faulted'; this.#failure ??= error instanceof AgentError ? error : new AgentError('AGENT_RECOVERY_REQUIRED', 'driver-transition-incomplete')
+        this.#fault(error)
       }
     })
     return task
@@ -235,7 +253,10 @@ export class SessionAgent {
     assertAgentExecutionQuiescent(runtime.session.snapshot())
     if (this.snapshot().openRun === null && this.snapshot().openRecovery === null) await settleAgentStops(runtime)
     if (runtime.management!.remaining === 0) return this.report()
-    const run = await runtime.journal.append(events.agentRunStartedEvent, state => ({ spec: state.spec!.stored.eventId, kind: 'drive' as const }))
+    const run = await runtime.journal.append(events.agentRunStartedEvent, state => {
+      if (state.openRun !== null) throw new AgentError('AGENT_BUSY', 'driver-active')
+      return { spec: state.spec!.stored.eventId, kind: 'drive' as const }
+    })
     this.#ownedRun = run.stored.eventId
     if (!signal.aborted) await this.#attachCommunication(run.stored.eventId)
     runtime = { ...this.#runtime, signal, management: runtime.management! }
@@ -273,9 +294,13 @@ export class SessionAgent {
       this.#turn = { root: turn.payload.root ?? turn.stored.eventId, controller }
       try { await driveAgentTurn(runtime, turn.stored.eventId, runtime.signal === undefined ? controller.signal : AbortSignal.any([controller.signal, runtime.signal])) }
       finally { this.#turn = undefined }
+      try { assertAgentExecutionQuiescent(runtime.session.snapshot()) }
+      catch (error) { this.#fault(error); stoppedBy = 'faulted'; break }
       stoppedBy = 'run-budget'
     }
+    await settleAgentStops(runtime)
     await runtime.journal.append(events.agentRunSettledEvent, () => ({ run: run.stored.eventId, stoppedBy, reason: stoppedBy }))
+    await settleAgentStops(runtime)
     return this.report()
   }
 }

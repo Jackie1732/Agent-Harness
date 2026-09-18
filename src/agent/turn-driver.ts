@@ -1,3 +1,4 @@
+import { agentRootUsageUnknown, expireAgentRoot } from './root-policy.js'
 import type { SessionEventId } from '../session/ids.js'
 import { clockTimestamp } from '../foundation/clock.js'
 import { ContextError } from '../context/errors.js'
@@ -24,23 +25,29 @@ export async function driveAgentTurn(runtime: AgentRuntime, turnId: SessionEvent
   const turn = initial.turns.find(item => item.started.stored.eventId === turnId)!
   const rootView = () => view().roots.find(item => item.id === turn.root)!
   const finish = async (outcome: AgentTurnOutcome, reason: string, rootOutcome: AgentRootOutcome | null, finalStep: SessionEventId | null = null) => {
-    await runtime.journal.append(events.agentTurnSettledEvent, state => ({ turn: turnId, outcome, rootOutcome, reason,
+    await expireAgentRoot(runtime, turn.root)
+    await runtime.journal.append(events.agentTurnSettledEvent, state => {
+      const root = state.roots.find(item => item.id === turn.root)!
+      if (root.stopControl !== null && outcome !== 'waiting' && outcome !== 'result-unknown') {
+        outcome = 'cancelled'; reason = 'root-stopped'; finalStep = null
+        rootOutcome = state.controls.find(item => item.requested.stored.eventId === root.stopControl)?.requested.payload.kind === 'expire-work' ? 'timed-out' : 'cancelled'
+      }
+      return { turn: turnId, outcome, rootOutcome, reason,
       disposition: outcome === 'completed' || outcome === 'waiting' || outcome === 'failed' && reason === 'business-refusal' && spec.payload.businessRefusalHandled
         ? 'handled' as const : 'review-required' as const, finalStep,
-      budget: state.roots.find(item => item.id === turn.root)!.budget }))
+      budget: root.budget }
+    })
     await synchronizeAgentReceipts(runtime)
     await settleAgentStops(runtime)
   }
   while (true) {
+    await expireAgentRoot(runtime, turn.root)
     let root = rootView()
-    if (root.stopControl === null && clockTimestamp(runtime.clock) >= root.deadline) {
-      await runtime.journal.append(events.agentControlRequestedEvent, () => ({ kind: 'expire-work' as const, root: root.id, deadline: root.deadline,
-        observedAt: clockTimestamp(runtime.clock), reason: 'root-deadline' })); root = rootView()
-    }
     if (signal.aborted || root.stopControl !== null) {
       const control = view().controls.find(item => item.requested.stored.eventId === root.stopControl)
       await finish('cancelled', 'root-stopped', control?.requested.payload.kind === 'expire-work' ? 'timed-out' : 'cancelled'); return
     }
+    if (agentRootUsageUnknown(runtime.session.snapshot(), view(), root.id)) { await finish('failed', 'model-usage-unknown', 'failed'); return }
     if (reserveAgentBudget(root.budget, { ...emptyAgentBudget, models: 1, steps: 1, outputTokens: spec.payload.target.maxOutputTokens }, spec.payload.budget) === null) {
       await finish('budget-exhausted', 'model-budget', 'budget-exhausted'); return
     }
@@ -54,7 +61,7 @@ export async function driveAgentTurn(runtime: AgentRuntime, turnId: SessionEvent
     for (; reassemblies <= spec.payload.limits.maxReassemblies; reassemblies++) {
       try {
         const built = await runtime.context.assembleAgent({ spec: spec.stored.eventId, run: turn.started.payload.run, turn: turnId, step: step.stored.eventId }, { signal })
-        if (built.kind !== 'ready') { classification = { classification: 'not-issued', reason: `context-${built.kind}`, actions: [] }; break }
+        if (built.kind !== 'ready') { classification = { classification: 'not-issued', reason: built.kind === 'blocked' ? `context-blocked:${built.reason}` : `context-${built.kind}:${built.limit}`, actions: [] }; break }
         assemblyId = built.committed.stored.eventId
         const settled = await runtime.model.invoke(built.request, { signal, inputPrecondition: built.inputPrecondition })
         model = { invocationId: settled.payload.invocationId, assembly: built.committed.stored.eventId, settled: settled.stored.eventId }
@@ -74,7 +81,7 @@ export async function driveAgentTurn(runtime: AgentRuntime, turnId: SessionEvent
         classification = { classification: signal.aborted ? 'cancelled' : 'not-issued', reason: error.code, actions: [] }; break
       }
     }
-    root = rootView()
+    await expireAgentRoot(runtime, turn.root)
     const amount = actionBudget(classification.actions.map(item => item.route))
     const decision = await runtime.journal.append(events.agentStepDecidedEvent, state => {
       const current = state.roots.find(item => item.id === turn.root)!
@@ -102,14 +109,14 @@ export async function driveAgentTurn(runtime: AgentRuntime, turnId: SessionEvent
         }
       }
     }
+    const modelCleanupFailed = model !== null && projectModelSession(runtime.session.snapshot()).invocations.some(item => item.state === 'settled'
+      && item.invocationId === model.invocationId && item.settled.payload.cleanup.status !== 'complete')
+    uncertain ||= modelCleanupFailed
     if (waiting) { await finish('waiting', 'wait-created', null); return }
-    if (uncertain) { await finish('result-unknown', 'tool-result-uncertain', 'result-unknown'); return }
+    if (uncertain) { await finish('result-unknown', modelCleanupFailed ? 'model-cleanup' : 'tool-result-uncertain', 'result-unknown'); return }
     root = rootView()
     if (root.stopControl !== null || signal.aborted) continue
-    if (model !== null && spec.payload.usagePolicy === 'stop-on-unknown') {
-      const used = projectModelSession(runtime.session.snapshot()).invocations.find(item => item.invocationId === model.invocationId)
-      if (used?.state === 'settled' && used.settled.payload.result.usage.completeness !== 'complete') { await finish('failed', 'model-usage-unknown', 'failed'); return }
-    }
+    if (agentRootUsageUnknown(runtime.session.snapshot(), view(), root.id)) { await finish('failed', 'model-usage-unknown', 'failed'); return }
     if (classification.classification === 'final') {
       const state = view()
       const unfulfilled = hasUnfulfilledAgentReply(turn.root, state, projectCommunicationFacts(runtime.session.snapshot()))
@@ -117,9 +124,7 @@ export async function driveAgentTurn(runtime: AgentRuntime, turnId: SessionEvent
       await finish('completed', classification.reason, 'completed', step.stored.eventId); return
     }
     if (classification.classification !== 'actions') {
-      const uncertainModel = model !== null && projectModelSession(runtime.session.snapshot()).invocations.some(item => item.state === 'settled'
-        && item.invocationId === model.invocationId && item.settled.payload.cleanup.status !== 'complete')
-      await finish(uncertainModel ? 'result-unknown' : 'failed', classification.reason, uncertainModel ? 'result-unknown' : 'failed'); return
+      await finish('failed', classification.reason, 'failed'); return
     }
     if (!admitted && classification.reason !== 'invalid-control-batch') { await finish('budget-exhausted', 'action-budget', 'budget-exhausted'); return }
     if (failedAction && spec.payload.errorFeedback === 'stop') { await finish('failed', 'action-failed', 'failed'); return }

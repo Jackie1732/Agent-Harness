@@ -1,3 +1,4 @@
+import { hasPendingAgentAbandon, legacyAbandonLostClaim } from './input-ownership.js'
 import type { CommittedSessionEvent } from '../session/types.js'
 import type { AgentEventPayloads } from './event-contract.js'
 import type { AgentInputState, AgentWaitState } from './state.js'
@@ -7,9 +8,10 @@ import type { AgentProjectionState } from './projection-state.js'
 import { requireEntry, requireSpec } from './projection-state.js'
 import { equal, record } from './validation.js'
 
-export function matchesAgentWait(wait: AgentWaitState, input: AgentInputState, state: Pick<AgentProjectionState, 'sources'>): boolean {
+export function matchesAgentWait(wait: AgentWaitState, input: AgentInputState, state: Pick<AgentProjectionState, 'sources' | 'controls'>): boolean {
   const result = wait.created.payload.result
   if (result.kind !== 'wait' || input.status !== 'queued' || input.everMatched || input.acceptedAt > result.descriptor.deadline) return false
+  if (hasPendingAgentAbandon(state.controls.values(), input, 2)) return false
   const descriptor = result.descriptor
   if (descriptor.kind === 'user') return input.input?.kind === 'answer' && equal(input.input.wait, wait.reference)
   const envelope = input.message
@@ -112,6 +114,7 @@ export function applyControlSettled(state: AgentProjectionState, event: Committe
   const control = requireEntry(state.controls, p.control, 'missing-control')
   if (control.settled !== null || control.supersededBy !== null) invalidAgent('control-already-terminal')
   const request = control.requested.payload
+  if (event.stored.payloadVersion === 2 && request.kind !== 'abandon-input') invalidAgent('legacy-abandon-control-kind')
   switch (request.kind) {
     case 'cancel-work': case 'expire-work': {
       const root = requireEntry(state.roots, request.root, 'missing-root')
@@ -138,8 +141,12 @@ export function applyControlSettled(state: AgentProjectionState, event: Committe
       break
     }
     case 'abandon-input': {
-      if (p.outcome !== 'completed') invalidAgent('abandon-outcome')
       const input = requireEntry(state.inputs, inputKey(request.input), 'missing-input')
+      if (event.stored.payloadVersion === 2) {
+        if (!legacyAbandonLostClaim(control, input, input.claimedBy === null ? undefined : state.turns.get(input.claimedBy)?.started.stored.sequence)) invalidAgent('legacy-abandon-without-later-claim')
+        break
+      }
+      if (p.outcome !== 'completed') invalidAgent('abandon-outcome')
       if (!['queued', 'review-required'].includes(input.status)) invalidAgent('abandon-raced-with-claim')
       input.status = 'abandoned'; input.reason = request.reason
       break

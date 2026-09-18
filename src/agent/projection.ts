@@ -1,3 +1,4 @@
+import { isSessionEndedRecord } from '../session/history.js'
 import { inboxAcceptedEvent, inboxAbandonedEvent, inboxProcessedEvent } from '../communication/session-events.js'
 import { projectCommunicationFacts } from '../communication/projection.js'
 import { projectModelSession } from '../model/projection.js'
@@ -34,7 +35,7 @@ function applyInput(state: AgentProjectionState, event: CommittedSessionEvent): 
     sequence: event.stored.sequence, lane: 'user', status: 'queued', claimedBy: null, reservedBy: null, everMatched: false, reason: null })
 }
 function applyAgentEvent(state: AgentProjectionState, event: CommittedSessionEvent): void {
-  if (event.stored.payloadVersion !== 1 || event.stored.ignorable === true) invalidAgent('unsupported-agent-event')
+  if (event.stored.payloadVersion !== 1 && !(event.stored.payloadVersion === 2 && ['agent/control-requested', 'agent/control-settled'].includes(event.stored.type)) || event.stored.ignorable === true) invalidAgent('unsupported-agent-event')
   const decoded = <T,>(decode: (value: JsonValue) => T) => ({ ...event, payload: decode(event.payload) })
   switch (event.stored.type) {
     case 'agent/spec-recorded': {
@@ -102,7 +103,7 @@ export function projectAgentSession(snapshot: SessionSnapshot): AgentSessionSnap
       applyAgentEvent(state, event)
     }
     else if (event.stored.type.startsWith('communication/')) applyCommunicationInput(state, event)
-    else if (event.stored.type === 'session/ended') {
+    else if (isSessionEndedRecord(event.stored)) {
       if (state.openRun !== null || state.openTurn !== null || state.openRecovery !== null
         || [...state.roots.values()].some(root => root.outcome === null)
         || [...state.inputs.values()].some(input => !['handled', 'abandoned', 'not-adopted'].includes(input.status))

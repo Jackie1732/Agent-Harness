@@ -1,3 +1,6 @@
+import { agentRootUsageUnknown } from './root-policy.js'
+import { legacyAbandonLostClaim } from './input-ownership.js'
+import { inputKey } from './input-codec.js'
 import type { Clock } from '../foundation/clock.js'
 import { clockTimestamp } from '../foundation/clock.js'
 import type { SessionHandle } from '../session/session-handle.js'
@@ -97,10 +100,9 @@ export async function recoverAgentSession(session: SessionHandle, options: Agent
           && (item.settled.payload.cleanup.status !== 'complete' || item.settled.payload.execution === 'may-have-executed'))
       const stop = state.controls.find(item => item.requested.stored.eventId === root.stopControl)
       const final = state.steps.filter(step => step.opened.payload.turn === turn.started.stored.eventId).at(-1)
-      const model = models.invocations.find(item => item.invocationId === final?.decided?.payload.model?.invocationId)
       const complete = wait === undefined && !uncertain && root.stopControl === null && final?.decided?.payload.classification === 'final'
         && !hasUnfulfilledAgentReply(root.id, state, projectCommunicationFacts(snapshot))
-        && (state.spec!.payload.usagePolicy !== 'stop-on-unknown' || model?.state === 'settled' && model.settled.payload.result.usage.completeness === 'complete')
+        && !agentRootUsageUnknown(snapshot, state, root.id)
       await journal.append(events.agentTurnSettledEvent, () => ({ turn: turn.started.stored.eventId,
         outcome: wait !== undefined ? 'waiting' as const : complete ? 'completed' as const : uncertain ? 'result-unknown' as const : 'interrupted' as const,
         rootOutcome: wait !== undefined ? null : complete ? 'completed' as const : uncertain ? 'result-unknown' as const : stop?.requested.payload.kind === 'cancel-work' ? 'cancelled' as const
@@ -124,8 +126,10 @@ export async function recoverAgentSession(session: SessionHandle, options: Agent
       await journal.append(events.agentControlSettledEvent, () => ({ control: control.requested.stored.eventId, outcome: 'completed' as const, reason: request.reason,
         rootOutcome: root.outcome ?? (request.kind === 'expire-work' ? 'timed-out' as const : 'cancelled' as const), responseDisposition: response === undefined ? null : response.message === null ? 'not-adopted' as const : 'release-peer' as const }))
     } else {
-      await journal.append(events.agentControlSettledEvent, () => ({ control: control.requested.stored.eventId,
-        outcome: request.kind === 'abandon-input' ? 'completed' as const : 'rejected' as const, reason: 'recovery-control', rootOutcome: null, responseDisposition: null }))
+      const input = request.kind === 'abandon-input' ? state.inputs.find(input => inputKey(input.reference) === inputKey(request.input)) : undefined
+      const lost = input !== undefined && legacyAbandonLostClaim(control, input, state.turns.find(turn => turn.started.stored.eventId === input.claimedBy)?.started.stored.sequence)
+      await journal.append(lost ? events.agentLegacyAbandonSettledEvent : events.agentControlSettledEvent, () => ({ control: control.requested.stored.eventId,
+        outcome: lost ? 'no-op' as const : request.kind === 'abandon-input' ? 'completed' as const : 'rejected' as const, reason: 'recovery-control', rootOutcome: null, responseDisposition: null }))
     }
     writes++
   }

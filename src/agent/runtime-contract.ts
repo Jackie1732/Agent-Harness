@@ -1,3 +1,4 @@
+import type { Scope } from '../extension/types.js'
 import type { Clock } from '../foundation/clock.js'
 import type { SessionHandle } from '../session/session-handle.js'
 import type { SessionModelRunner } from '../model/runner.js'
@@ -23,6 +24,8 @@ export interface SessionAgentOptions {
   readonly communication?: { readonly service: CommunicationService; readonly policy: CommunicationPolicy }
   readonly messageCatalog: MessageCatalog
   readonly clock: Clock
+  /** Admission requires the borrowed activation Scope to be published and accepting. */
+  readonly scope?: Scope
   readonly signal?: AbortSignal
 }
 export interface AgentRuntime extends SessionAgentOptions {

@@ -1,3 +1,4 @@
+import { expireAgentRoot } from './root-policy.js'
 import { clockTimestamp } from '../foundation/clock.js'
 import { projectCommunicationFacts } from '../communication/projection.js'
 import type { AgentRuntime } from './runtime-contract.js'
@@ -39,8 +40,12 @@ export async function settleAgentStops(runtime: AgentRuntime): Promise<void> {
     for (const wait of state.waits) {
       if (wait.settled === null && wait.created.payload.result.kind === 'wait' && wait.created.payload.result.descriptor.root === request.root) {
         if (!takeManagement(runtime)) return
-        await runtime.journal.append(events.agentWaitSettledEvent, () => ({ wait: wait.reference, outcome: 'cancelled' as const, response: null,
-          reason: request.reason, observedAt: clockTimestamp(runtime.clock), supportedMessages: [], outboxTerminal: null }))
+        try {
+          await runtime.journal.append(events.agentWaitSettledEvent, () => ({ wait: wait.reference, outcome: 'cancelled' as const, response: null,
+            reason: request.reason, observedAt: clockTimestamp(runtime.clock), supportedMessages: [], outboxTerminal: null }))
+        } catch (error) {
+          if (runtime.journal.faulted || projectAgentSession(runtime.session.snapshot()).waits.find(item => referenceKey(item.reference) === referenceKey(wait.reference))?.settled === null) throw error
+        }
       }
     }
     state = projectAgentSession(runtime.session.snapshot())
@@ -48,9 +53,13 @@ export async function settleAgentStops(runtime: AgentRuntime): Promise<void> {
     const reserved = state.inputs.find(input => input.reservedBy !== null && state.waits.some(wait => referenceKey(wait.reference) === referenceKey(input.reservedBy!)
       && wait.created.payload.result.kind === 'wait' && wait.created.payload.result.descriptor.root === root.id))
     if (!takeManagement(runtime)) return
-    await runtime.journal.append(events.agentControlSettledEvent, () => ({ control: control.requested.stored.eventId, outcome: 'completed' as const, reason: request.reason,
+    try {
+      await runtime.journal.append(events.agentControlSettledEvent, () => ({ control: control.requested.stored.eventId, outcome: 'completed' as const, reason: request.reason,
       rootOutcome: root.outcome ?? (request.kind === 'expire-work' ? 'timed-out' : 'cancelled'),
       responseDisposition: reserved === undefined ? null : reserved.message === null ? 'not-adopted' as const : 'release-peer' as const }))
+    } catch (error) {
+      if (runtime.journal.faulted || projectAgentSession(runtime.session.snapshot()).controls.find(item => item.requested.stored.eventId === control.requested.stored.eventId)?.settled === null) throw error
+    }
   }
 }
 
@@ -60,7 +69,7 @@ export async function manageAgentWaits(runtime: AgentRuntime): Promise<void> {
   for (const root of projectAgentSession(runtime.session.snapshot()).roots) {
     if (root.outcome === null && root.stopControl === null && clockTimestamp(runtime.clock) >= root.deadline) {
       if (!takeManagement(runtime)) return
-      await runtime.journal.append(events.agentControlRequestedEvent, () => ({ kind: 'expire-work' as const, root: root.id, reason: 'root-deadline', deadline: root.deadline, observedAt: clockTimestamp(runtime.clock) }))
+      await expireAgentRoot(runtime, root.id)
     }
   }
   await settleAgentStops(runtime)
@@ -91,6 +100,7 @@ export async function manageAgentWaits(runtime: AgentRuntime): Promise<void> {
 
 function findWaitResponse(snapshot: SessionSnapshot, state: AgentSessionSnapshot, wait: AgentWaitState, supported: AgentWaitSettled['supportedMessages']) {
   const sources = new Map(snapshot.history.at(-1)!.events.flatMap(item => item.kind === 'known' ? [[item.stored.eventId, item] as const] : []))
-  return state.inputs.find(input => matchesAgentWait(wait, input, { sources }) && (input.message === null
+  const controls = new Map(state.controls.map(control => [control.requested.stored.eventId, control]))
+  return state.inputs.find(input => matchesAgentWait(wait, input, { sources, controls }) && (input.message === null
     || supported.some(item => item.type === input.message!.type && item.payloadVersion === input.message!.payloadVersion)))
 }
