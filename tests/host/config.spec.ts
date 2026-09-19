@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { decodeHostConfig, planHostConfig, resolveHostConfig } from '../../src/index.js'
+import { decodeHostConfig, planHostConfig, resolveHostConfig, exportHostConfig } from '../../src/index.js'
 import { hostConfig } from './fixtures.js'
 
 describe('Host configuration', () => {
@@ -30,5 +30,26 @@ describe('Host configuration', () => {
   it('documents JSON duplicate-property parsing as last-value behavior', () => {
     const parsed = JSON.parse('{"value":1,"value":2}') as { value: number }
     expect(parsed.value).toBe(2)
+  })
+
+  it('rejects proxies without evaluating traps and exports no execution paths', () => {
+    let invoked = false
+    const proxy = new Proxy({}, { getPrototypeOf() { invoked = true; throw new Error('must not execute') } })
+    expect(() => decodeHostConfig(proxy, 'C:\\')).toThrowError(expect.objectContaining({ code: 'HOST_CONFIG_INVALID' }))
+    expect(invoked).toBe(false)
+    const spec = resolveHostConfig(decodeHostConfig(hostConfig('C:\\private-workspace'), 'C:\\'))
+    const exported = exportHostConfig(spec)
+    expect(exported.redacted).toBe(true)
+    expect(JSON.stringify(exported)).not.toContain('private-workspace')
+    expect(exported.fingerprint).toMatch(/^[0-9a-f]{64}$/)
+  })
+
+  it('normalizes malformed nested fields and parser errors to configuration failures', () => {
+    const input = hostConfig('C:\\atomic-host-test')
+    const member = (input.members as readonly Record<string, unknown>[])[0]!
+    expect(() => decodeHostConfig({ ...input, members: [{ ...member, spec: { ...(member.spec as object), messages: null } }] }, 'C:\\'))
+      .toThrowError(expect.objectContaining({ code: 'HOST_CONFIG_INVALID' }))
+    expect(() => decodeHostConfig({ ...input, routes: [{ memberKey: 'writer', ownerHost: 'test-host', origin: 'invalid-url', serverName: 'localhost' }] }, 'C:\\'))
+      .toThrowError(expect.objectContaining({ code: 'HOST_CONFIG_INVALID' }))
   })
 })

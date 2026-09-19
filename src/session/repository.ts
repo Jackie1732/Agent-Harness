@@ -65,10 +65,11 @@ export class SessionRepository implements SessionHandleOwner {
   /** Create a root Session, optionally at one caller-reserved canonical identity. */
   async create(options: { readonly sessionId?: SessionId } = {}): Promise<SessionHandle> {
     this.assertActive()
-    const sessionId = options.sessionId === undefined
-      ? parseSessionId(this.#identitySource.nextSessionId())
-      : parseSessionId(options.sessionId)
-    return await this.#track(this.#create(sessionId))
+    const reserved = options.sessionId === undefined ? undefined : parseSessionId(options.sessionId)
+    return await this.#track(Promise.resolve().then(() => {
+      const sessionId = reserved ?? parseSessionId(this.#identitySource.nextSessionId())
+      return this.#create(sessionId)
+    }))
   }
 
   async #create(sessionId: SessionId): Promise<SessionHandle> {

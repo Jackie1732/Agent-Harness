@@ -185,6 +185,7 @@ export async function adoptEmptyHostMember(
   if (options.predecessorStopped !== true) throw new HostError('HOST_BOOTSTRAP_AMBIGUOUS', 'adopt-empty-confirmation-required')
   const member = spec.members.filter(isLocalHostMember).find(item => item.agentKey === agentKey)
   if (member === undefined || member.mode !== 'create') throw new HostError('HOST_CONFIG_INVALID', 'adopt-empty-member-invalid')
+  preflightInitialization(spec.hostKey, member, spec.storage.maxRecordBytes)
   const lock = await acquireHostStorageLock(spec.storage.root, spec.hostKey)
   const backend = new FileSessionBackend({ root: lock.root, maxRecordBytes: spec.storage.maxRecordBytes })
   const clock = options.clock ?? systemClock

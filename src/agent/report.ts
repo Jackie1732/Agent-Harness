@@ -45,7 +45,9 @@ export function projectAgentReport(snapshot: SessionSnapshot) {
     counts: { roots: state.roots.length, inputs: state.inputs.length, pendingWaits: pendingWaits.length, modelUsage: usage.length, pendingReceipts: pendingReceipts.length,
       pendingControls: pendingControls.length, pendingOutbox: pendingOutbox.length, turns: turns.length, pendingInputs: pendingInputs.length,
       queuedInputs: state.inputs.filter(input => input.status === 'queued').length, reservedInputs: state.inputs.filter(input => input.status === 'reserved').length,
-      reviewRequiredInputs: state.inputs.filter(input => input.status === 'review-required').length },
+      reviewRequiredInputs: state.inputs.filter(input => input.status === 'review-required').length,
+      failedRoots: state.roots.filter(root => root.outcome === 'failed' || root.outcome === 'result-unknown').length,
+      exhaustedRoots: state.roots.filter(root => root.outcome === 'budget-exhausted').length },
     nextWakeAt: [...pendingWaits.flatMap(wait => wait.created.payload.result.kind === 'wait' ? [wait.created.payload.result.descriptor.deadline] : []),
       ...state.roots.filter(root => root.outcome === null).map(root => root.deadline)].sort()[0] ?? null,
     final: latest?.settled?.payload.outcome === 'completed' && model?.state === 'settled'

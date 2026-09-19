@@ -18,6 +18,7 @@ export function applyRunStarted(state: AgentProjectionState, event: CommittedSes
 }
 export function applyRunSettled(state: AgentProjectionState, event: CommittedSessionEvent<AgentEventPayloads['run-settled']>): void {
   const run = requireOpenRun(state, event.payload.run)
+  if (run.started.stored.payloadVersion !== 1) invalidAgent('run-version-mismatch')
   if (state.openTurn !== null) invalidAgent('run-has-open-turn')
   const commands = [...state.commands.values()].filter(command => command.payload.run === event.payload.run)
   if (commands.some(command => !state.actions.has(referenceKey({ eventId: command.stored.eventId, index: 0 })))) invalidAgent('run-has-open-command')
@@ -41,6 +42,7 @@ export function applyMaintenanceRunSettled(
   event: CommittedSessionEvent<AgentMaintenanceRunSettled>,
 ): void {
   const run = requireOpenRun(state, event.payload.run, 'maintenance')
+  if (run.started.stored.payloadVersion !== 2) invalidAgent('run-version-mismatch')
   if (state.openTurn !== null || [...state.commands.values()].some(command => command.payload.run === event.payload.run)) {
     invalidAgent('maintenance-has-business-work')
   }

@@ -1,19 +1,19 @@
-import { readFile } from 'node:fs/promises'
+import { open } from 'node:fs/promises'
 import { dirname, resolve } from 'node:path'
 import type { Readable, Writable } from 'node:stream'
 import { HARNESS_VERSION } from '../version.js'
-import type { JsonValue } from '../foundation/json.js'
-import { HarnessError } from '../foundation/error.js'
+import { isLocalHostMember, parseHostConfig, planHostConfig, resolveHostConfig } from './config.js'
+import { exportHostConfig } from './config-export.js'
+import type { HostConfig } from './config.js'
+import { HostError } from './errors.js'
+import { initializeHost, adoptEmptyHostMember } from './initialization.js'
+import { decodeSessionHeader } from '../session/codec.js'
 import { parseSessionEventId } from '../session/ids.js'
 import type { SessionEventId } from '../session/ids.js'
-import { boundedJsonLines, createJsonLineWriter } from './cli-io.js'
-import { isLocalHostMember, parseHostConfig, planHostConfig, resolveHostConfig } from './config.js'
-import type { HostConfig, ResolvedHostSpec } from './config.js'
-import { HostError } from './errors.js'
-import { initializeHost } from './initialization.js'
+import { parseBoundedJson } from '../schema/bounded-json.js'
+import { createJsonLineWriter } from './cli-io.js'
 import { inspectHost } from './inspection.js'
-import { openHost } from './runtime.js'
-import type { AtomicHost } from './runtime.js'
+import { interactive } from './cli-interactive.js'
 import { unlockHostStorage } from './storage-lock.js'
 import { recoverHost } from './recovery.js'
 
@@ -29,6 +29,8 @@ Commands:
   check      validate and resolve a saved configuration
   plan       allocate null local Session and Channel identities
   init       initialize configured Sessions; add --resume for an interrupted prefix
+  adopt      explicitly bind existing Sessions configured with mode=adopt
+  adopt-empty claim an exact empty Header with --agent-key, --expected-header and --predecessor-stopped
   inspect    read persisted Host and Agent facts without loading Providers
   recover    reconcile interrupted facts after explicit predecessor-stop confirmation
   run        accept JSONL commands from stdin and perform a finite drain at EOF
@@ -56,149 +58,22 @@ function integerOption(args: readonly string[], name: string): number {
 
 async function loadConfig(pathInput: string): Promise<HostConfig> {
   const path = resolve(pathInput)
-  const bytes = await readFile(path)
-  if (bytes.byteLength > 2 * 1024 * 1024) throw new HostError('HOST_CONFIG_INVALID', 'config-file-too-large')
-  return parseHostConfig(bytes.toString('utf8'), dirname(path))
-}
-
-function object(value: unknown): Record<string, JsonValue> {
-  if (value === null || typeof value !== 'object' || Array.isArray(value)) throw new HostError('HOST_PROTOCOL_INVALID', 'cli-command-object')
-  return value as Record<string, JsonValue>
-}
-
-function exact(input: Record<string, JsonValue>, required: readonly string[], optional: readonly string[] = []): void {
-  if (required.some(key => !Object.hasOwn(input, key)) || Object.keys(input).some(key => !required.includes(key) && !optional.includes(key))) {
-    throw new HostError('HOST_PROTOCOL_INVALID', 'cli-command-fields')
-  }
-}
-
-function text(input: JsonValue | undefined, label: string, maximum = 65536): string {
-  if (typeof input !== 'string' || input.length === 0 || Buffer.byteLength(input) > maximum) throw new HostError('HOST_PROTOCOL_INVALID', label)
-  return input
-}
-
-function eventId(input: JsonValue | undefined, label: string): SessionEventId {
-  const value = text(input, label)
-  parseSessionEventId(value)
-  return value as SessionEventId
-}
-
-interface CliCommandEnvelope {
-  readonly input: Record<string, JsonValue>
-  readonly requestId: string
-  readonly kind: string
-}
-
-function commandEnvelope(value: unknown): CliCommandEnvelope {
-  const input = object(value)
-  if (input.protocolVersion !== 1) throw new HostError('HOST_PROTOCOL_INVALID', 'cli-protocol-version')
-  return { input, requestId: text(input.requestId, 'cli-request-id', 128), kind: text(input.kind, 'cli-command-kind', 64) }
-}
-
-async function executeCommand(host: AtomicHost, value: unknown): Promise<unknown> {
-  const { input, requestId, kind } = commandEnvelope(value)
-  const response = (value: Record<string, unknown>) => ({ protocolVersion: 1, requestId, ...value })
-  switch (kind) {
-    case 'task': {
-      exact(input, ['protocolVersion', 'requestId', 'kind', 'agentKey', 'text'])
-      const receipt = await host.submitTask(text(input.agentKey, 'cli-agent-key', 128), text(input.text, 'cli-task-text'),
-        `cli:${requestId}`)
-      return response({ kind: 'accepted', command: 'task', ...receipt })
-    }
-    case 'answer': {
-      exact(input, ['protocolVersion', 'requestId', 'kind', 'agentKey', 'wait', 'text'])
-      const wait = object(input.wait)
-      exact(wait, ['eventId', 'index'])
-      const waitEventId = eventId(wait.eventId, 'cli-wait-event')
-      if (!Number.isSafeInteger(wait.index) || (wait.index as number) < 0) throw new HostError('HOST_PROTOCOL_INVALID', 'cli-wait-index')
-      const receipt = await host.submitAnswer(text(input.agentKey, 'cli-agent-key', 128), { eventId: waitEventId, index: wait.index as number },
-        text(input.text, 'cli-answer-text'), `cli:${requestId}`)
-      return response({ kind: 'accepted', command: 'answer', ...receipt })
-    }
-    case 'pause':
-    case 'resume': {
-      exact(input, ['protocolVersion', 'requestId', 'kind', 'agentKey'])
-      const agentKey = text(input.agentKey, 'cli-agent-key', 128)
-      if (kind === 'pause') host.pause(agentKey); else host.resume(agentKey)
-      return response({ kind: 'control', command: kind, agentKey })
-    }
-    case 'cancel': {
-      exact(input, ['protocolVersion', 'requestId', 'kind', 'agentKey', 'rootTurnId'], ['reason'])
-      const agentKey = text(input.agentKey, 'cli-agent-key', 128)
-      await host.cancel(agentKey, eventId(input.rootTurnId, 'cli-root-event'),
-        input.reason === undefined ? 'cli-cancelled' : text(input.reason, 'cli-cancel-reason', 128))
-      return response({ kind: 'control', command: 'cancel', agentKey })
-    }
-    case 'report':
-      exact(input, ['protocolVersion', 'requestId', 'kind'])
-      return response({ kind: 'report', report: host.report() })
-    case 'shutdown': {
-      exact(input, ['protocolVersion', 'requestId', 'kind', 'mode'])
-      if (input.mode !== 'drain' && input.mode !== 'cancel') throw new HostError('HOST_PROTOCOL_INVALID', 'cli-shutdown-mode')
-      await host.shutdown({ mode: input.mode })
-      return response({ kind: 'control', command: 'shutdown', mode: input.mode })
-    }
-    default:
-      throw new HostError('HOST_PROTOCOL_INVALID', 'cli-command-kind')
-  }
-}
-
-function diagnostic(error: unknown): unknown {
-  if (error instanceof HarnessError) return error.toJSON()
-  return { name: 'Error', code: 'HOST_INTERNAL_ERROR', message: 'host-command-failed' }
-}
-
-async function interactive(spec: ResolvedHostSpec, mode: 'run' | 'serve', io: HostCliIo): Promise<number> {
-  const credentialRefs = new Set(spec.members.filter(isLocalHostMember).flatMap(member => member.model.kind === 'scripted-fixed' ? [] : [member.model.credentialRef]))
-  const credentials = Object.fromEntries([...credentialRefs].flatMap(reference => {
-    const value = process.env[reference]
-    return value === undefined ? [] : [[reference, value]]
-  }))
-  const host = await openHost(spec, { credentials })
-  const write = createJsonLineWriter(io.stdout, spec.cli.maxOutputBytes, spec.cli.outputDrainTimeoutMs)
-  const controller = new AbortController()
-  const acceptedRequestIds = new Set<string>()
-  const stop = (): void => controller.abort()
-  process.once('SIGINT', stop)
-  process.once('SIGTERM', stop)
-  const driver = host.serve({ signal: controller.signal })
+  const handle = await open(path, 'r')
   try {
-    await write({ protocolVersion: 1, kind: 'ready', hostKey: spec.hostKey, instanceId: host.instanceId, mode })
-    for await (const command of boundedJsonLines(io.stdin, spec.cli.maxLineBytes)) {
-      let requestId: string | undefined
-      try {
-        requestId = commandEnvelope(command).requestId
-        if (acceptedRequestIds.has(requestId)) throw new HostError('HOST_PROTOCOL_INVALID', 'cli-request-id-duplicate')
-        acceptedRequestIds.add(requestId)
-        await write(await executeCommand(host, command))
-      }
-      catch (error) {
-        if (requestId === undefined) try { requestId = commandEnvelope(command).requestId } catch { /* Invalid envelopes were never accepted. */ }
-        await write({ protocolVersion: 1, kind: 'error', ...(requestId === undefined ? {} : { requestId }), error: diagnostic(error) })
-      }
-      if (host.status !== 'ready') break
+    const maximum = 2 * 1024 * 1024
+    const bytes = Buffer.alloc(maximum + 1)
+    let size = 0
+    while (size < bytes.length) {
+      const result = await handle.read(bytes, size, bytes.length - size, null)
+      if (result.bytesRead === 0) break
+      size += result.bytesRead
     }
-    if (mode === 'run' && host.status === 'ready') {
-      controller.abort()
-      await driver
-      const report = await host.run()
-      await write({ protocolVersion: 1, kind: 'complete', report })
-      await host.shutdown({ mode: 'drain' })
-      return report.members.some(member => member.readiness.counts.reviewRequiredInputs > 0 || member.readiness.counts.unsupportedInputs > 0) ? 10 : 0
-    }
-    if (mode === 'serve' && host.status === 'ready') {
-      await driver
-      if (host.status === 'ready') await host.shutdown({ mode: 'drain' })
-    } else {
-      controller.abort()
-      await driver
-    }
-    return host.status === 'stopped' ? 0 : 1
-  } finally {
-    process.off('SIGINT', stop)
-    process.off('SIGTERM', stop)
-    if (host.status === 'ready') await host.shutdown({ mode: 'cancel' })
-  }
+    if (size > maximum) throw new HostError('HOST_CONFIG_INVALID', 'config-file-too-large')
+    let text: string
+    try { text = new TextDecoder('utf-8', { fatal: true }).decode(bytes.subarray(0, size)) }
+    catch { throw new HostError('HOST_CONFIG_INVALID', 'config-utf8-invalid') }
+    return parseHostConfig(text, dirname(path))
+  } finally { await handle.close() }
 }
 
 /** Execute the side-effectful CLI adapter; importing Host modules remains inert. */
@@ -206,6 +81,19 @@ export async function runHostCli(args: readonly string[], io: HostCliIo): Promis
   const command = args[0] ?? 'help'
   if (command === 'help' || command === '--help' || command === '-h') { io.stdout.write(help); return 0 }
   if (command === 'version' || command === '--version' || command === '-v') { io.stdout.write(`${HARNESS_VERSION}\n`); return 0 }
+  const booleanFlags = new Set(['--resume', '--predecessor-stopped'])
+  const valueFlags = new Set(['--config', '--expected-token', '--max-recovery-writes', '--max-journal-conflicts', '--supersedes', '--agent-key', '--expected-header'])
+  const seen = new Set<string>()
+  for (let index = 1; index < args.length; index++) {
+    const key = args[index]!
+    if (seen.has(key) || !booleanFlags.has(key) && !valueFlags.has(key)) throw new HostError('HOST_CONFIG_INVALID', 'unknown-or-duplicate-option')
+    seen.add(key)
+    if (valueFlags.has(key)) { option(args, key); index++ }
+  }
+  const write = async (value: unknown) => {
+    const writer = createJsonLineWriter(io.stdout, 3 * 1024 * 1024)
+    try { await writer(value) } finally { await writer.dispose() }
+  }
   const configPath = option(args, '--config')
   if (configPath === undefined) throw new HostError('HOST_CONFIG_INVALID', 'config-path-required')
   if (command === 'unlock') {
@@ -214,35 +102,57 @@ export async function runHostCli(args: readonly string[], io: HostCliIo): Promis
     if (expectedToken === undefined) throw new HostError('HOST_CONFIG_INVALID', 'unlock-token-required')
     const config = await loadConfig(configPath)
     await unlockHostStorage(config.storage.root, { predecessorStopped: true, expectedToken })
-    io.stdout.write(`${JSON.stringify({ kind: 'unlocked', hostKey: config.hostKey })}\n`)
+    await write({ protocolVersion: 1, kind: 'unlocked', hostKey: config.hostKey })
     return 0
   }
   const config = await loadConfig(configPath)
   if (command === 'plan') {
-    io.stdout.write(`${JSON.stringify(planHostConfig(config))}\n`)
+    await write(planHostConfig(config))
     return 0
   }
   const spec = resolveHostConfig(config)
   switch (command) {
     case 'check':
-      io.stdout.write(`${JSON.stringify({ kind: 'checked', hostKey: spec.hostKey,
-        members: spec.members.map(member => ({ agentKey: member.agentKey, sessionId: member.sessionId })) })}\n`)
+      await write({ protocolVersion: 1, kind: 'checked', hostKey: spec.hostKey, ...exportHostConfig(spec) })
       return 0
     case 'init':
-      io.stdout.write(`${JSON.stringify({ kind: 'initialized', results: await initializeHost(spec, { resume: flag(args, '--resume') }) })}\n`)
+      await write({ protocolVersion: 1, kind: 'initialized', results: await initializeHost(spec, { resume: flag(args, '--resume') }) })
       return 0
+    case 'adopt':
+      if (spec.members.filter(isLocalHostMember).some(member => member.mode !== 'adopt')) throw new HostError('HOST_CONFIG_INVALID', 'adopt-mode-required')
+      await write({ protocolVersion: 1, kind: 'adopted', results: await initializeHost(spec) })
+      return 0
+    case 'adopt-empty': {
+      const agentKey = option(args, '--agent-key'); const header = option(args, '--expected-header')
+      if (!flag(args, '--predecessor-stopped') || agentKey === undefined || header === undefined || Buffer.byteLength(header) > 16384) throw new HostError('HOST_CONFIG_INVALID', 'adopt-empty-arguments')
+      await write({ protocolVersion: 1, kind: 'adopted-empty', result: await adoptEmptyHostMember(spec, agentKey,
+        { predecessorStopped: true, expectedHeader: decodeSessionHeader(Buffer.from(header)) }) })
+      return 0
+    }
     case 'inspect':
-      io.stdout.write(`${JSON.stringify({ kind: 'inspection', members: await inspectHost(spec) })}\n`)
+      await write({ protocolVersion: 1, kind: 'inspection', members: await inspectHost(spec) })
       return 0
-    case 'recover':
+    case 'recover': {
       if (!flag(args, '--predecessor-stopped')) throw new HostError('HOST_CONFIG_INVALID', 'recovery-confirmation-required')
-      io.stdout.write(`${JSON.stringify({ kind: 'recovery', members: await recoverHost(spec, { predecessorStopped: true,
+      const supersedes: Record<string, SessionEventId | null> = {}
+      const raw = option(args, '--supersedes')
+      if (raw !== undefined) {
+        const parsed = parseBoundedJson(raw, { maxBytes: 65536, maxDepth: 2, maxNodes: 1024 })
+        if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) throw new HostError('HOST_CONFIG_INVALID', 'supersedes-object')
+        for (const [key, value] of Object.entries(parsed)) {
+          if (!spec.members.some(member => member.kind === 'local' && member.agentKey === key) || value !== null && typeof value !== 'string') throw new HostError('HOST_CONFIG_INVALID', 'supersedes-entry')
+          if (value !== null) parseSessionEventId(value as string)
+          supersedes[key] = value as SessionEventId | null
+        }
+      }
+      await write({ protocolVersion: 1, kind: 'recovery', members: await recoverHost(spec, { predecessorStopped: true, supersedes,
         maxRecoveryWrites: integerOption(args, '--max-recovery-writes'),
-        maxJournalConflicts: integerOption(args, '--max-journal-conflicts') }) })}\n`)
+        maxJournalConflicts: integerOption(args, '--max-journal-conflicts') }) })
       return 0
+    }
     case 'run':
     case 'serve':
-      return await interactive(spec, command, io)
+      return await interactive(spec, command, io, [dirname(resolve(configPath))])
     default:
       throw new HostError('HOST_CONFIG_INVALID', 'unknown-command')
   }

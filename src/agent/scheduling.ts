@@ -4,11 +4,11 @@ import type { AgentSessionSnapshot } from './state.js'
 import { AgentError } from './errors.js'
 import { referenceKey } from './input-codec.js'
 
-/** Persistent lane cursors and accepted sequence define the complete ordering. */
-export function selectAgentInput(state: AgentSessionSnapshot, catalog: MessageCatalog) {
+/** Filter actionable inputs using the same ownership, message support and wait rules as selection. */
+export function runnableAgentInputs(state: AgentSessionSnapshot, catalog: MessageCatalog) {
   const spec = state.spec?.payload
   if (spec === undefined) throw new AgentError('AGENT_STATE_INVALID', 'missing-spec')
-  const candidates = state.inputs.filter(input => {
+  return state.inputs.filter(input => {
     if (hasPendingAgentAbandon(state.controls, input)) return false
     if (input.message !== null && (catalog.resolve(input.message.type, input.message.payloadVersion) === undefined
       || !spec.messages.some(message => message.type === input.message!.type && message.payloadVersion === input.message!.payloadVersion))) return false
@@ -20,6 +20,12 @@ export function selectAgentInput(state: AgentSessionSnapshot, catalog: MessageCa
     const root = state.roots.find(root => root.id === result.descriptor.root)
     return root !== undefined && root.outcome === null && root.stopControl === null
   })
+}
+
+/** Persistent lane cursors and accepted sequence define the complete ordering. */
+export function selectAgentInput(state: AgentSessionSnapshot, catalog: MessageCatalog) {
+  const candidates = runnableAgentInputs(state, catalog)
+  const spec = state.spec!.payload
   const lanes = new Map<string, typeof candidates[number]>()
   for (const input of candidates) {
     const previous = lanes.get(input.lane)

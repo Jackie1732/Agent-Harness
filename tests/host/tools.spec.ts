@@ -2,11 +2,13 @@ import { mkdir, mkdtemp, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
-import { FileSessionBackend, initializeHost, parseSessionId, resolveHostConfig, SessionRepository } from '../../src/index.js'
+import { FileSessionBackend, initializeHost, parseSessionId, resolveHostConfig, SessionRepository, openHost, ScriptedModelProvider } from '../../src/index.js'
+import type { ModelFrame } from '../../src/index.js'
 import { decodeHostConfig } from '../../src/host/config.js'
 import { hostRuntimeEventCatalog } from '../../src/host/initialization.js'
 import { createHostTools } from '../../src/host/tool-factory.js'
 import { hostConfig } from './fixtures.js'
+import { CapabilityRegistry } from '../../src/capability/registry.js'
 
 describe('Host tool assembly', () => {
   it('binds read_text to an explicit workspace and protects Session storage', async () => {
@@ -32,6 +34,7 @@ describe('Host tool assembly', () => {
     const config = decodeHostConfig({ ...input, members: [{ ...original,
       profile: { ...profile, toolNames: ['read_text'] },
       spec: { ...spec, toolNames: ['read_text'], budget: { ...(spec.budget as object), tools: 1 } }, tools,
+      model: { ...(original.model as object), runnerLimits: { ...((original.model as Record<string, object>).runnerLimits), maxToolCalls: 4 } },
     }] }, base)
     const resolved = resolveHostConfig(config)
     await initializeHost(resolved)
@@ -41,7 +44,9 @@ describe('Host tool assembly', () => {
     const member = resolved.members[0]!
     if (member.kind !== 'local') throw new Error('expected local member')
     const session = await repository.open(parseSessionId(member.sessionId))
-    const resources = await createHostTools(session, member, storage)
+    const capabilities = new CapabilityRegistry()
+    const scope = capabilities.scope.derive('test tools')
+    const resources = await createHostTools(session, member, [storage], scope)
     if (resources === undefined) throw new Error('expected tool resources')
     try {
       const settled = await resources.runner.invoke({ name: 'read_text', input: { path: 'note.txt' } })
@@ -51,7 +56,30 @@ describe('Host tool assembly', () => {
     } finally {
       await resources.runner.dispose()
       await resources.dispose()
+      await scope.dispose()
+      await capabilities.dispose()
       await repository.dispose()
     }
-  })
+    let calls = 0
+    const host = await openHost(resolved, { bindings: { createModelProvider: member => new ScriptedModelProvider({ ...member.model,
+      script: async function* (): AsyncGenerator<ModelFrame> {
+        const tool = calls++ === 0
+        yield { kind: 'message-start', reportedModel: 'fixed-model', responseId: `read-${calls}` }
+        if (tool) {
+          yield { kind: 'block-start', index: 0, block: 'tool-call', callId: 'read-note', name: 'read_text' }
+          yield { kind: 'arguments-delta', index: 0, text: '{"path":"note.txt"}' }
+        } else {
+          yield { kind: 'block-start', index: 0, block: 'text' }
+          yield { kind: 'text-delta', index: 0, text: 'read complete' }
+        }
+        yield { kind: 'block-end', index: 0 }
+        yield { kind: 'complete', stopReason: tool ? 'tool-calls' : 'stop' }
+      },
+    }) } })
+    try {
+      await host.submitTask('writer', 'read note.txt')
+      expect((await host.run()).members[0]!.agent.final?.text).toBe('read complete')
+      expect(calls).toBe(2)
+    } finally { await host.shutdown() }
+  }, 30_000)
 })

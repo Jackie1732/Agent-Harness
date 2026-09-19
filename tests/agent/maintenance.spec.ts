@@ -5,6 +5,7 @@ import { SessionModelRunner } from '../../src/model/runner.js'
 import { SessionAgent } from '../../src/agent/session-agent.js'
 import { agentFixture, clock } from './fixtures.js'
 import { emptyMessageCatalog, runnerLimits } from '../context/fixtures.js'
+import { agentMaintenanceRunStartedEvent, agentRunSettledEvent, agentMaintenanceRunSettledEvent, agentRunStartedEvent } from '../../src/agent/session-events.js'
 
 function waitProvider(counter: { calls: number }) {
   return new ScriptedModelProvider({ providerId: 'maintenance-wait', maxConcurrentExchanges: 1,
@@ -42,4 +43,17 @@ it('observes readiness without writes and settles due work in a v2 maintenance R
     const runs = f.session.snapshot().history.at(-1)!.events.filter(event => event.stored.type === 'agent/run-started')
     expect(runs.at(-1)?.stored.payloadVersion).toBe(2)
   } finally { await agent.dispose(); await f.close() }
+})
+
+it('rejects v1 settlement of a maintenance run and v2 settlement of a business run', async () => {
+  const f = await agentFixture()
+  try {
+    const maintenance = await f.journal.append(agentMaintenanceRunStartedEvent, () => ({ spec: f.installed.stored.eventId, kind: 'maintenance' as const }))
+    await expect(f.journal.append(agentRunSettledEvent, () => ({ run: maintenance.stored.eventId, stoppedBy: 'idle' as const, reason: 'invalid-version' })))
+      .rejects.toMatchObject({ code: 'AGENT_STATE_INVALID' })
+    await f.journal.append(agentMaintenanceRunSettledEvent, () => ({ run: maintenance.stored.eventId, stoppedBy: 'idle' as const, reason: 'settled' }))
+    const drive = await f.journal.append(agentRunStartedEvent, () => ({ spec: f.installed.stored.eventId, kind: 'drive' as const }))
+    await expect(f.journal.append(agentMaintenanceRunSettledEvent, () => ({ run: drive.stored.eventId, stoppedBy: 'idle' as const, reason: 'invalid-version' })))
+      .rejects.toMatchObject({ code: 'AGENT_STATE_INVALID' })
+  } finally { await f.close() }
 })

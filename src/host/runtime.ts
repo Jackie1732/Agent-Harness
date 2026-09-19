@@ -1,365 +1,256 @@
+import { AsyncLocalStorage } from 'node:async_hooks'
 import type { Clock } from '../foundation/clock.js'
 import { systemClock } from '../foundation/clock.js'
-import type { EffectLease } from '../effect/types.js'
-import { createSessionDirectory } from '../communication/directory.js'
-import type { SessionDirectory, SessionDirectoryDeclaration } from '../communication/directory.js'
-import { CommunicationService } from '../communication/service.js'
-import type { MessageTransport } from '../communication/transport.js'
-import { createHttpsMessageClientTransport, createHttpsMessageServer } from '../communication/https-transport.js'
-import type { HttpsMessageServer } from '../communication/https-transport.js'
-import { createRoutedMessageTransport } from '../communication/routed-transport.js'
-import { readFile } from 'node:fs/promises'
-import { FileSessionBackend } from '../session/file-backend.js'
 import type { SessionEventId } from '../session/ids.js'
-import { formatSessionAddress, parseSessionId } from '../session/ids.js'
-import { SessionRepository } from '../session/repository.js'
-import type { SessionHandle } from '../session/session-handle.js'
-import type { AgentActionReference } from '../agent/contract.js'
-import type { AgentSendCommand } from '../agent/contract.js'
+import type { AgentActionReference, AgentSendCommand } from '../agent/contract.js'
 import type { OutboxMessageSnapshot } from '../communication/types.js'
-import { CommunicationError } from '../communication/errors.js'
+import type { CommunicationError } from '../communication/errors.js'
 import { isLocalHostMember } from './config.js'
 import type { ResolvedHostSpec } from './config.js'
-import { validateHostMemberSession } from './binding.js'
 import { HostError } from './errors.js'
-import { hostRuntimeEventCatalog } from './initialization.js'
-import { compileHostMessageCatalog } from './message-catalog.js'
 import { runHostScheduler } from './scheduler.js'
-import { createHostSlot } from './slot.js'
+import type { HostSchedulerState } from './scheduler.js'
 import type { HostRunReport, HostSlot } from './runtime-types.js'
-import { acquireHostStorageLock } from './storage-lock.js'
-import type { HostStorageLock } from './storage-lock.js'
+import { assembleHost } from './assembly.js'
+import type { HostAssembly } from './assembly.js'
+import type { HostRuntimeBindings } from './slot.js'
+import { nodeHostTimer } from './timer.js'
+import type { HostTimer } from './timer.js'
+import { observeHostMembers } from './report.js'
+import { HostObservations } from './observation.js'
+import { exportHostConfig } from './config-export.js'
 
 export type HostStatus = 'ready' | 'stopping' | 'stopped' | 'failed'
 export type HostShutdownMode = 'drain' | 'cancel'
-
 export interface OpenHostOptions {
   readonly clock?: Clock
+  readonly timer?: HostTimer
   readonly credentials?: Readonly<Record<string, string>>
+  readonly bindings?: HostRuntimeBindings
 }
+export interface HostInputReceipt { readonly agentKey: string; readonly eventId: SessionEventId }
+const hostTasks = new AsyncLocalStorage<ReadonlySet<symbol>>()
 
-export interface HostInputReceipt {
-  readonly agentKey: string
-  readonly eventId: SessionEventId
-}
-
-function delay(milliseconds: number, signal: AbortSignal): Promise<void> {
-  if (signal.aborted) return Promise.resolve()
-  return new Promise(resolve => {
-    const timer = setTimeout(done, milliseconds)
-    function done(): void {
-      clearTimeout(timer)
-      signal.removeEventListener('abort', done)
-      resolve()
-    }
-    signal.addEventListener('abort', done, { once: true })
-  })
-}
-
-async function settle(tasks: readonly Promise<unknown>[]): Promise<unknown[]> {
-  const results = await Promise.allSettled(tasks)
-  return results.filter((result): result is PromiseRejectedResult => result.status === 'rejected').map(result => result.reason)
-}
-
-/** Embeddable owner of assembled Agent slots, scheduling, routing and shutdown. */
-export class AtomicHost {
+/** Public facade exposes operations and observations, never the owned handles. */
+class HostRuntime {
   readonly #spec: ResolvedHostSpec
   readonly #clock: Clock
-  readonly #storageLock: HostStorageLock
-  readonly #repository: SessionRepository
-  readonly #directory: SessionDirectory
-  readonly #transport: MessageTransport
-  readonly #remoteTransports: readonly MessageTransport[]
-  readonly #server: HttpsMessageServer | undefined
-  readonly #remoteRecipients: ReadonlySet<string>
-  readonly #service: CommunicationService
-  readonly #declarations: readonly EffectLease<SessionDirectoryDeclaration>[]
-  readonly #slots: readonly HostSlot[]
-  readonly #byKey: ReadonlyMap<string, HostSlot>
+  readonly #timer: HostTimer
+  readonly #assembly: HostAssembly
+  readonly #fingerprint: string
+  readonly #byKey: Map<string, HostSlot>
   readonly #paused = new Set<string>()
+  readonly #routingPaused = new Set<string>()
+  readonly #offline = new Set<string>()
+  readonly #mailboxTransitions = new Map<string, Promise<void>>()
   readonly #blockedRoutes = new Set<string>()
   readonly #lifetime = new AbortController()
+  readonly #wake = new AbortController()
+  readonly #tokens = new Set<symbol>()
+  readonly #operations = new Set<Promise<unknown>>()
+  readonly #scheduler: HostSchedulerState = { cursor: 0, businessCursor: 0, faults: new Set(), stalled: new Map(), cooldowns: new Map(), observations: new HostObservations() }
   #status: HostStatus = 'ready'
-  #cursor = 0
   #activity: Promise<HostRunReport> | undefined
+  #command: Promise<unknown> | undefined
   #shutdownTask: Promise<void> | undefined
   #shutdownMode: HostShutdownMode | undefined
+  #stoppingAt: number | undefined
 
-  constructor(options: {
-    readonly spec: ResolvedHostSpec
-    readonly clock: Clock
-    readonly storageLock: HostStorageLock
-    readonly repository: SessionRepository
-    readonly directory: SessionDirectory
-    readonly transport: MessageTransport
-    readonly remoteTransports: readonly MessageTransport[]
-    readonly server?: HttpsMessageServer
-    readonly remoteRecipients: ReadonlySet<string>
-    readonly service: CommunicationService
-    readonly declarations: readonly EffectLease<SessionDirectoryDeclaration>[]
-    readonly slots: readonly HostSlot[]
-  }) {
-    this.#spec = options.spec
-    this.#clock = options.clock
-    this.#storageLock = options.storageLock
-    this.#repository = options.repository
-    this.#directory = options.directory
-    this.#transport = options.transport
-    this.#remoteTransports = options.remoteTransports
-    this.#server = options.server
-    this.#remoteRecipients = options.remoteRecipients
-    this.#service = options.service
-    this.#declarations = options.declarations
-    this.#slots = options.slots
-    this.#byKey = new Map(options.slots.map(slot => [slot.member.agentKey, slot]))
-  }
-
-  get status(): HostStatus { return this.#status }
-  get instanceId(): string { return this.#storageLock.record.instanceId }
-
-  /** Persist one user task without implicitly starting a model run. */
-  async submitTask(agentKey: string, text: string, originLabel = 'host-user'): Promise<HostInputReceipt> {
-    const slot = this.#slot(agentKey)
-    const accepted = await slot.agent.submitInput({ kind: 'task', text, originLabel })
-    return Object.freeze({ agentKey, eventId: accepted.stored.eventId })
-  }
-
-  /** Persist an answer for one exact Agent wait. */
-  async submitAnswer(agentKey: string, wait: AgentActionReference, text: string, originLabel = 'host-user'): Promise<HostInputReceipt> {
-    const slot = this.#slot(agentKey)
-    const accepted = await slot.agent.submitInput({ kind: 'answer', wait, text, originLabel })
-    return Object.freeze({ agentKey, eventId: accepted.stored.eventId })
-  }
-
-  /** Stop admitting new business runs for one slot; receipt and maintenance remain active. */
-  pause(agentKey: string): void {
-    const slot = this.#slot(agentKey)
-    this.#paused.add(agentKey)
-    slot.agent.pause()
-  }
-
-  /** Re-enable business admission for one slot. */
-  resume(agentKey: string): void {
-    this.#slot(agentKey)
-    this.#paused.delete(agentKey)
-  }
-
-  /** Persist cancellation for one exact root; notification reaches an active Turn immediately. */
-  cancel(agentKey: string, root: SessionEventId, reason = 'host-cancelled') {
-    return this.#slot(agentKey).agent.cancel(root, reason)
-  }
-
-  /** Execute one explicit quota-limited Agent send command; Host scheduling owns later delivery. */
-  sendMessage(agentKey: string, command: AgentSendCommand) {
-    return this.#slot(agentKey).agent.sendMessage(command)
-  }
-
-  /** Run a finite number of persistent-work scans. */
-  run(options: { readonly signal?: AbortSignal } = {}): Promise<HostRunReport> {
-    this.#assertReady()
-    if (this.#activity !== undefined) throw new HostError('HOST_BUSY', 'host-driver-active')
-    const signal = options.signal === undefined
-      ? this.#lifetime.signal
-      : AbortSignal.any([this.#lifetime.signal, options.signal])
-    const task = runHostScheduler({ slots: this.#slots, paused: this.#paused, scheduling: this.#spec.scheduling,
-      clock: this.#clock, signal, isStopping: () => this.#status !== 'ready', canAttempt: message => this.#canAttempt(message),
-      blockRoute: error => this.#blockRoute(error), blockedRoutes: () => [...this.#blockedRoutes], cursor: this.#cursor })
-      .then(result => { this.#cursor = result.cursor; return result.report })
-      .finally(() => { if (this.#activity === task) this.#activity = undefined })
-    this.#activity = task
-    return task
-  }
-
-  /** Continue finite scans until cancelled or shutdown starts. */
-  serve(options: { readonly signal?: AbortSignal } = {}): Promise<HostRunReport> {
-    this.#assertReady()
-    if (this.#activity !== undefined) throw new HostError('HOST_BUSY', 'host-driver-active')
-    const signal = options.signal === undefined
-      ? this.#lifetime.signal
-      : AbortSignal.any([this.#lifetime.signal, options.signal])
-    const task = (async () => {
-      let last: HostRunReport | undefined
-      while (!signal.aborted && this.#status === 'ready') {
-        const result = await runHostScheduler({ slots: this.#slots, paused: this.#paused, scheduling: this.#spec.scheduling,
-          clock: this.#clock, signal, isStopping: () => this.#status !== 'ready', canAttempt: message => this.#canAttempt(message),
-          blockRoute: error => this.#blockRoute(error), blockedRoutes: () => [...this.#blockedRoutes], cursor: this.#cursor })
-        this.#cursor = result.cursor
-        last = result.report
-        if (!signal.aborted && this.#status === 'ready') await delay(this.#spec.scheduling.scanIntervalMs, signal)
-      }
-      return last ?? Object.freeze({ batches: 0, businessRuns: 0, maintenanceRuns: 0, deliveryAttempts: 0,
-        stoppedBy: signal.aborted ? 'aborted' as const : 'host-stopping' as const,
-        blockedRoutes: Object.freeze([...this.#blockedRoutes]), members: this.report().members })
-    })().finally(() => { if (this.#activity === task) this.#activity = undefined })
-    this.#activity = task
-    return task
-  }
-
-  /** Pure bounded observation of every assembled slot. */
-  report(): Pick<HostRunReport, 'members' | 'blockedRoutes'> & { readonly status: HostStatus; readonly hostKey: string; readonly instanceId: string } {
-    const observedAt = new Date(this.#clock.now()).toISOString()
-    return Object.freeze({ status: this.#status, hostKey: this.#spec.hostKey, instanceId: this.instanceId,
-      blockedRoutes: Object.freeze([...this.#blockedRoutes]), members: Object.freeze(this.#slots.map(slot => Object.freeze({ agentKey: slot.member.agentKey,
-        sessionId: slot.member.sessionId, paused: this.#paused.has(slot.member.agentKey),
-        readiness: slot.agent.readiness(observedAt), agent: slot.agent.report() }))) })
-  }
-
-  /** Stop admission, join accepted work, and release each dependency in ownership order. */
-  shutdown(options: { readonly mode?: HostShutdownMode } = {}): Promise<void> {
-    const mode = options.mode ?? 'cancel'
-    if (this.#shutdownTask !== undefined) {
-      if (mode === 'cancel' && this.#shutdownMode === 'drain') {
-        this.#shutdownMode = 'cancel'
-        this.#lifetime.abort()
-      }
-      return this.#shutdownTask
+  constructor(spec: ResolvedHostSpec, clock: Clock, timer: HostTimer, assembly: HostAssembly) {
+    this.#spec = spec; this.#clock = clock; this.#timer = timer; this.#assembly = assembly
+    this.#fingerprint = exportHostConfig(spec).fingerprint
+    this.#byKey = new Map(assembly.slots.map(slot => [slot.member.agentKey, slot]))
+    for (const member of spec.members.filter(isLocalHostMember)) if (!member.enabled) {
+      this.#offline.add(member.agentKey); this.#paused.add(member.agentKey)
     }
-    if (this.#status === 'stopped') return Promise.resolve()
-    this.#shutdownMode = mode
-    this.#status = 'stopping'
-    for (const slot of this.#slots) slot.agent.pause()
-    if (mode === 'cancel') this.#lifetime.abort()
-    const listenerTask = this.#server?.dispose()
-    const transportTask = this.#transport.dispose()
-    this.#shutdownTask = (async () => {
-      if (this.#activity !== undefined) await this.#activity.catch(() => undefined)
-      let failures = await settle([...this.#slots].reverse().map(slot => slot.agent.dispose()))
-      if (failures.length > 0) return this.#cleanupFailed('agent-cleanup-failed', failures)
-      failures = await settle(listenerTask === undefined ? [] : [listenerTask])
-      if (failures.length > 0) return this.#cleanupFailed('listener-cleanup-failed', failures)
-      failures = await settle([this.#service.dispose()])
-      if (failures.length > 0) return this.#cleanupFailed('communication-cleanup-failed', failures)
-      failures = await settle([...this.#slots].reverse().flatMap(slot => slot.tools === undefined ? [] : [slot.tools.dispose()]).concat([
-        transportTask, ...this.#remoteTransports.map(transport => transport.dispose()),
-        ...[...this.#slots].reverse().map(slot => slot.provider.dispose())]))
-      if (failures.length > 0) return this.#cleanupFailed('provider-cleanup-failed', failures)
-      failures = await settle([...this.#declarations].reverse().map(declaration => declaration.dispose()))
-      if (failures.length > 0) return this.#cleanupFailed('directory-declaration-cleanup-failed', failures)
-      failures = await settle([this.#directory.dispose(), this.#repository.dispose()])
-      if (failures.length > 0) return this.#cleanupFailed('storage-cleanup-failed', failures)
-      try { await this.#storageLock.dispose() }
-      catch (cause) { return this.#cleanupFailed('storage-lock-cleanup-failed', [cause]) }
-      this.#status = 'stopped'
-    })()
-    void this.#shutdownTask.catch(() => undefined)
+  }
+  get status(): HostStatus { return this.#status }
+  get instanceId(): string { return this.#assembly.lock.record.instanceId }
+
+  /** Persist a user task without implicitly starting inference. */
+  submitTask(agentKey: string, text: string, originLabel = 'host-user'): Promise<HostInputReceipt> {
+    const slot = this.#slot(agentKey)
+    return this.#track(async () => {
+      const accepted = await slot.agent.submitInput({ kind: 'task', text, originLabel })
+      this.#assembly.wakeup.notify()
+      return Object.freeze({ agentKey, eventId: accepted.stored.eventId })
+    })
+  }
+  /** Persist an answer for one exact durable wait. */
+  submitAnswer(agentKey: string, wait: AgentActionReference, text: string, originLabel = 'host-user'): Promise<HostInputReceipt> {
+    const slot = this.#slot(agentKey)
+    return this.#track(async () => {
+      const accepted = await slot.agent.submitInput({ kind: 'answer', wait, text, originLabel })
+      this.#assembly.wakeup.notify()
+      return Object.freeze({ agentKey, eventId: accepted.stored.eventId })
+    })
+  }
+  /** Stop new business turns; receipt, maintenance and delivery remain enabled. */
+  pause(agentKey: string): void {
+    const slot = this.#slot(agentKey); this.#paused.add(agentKey); slot.agent.pause()
+  }
+  /** Explicit resumption also rechecks a slot stopped for lack of domain progress. */
+  resume(agentKey: string): void {
+    this.#slot(agentKey); this.#paused.delete(agentKey); this.#scheduler.stalled.delete(agentKey)
+    this.#assembly.wakeup.notify()
+  }
+  /** Change outbound admission independently of business execution. */
+  pauseRouting(agentKey: string): void { this.#slot(agentKey); this.#routingPaused.add(agentKey) }
+  resumeRouting(agentKey: string): void { this.#slot(agentKey); this.#routingPaused.delete(agentKey); this.#assembly.wakeup.notify() }
+
+  /** Detach a mailbox after its accepted work settles; reattachment constructs fresh slot owners. */
+  setMailboxOnline(agentKey: string, online: boolean, mode: HostShutdownMode = 'drain'): Promise<void> {
+    this.#assertReady()
+    const slot = this.#byKey.get(agentKey)
+    if (!this.#assembly.local.some(entry => entry.member.agentKey === agentKey)) throw new HostError('HOST_NOT_READY', 'agent-slot-unavailable')
+    if (this.#mailboxTransitions.has(agentKey)) throw new HostError('HOST_BUSY', 'mailbox-transition-active')
+    if (online === !this.#offline.has(agentKey)) return Promise.resolve()
+    if (!online) { this.#offline.add(agentKey); this.#paused.add(agentKey); slot?.agent.pause() }
+    const task = this.#track(async () => {
+      if (online) {
+        const replacement = await this.#assembly.reopen(agentKey)
+        const index = slot === undefined ? -1 : this.#assembly.slots.indexOf(slot)
+        if (index < 0) this.#assembly.slots.push(replacement)
+        else this.#assembly.slots[index] = replacement
+        this.#byKey.set(agentKey, replacement)
+        this.#offline.delete(agentKey); this.#scheduler.stalled.delete(agentKey)
+        this.#scheduler.faults.delete(agentKey)
+        this.#assembly.wakeup.notify()
+      } else if (slot !== undefined) {
+        if (mode === 'drain') await slot.agent.wait()
+        await slot.dispose()
+      }
+    })
+    this.#mailboxTransitions.set(agentKey, task)
+    void task.then(() => this.#mailboxTransitions.delete(agentKey), () => { this.#mailboxTransitions.delete(agentKey); this.#scheduler.faults.add(agentKey) })
+    return task
+  }
+
+  /** Notify an active root immediately, then join its durable cancellation. */
+  cancel(agentKey: string, root: SessionEventId, reason = 'host-cancelled') {
+    const slot = this.#slot(agentKey)
+    return this.#track(() => slot.agent.cancel(root, reason))
+  }
+  /** Send commands share the single business lane with Host drivers. */
+  sendMessage(agentKey: string, command: AgentSendCommand) {
+    const slot = this.#slot(agentKey)
+    if (this.#activity !== undefined || this.#command !== undefined) throw new HostError('HOST_BUSY', 'host-business-active')
+    const task = this.#track(() => slot.agent.sendMessage(command))
+    this.#command = task
+    void task.then(() => { this.#command = undefined }, () => { this.#command = undefined })
+    return task
+  }
+
+  /** Admit at most maxBatchesPerRun domain tasks, joining every accepted task. */
+  run(options: { readonly signal?: AbortSignal } = {}): Promise<HostRunReport> { return this.#drive(false, options.signal) }
+  /** Keep scanning until explicit cancellation or Host shutdown. */
+  serve(options: { readonly signal?: AbortSignal } = {}): Promise<HostRunReport> { return this.#drive(true, options.signal) }
+
+  report() {
+    return Object.freeze({ status: this.#status, shutdownMode: this.#shutdownMode ?? null, hostKey: this.#spec.hostKey, instanceId: this.instanceId,
+      configVersion: this.#spec.schemaVersion, configFingerprint: this.#fingerprint, configuredMembers: this.#spec.members.length,
+      remoteMembers: this.#spec.members.filter(member => member.kind === 'remote').length,
+      unfinishedOperations: this.#operations.size,
+      shutdownOverdue: this.#status === 'stopping' && this.#stoppingAt !== undefined && this.#timer.now() - this.#stoppingAt >= this.#spec.shutdown.diagnosticAfterMs,
+      blockedRoutes: Object.freeze([...this.#blockedRoutes]),
+      ...observeHostMembers(this.#assembly.slots, this.#paused, this.#scheduler.faults, this.#clock, this.#spec.scheduling.maxReportEntries, this.#scheduler.observations, this.#assembly, this.#routingPaused) })
+  }
+
+  /** Close admission synchronously; repeated calls join one task and drain can upgrade to cancel. */
+  shutdown(options: { readonly mode?: HostShutdownMode } = {}): Promise<void> {
+    const mode = options.mode ?? this.#spec.shutdown.mode
+    if (this.#shutdownTask === undefined) {
+      this.#status = 'stopping'; this.#shutdownMode = mode
+      this.#stoppingAt = this.#timer.now()
+      const closingToken = Symbol('Host release')
+      this.#tokens.add(closingToken)
+      const closingChain = new Set(hostTasks.getStore()); closingChain.add(closingToken)
+      // Publish before any Abort listener or resource callback can reenter.
+      this.#shutdownTask = hostTasks.run(closingChain, () => Promise.resolve().then(async () => {
+        await Promise.allSettled([...this.#operations, ...(this.#activity === undefined ? [] : [this.#activity])])
+        try { await this.#assembly.dispose(); this.#status = 'stopped' }
+        catch (cause) {
+          this.#status = 'failed'
+          throw new HostError('HOST_CLEANUP_FAILED', 'host-resources-retained', {}, { cause })
+        }
+      }).finally(() => this.#tokens.delete(closingToken)))
+      void this.#shutdownTask.catch(() => undefined)
+      for (const slot of this.#assembly.slots) if (slot.agent.status === 'accepting') slot.agent.pause()
+      this.#assembly.server?.stopAdmission()
+      this.#wake.abort()
+    }
+    if (mode === 'cancel' && this.#status === 'stopping') { this.#shutdownMode = 'cancel'; this.#lifetime.abort() }
+    if ([...hostTasks.getStore() ?? []].some(token => this.#tokens.has(token))) throw new HostError('HOST_REENTRANT_WAIT', 'host-task-cannot-join-shutdown')
     return this.#shutdownTask
   }
 
-  #cleanupFailed(reason: string, failures: readonly unknown[]): never {
-    this.#status = 'failed'
-    throw new HostError('HOST_CLEANUP_FAILED', reason, {}, { cause: new AggregateError(failures) })
-  }
+  /** Disposal always requests cooperative cancellation and shares shutdown settlement. */
+  dispose(): Promise<void> { return this.shutdown({ mode: 'cancel' }) }
 
+  #drive(continuous: boolean, external?: AbortSignal): Promise<HostRunReport> {
+    this.#assertReady()
+    if (this.#activity !== undefined || this.#command !== undefined) throw new HostError('HOST_BUSY', 'host-driver-active')
+    const signal = external === undefined ? this.#lifetime.signal : AbortSignal.any([external, this.#lifetime.signal])
+    const task = this.#track(async () => {
+      let report: HostRunReport
+      do {
+        const notified = this.#assembly.wakeup.scan()
+        report = await runHostScheduler({ slots: this.#assembly.slots, paused: this.#paused, routingPaused: this.#routingPaused, offline: this.#offline,
+          scheduling: this.#spec.scheduling, clock: this.#clock, timer: this.#timer, signal, wakeSignal: this.#wake.signal,
+          isStopping: () => this.#status !== 'ready', canAttempt: message => this.#canAttempt(message),
+          blockRoute: error => this.#blockRoute(error), blockedRoutes: () => [...this.#blockedRoutes], state: this.#scheduler,
+          scanWake: () => this.#assembly.wakeup.scan(), assembly: this.#assembly })
+        if (!continuous || signal.aborted || this.#status !== 'ready') return report
+        await this.#timer.wait(this.#spec.scheduling.scanIntervalMs, AbortSignal.any([signal, this.#wake.signal, notified]))
+      } while (this.#status === 'ready' && !signal.aborted)
+      return report
+    })
+    this.#activity = task
+    void task.then(() => { this.#activity = undefined }, () => { this.#activity = undefined })
+    return task
+  }
+  #track<T>(operation: () => Promise<T>): Promise<T> {
+    const token = Symbol('Host task')
+    this.#tokens.add(token)
+    const chain = new Set(hostTasks.getStore()); chain.add(token)
+    const task = hostTasks.run(chain, () => Promise.resolve().then(operation))
+    this.#operations.add(task)
+    const settled = () => { this.#operations.delete(task); this.#tokens.delete(token) }
+    void task.then(settled, settled)
+    return task
+  }
   #canAttempt(message: OutboxMessageSnapshot): boolean {
     if (this.#blockedRoutes.has(message.envelope.recipient)) return false
-    if (this.#remoteRecipients.has(message.envelope.recipient)) return true
-    return this.#directory.status(message.envelope.recipient).kind === 'online'
+    if (this.#assembly.remoteRecipients.has(message.envelope.recipient)) return true
+    const kind = this.#assembly.directory.status(message.envelope.recipient).kind
+    return kind === 'online' || kind === 'ended'
   }
-
   #blockRoute(error: CommunicationError): boolean {
     const recipient = error.details?.recipient
-    if (typeof recipient !== 'string' || !this.#remoteRecipients.has(recipient)) return false
-    this.#blockedRoutes.add(recipient)
-    return true
+    if (error.code !== 'MESSAGE_TRANSPORT_SOURCE_INVALID' || typeof recipient !== 'string'
+      || ![...this.#assembly.remoteRecipients].some(address => address === recipient)) return false
+    this.#blockedRoutes.add(recipient); return true
   }
-
   #slot(agentKey: string): HostSlot {
     this.#assertReady()
     const slot = this.#byKey.get(agentKey)
     if (slot === undefined) throw new HostError('HOST_NOT_READY', 'agent-slot-unavailable', { agentKey })
     return slot
   }
-
   #assertReady(): void {
     if (this.#status !== 'ready') throw new HostError('HOST_INACTIVE', 'host-not-ready', { status: this.#status })
   }
 }
+export type AtomicHost = HostRuntime
 
-/** Validate saved bindings, declare all local addresses, then publish an assembled Host. */
+/** Validate stored facts and complete assembly before exposing the Host facade. */
 export async function openHost(spec: ResolvedHostSpec, options: OpenHostOptions = {}): Promise<AtomicHost> {
   const clock = options.clock ?? systemClock
+  const credentials = Object.freeze({ ...options.credentials })
   for (const member of spec.members.filter(isLocalHostMember)) {
-    if (member.enabled && member.model.kind !== 'scripted-fixed' && options.credentials?.[member.model.credentialRef] === undefined) {
-      throw new HostError('HOST_CONFIG_INVALID', 'model-credential-missing', { credentialRef: member.model.credentialRef })
-    }
+    if (options.bindings?.createModelProvider === undefined && member.enabled && member.model.kind !== 'scripted-fixed'
+      && credentials[member.model.credentialRef] === undefined) throw new HostError('HOST_CONFIG_INVALID', 'model-credential-missing')
   }
-  const tls = spec.https.kind === 'mutual-tls' ? {
-    ca: await readFile(spec.https.caFile),
-    serverCert: await readFile(spec.https.serverCertFile),
-    serverKey: await readFile(spec.https.serverKeyFile),
-    clientCert: await readFile(spec.https.clientCertFile),
-    clientKey: await readFile(spec.https.clientKeyFile),
-  } : undefined
-  const storageLock = await acquireHostStorageLock(spec.storage.root, spec.hostKey)
-  const backend = new FileSessionBackend({ root: storageLock.root, maxRecordBytes: spec.storage.maxRecordBytes })
-  const repository = new SessionRepository({ backend, catalog: hostRuntimeEventCatalog,
-    maxLineageDepth: spec.storage.maxLineageDepth, clock })
-  const directory = createSessionDirectory()
-  const remoteTransports = new Map<string, MessageTransport>()
-  if (spec.https.kind === 'mutual-tls' && tls !== undefined) {
-    for (const route of spec.routes.filter(item => item.origin !== null)) {
-      const key = `${route.ownerHost}\u0000${route.origin}\u0000${route.serverName}`
-      if (!remoteTransports.has(key)) remoteTransports.set(key, createHttpsMessageClientTransport({
-        origin: route.origin!, serverName: route.serverName!, hostKey: spec.hostKey,
-        tls: { ca: tls.ca, cert: tls.clientCert, key: tls.clientKey }, limits: spec.https.limits,
-      }))
-    }
-  }
-  const routes = new Map(spec.routes.map(route => [formatSessionAddress(parseSessionId(route.sessionId)), route]))
-  const transport = createRoutedMessageTransport(directory, recipient => {
-    const route = routes.get(recipient)
-    if (route === undefined) return { kind: 'unavailable' }
-    if (route.ownerHost === spec.hostKey && route.origin === null) return { kind: 'local' }
-    const remote = remoteTransports.get(`${route.ownerHost}\u0000${route.origin}\u0000${route.serverName}`)
-    return remote === undefined ? { kind: 'unavailable' } : { kind: 'remote', transport: remote }
-  })
-  const service = new CommunicationService({ directory, transport, limits: spec.communication, clock })
-  const declarations: EffectLease<SessionDirectoryDeclaration>[] = []
-  const sessions: SessionHandle[] = []
-  const slots: HostSlot[] = []
-  let server: HttpsMessageServer | undefined
-  try {
-    const messageCatalog = compileHostMessageCatalog(spec.messages)
-    const localMembers = spec.members.filter(isLocalHostMember)
-    for (const member of localMembers) {
-      const route = spec.routes.find(item => item.sessionId === member.sessionId)
-      if (route === undefined || route.ownerHost !== spec.hostKey || route.origin !== null) {
-        throw new HostError('HOST_ROUTE_BLOCKED', 'local-member-route-invalid', { agentKey: member.agentKey })
-      }
-      declarations.push(await directory.declare(formatSessionAddress(parseSessionId(member.sessionId)), 'active'))
-    }
-    const enabledMembers = localMembers.filter(item => item.enabled)
-    for (const member of enabledMembers) {
-      const session = await repository.open(parseSessionId(member.sessionId))
-      sessions.push(session)
-      validateHostMemberSession(session, spec.hostKey, member)
-    }
-    for (let index = 0; index < sessions.length; index++) {
-      slots.push(await createHostSlot(sessions[index]!, enabledMembers[index]!, service, messageCatalog, clock,
-        options.credentials ?? {}, storageLock.root))
-    }
-    if (spec.https.kind === 'mutual-tls' && tls !== undefined) {
-      server = await createHttpsMessageServer({ directory, host: spec.https.listen.host, port: spec.https.listen.port,
-        tls: { ca: tls.ca, cert: tls.serverCert, key: tls.serverKey }, limits: spec.https.limits,
-        peers: spec.https.peers.map(peer => ({ hostKey: peer.hostKey,
-          fingerprint256: peer.fingerprint256,
-          senders: new Set(peer.sessionIds.map(sessionId => formatSessionAddress(parseSessionId(sessionId)))) })) })
-    }
-    const remoteRecipients = new Set(spec.routes.filter(route => route.origin !== null)
-      .map(route => formatSessionAddress(parseSessionId(route.sessionId))))
-    return new AtomicHost({ spec, clock, storageLock, repository, directory, transport, remoteRecipients,
-      remoteTransports: [...remoteTransports.values()], ...(server === undefined ? {} : { server }), service, declarations, slots })
-  } catch (cause) {
-    const consumerFailures = await settle([...slots].reverse().map(slot => slot.agent.dispose()))
-    if (consumerFailures.length > 0) throw new HostError('HOST_CLEANUP_FAILED', 'open-rollback-agent-failed', {}, { cause: new AggregateError([cause, ...consumerFailures]) })
-    const cleanupFailures = await settle([...(server === undefined ? [] : [server.dispose()]), service.dispose(), transport.dispose(),
-      ...[...remoteTransports.values()].map(remote => remote.dispose()),
-      ...[...slots].reverse().flatMap(slot => slot.tools === undefined ? [] : [slot.tools.dispose()]),
-      ...[...slots].reverse().map(slot => slot.provider.dispose()),
-      ...[...declarations].reverse().map(declaration => declaration.dispose()), directory.dispose(), repository.dispose()])
-    if (cleanupFailures.length > 0) throw new HostError('HOST_CLEANUP_FAILED', 'open-rollback-failed', {}, { cause: new AggregateError([cause, ...cleanupFailures]) })
-    try { await storageLock.dispose() }
-    catch (lockFailure) { throw new HostError('HOST_CLEANUP_FAILED', 'open-rollback-lock-failed', {}, { cause: new AggregateError([cause, lockFailure]) }) }
-    throw cause
-  }
+  const assembly = await assembleHost(spec, clock, credentials, options.bindings ?? {})
+  return new HostRuntime(spec, clock, options.timer ?? nodeHostTimer, assembly)
 }

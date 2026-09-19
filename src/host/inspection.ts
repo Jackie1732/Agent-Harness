@@ -1,6 +1,7 @@
 import type { Clock } from '../foundation/clock.js'
 import { systemClock } from '../foundation/clock.js'
 import { projectAgentReport } from '../agent/report.js'
+import { projectAgentSession } from '../agent/projection.js'
 import { FileSessionBackend } from '../session/file-backend.js'
 import { parseSessionId } from '../session/ids.js'
 import { SessionRepository } from '../session/repository.js'
@@ -16,6 +17,7 @@ export interface HostInspectionMember {
   readonly bindingMode: 'initialized' | 'adopted' | null
   readonly localPosition: number
   readonly lifecycle: 'active' | 'ended'
+  readonly openRecovery: ReturnType<typeof projectAgentSession>['openRecovery']
   readonly report: ReturnType<typeof projectAgentReport>
 }
 
@@ -35,7 +37,7 @@ export async function inspectHost(
       const binding = projectHostSession(snapshot)
       reports.push(Object.freeze({ agentKey: member.agentKey, sessionId: member.sessionId,
         bindingMode: binding.ready?.payload.mode ?? null, localPosition: snapshot.localPosition,
-        lifecycle: snapshot.lifecycle, report: projectAgentReport(snapshot) }))
+        lifecycle: snapshot.lifecycle, openRecovery: projectAgentSession(snapshot).openRecovery, report: projectAgentReport(snapshot) }))
     }
     return Object.freeze(reports)
   } finally {

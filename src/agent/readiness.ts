@@ -5,10 +5,12 @@ import { AgentError } from './errors.js'
 import { matchesAgentWait } from './projection-controls.js'
 import { projectAgentSession } from './projection.js'
 import { selectAgentInput } from './scheduling.js'
+import { runnableAgentInputs } from './scheduling.js'
+import { assertAgentExecutionQuiescent } from './execution-health.js'
 
 export type AgentReadinessBlock =
   | 'none' | 'ended' | 'recovery-required' | 'closing' | 'driver-active'
-  | 'unsupported-input' | 'review-required' | 'waiting' | 'idle'
+  | 'unsupported-input' | 'review-required' | 'waiting' | 'idle' | 'cleanup-incomplete' | 'capacity'
 
 /** Pure Host-facing observation; actual Agent operations revalidate every fact. */
 export interface AgentReadiness {
@@ -48,7 +50,7 @@ export function inspectAgentReadiness(
     if (wait.settled !== null || wait.created.payload.result.kind !== 'wait') return false
     const descriptor = wait.created.payload.result.descriptor
     const root = state.roots.find(item => item.id === descriptor.root)
-    if (root?.stopControl !== null || descriptor.deadline <= observedAt) return true
+    if (root !== undefined && root.stopControl !== null || descriptor.deadline <= observedAt) return true
     const response = state.inputs.some(input => matchesAgentWait(wait, input, { sources, controls })
       && (input.message === null || support.some(kind => kind.type === input.message!.type && kind.payloadVersion === input.message!.payloadVersion)))
     if (response) return true
@@ -58,8 +60,10 @@ export function inspectAgentReadiness(
   const dueRoots = state.roots.filter(root => root.outcome === null && root.stopControl === null && root.deadline <= observedAt).length
   const pendingMaintenance = pendingControls + pendingReceipts + actionableWaits + dueRoots
   let runnableInputs = 0
-  try { runnableInputs = selectAgentInput(state, catalog) === null ? 0 : 1 } catch (error) {
+  let capacityBlocked = false
+  try { selectAgentInput(state, catalog); runnableInputs = runnableAgentInputs(state, catalog).length } catch (error) {
     if (!(error instanceof AgentError) || error.code !== 'AGENT_LIMIT_EXCEEDED') throw error
+    capacityBlocked = true
   }
   const unsupportedInputs = state.inputs.filter(input => input.status === 'queued' && input.message !== null
     && (!state.spec?.payload.messages.some(kind => kind.type === input.message!.type && kind.payloadVersion === input.message!.payloadVersion)
@@ -73,11 +77,20 @@ export function inspectAgentReadiness(
   else if (state.openRecovery !== null) blockedBy = 'recovery-required'
   else if (state.closing !== null) blockedBy = 'closing'
   else if (state.openRun !== null) blockedBy = 'driver-active'
+  else if (capacityBlocked) blockedBy = 'capacity'
   else if (runnableInputs === 0 && pendingMaintenance === 0 && reviewRequiredInputs > 0) blockedBy = 'review-required'
   else if (runnableInputs === 0 && pendingMaintenance === 0 && unsupportedInputs > 0) blockedBy = 'unsupported-input'
   else if (runnableInputs === 0 && pendingMaintenance === 0 && nextWakeAt !== null) blockedBy = 'waiting'
   else if (runnableInputs === 0 && pendingMaintenance === 0) blockedBy = 'idle'
-  const available = snapshot.lifecycle === 'active' && state.openRun === null && state.openRecovery === null && state.closing === null
+  let available = snapshot.lifecycle === 'active' && state.openRun === null && state.openRecovery === null && state.closing === null && !capacityBlocked
+  if (available) {
+    try { assertAgentExecutionQuiescent(snapshot) }
+    catch (cause) {
+      if (!(cause instanceof AgentError)) throw cause
+      blockedBy = cause.code === 'AGENT_CLEANUP_FAILED' ? 'cleanup-incomplete' : 'recovery-required'
+      available = false
+    }
+  }
   return Object.freeze({ sourcePosition: snapshot.localPosition, canRun: available && runnableInputs > 0,
     canMaintain: available && pendingMaintenance > 0, nextWakeAt, blockedBy,
     counts: Object.freeze({ runnableInputs, pendingMaintenance, unsupportedInputs, reviewRequiredInputs }) })

@@ -60,4 +60,31 @@ describe('Host CLI', () => {
     const planned = JSON.parse(io.output()) as { members: readonly { sessionId: string }[] }
     expect(planned.members[0]!.sessionId).toMatch(/^[0-9a-f-]{36}$/)
   })
+
+  it('continues after a malformed line but preserves a usage-error exit result', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'atomic-host-cli-invalid-'))
+    const path = join(root, 'host.json')
+    await writeFile(path, JSON.stringify(hostConfig(join(root, 'sessions'))))
+    await runHostCli(['init', '--config', path], streams())
+    const io = streams('invalid-json\n' + JSON.stringify({ protocolVersion: 1, requestId: 'task-after-error', kind: 'task', agentKey: 'writer', text: 'task' }))
+    expect(await runHostCli(['run', '--config', path], io)).toBe(2)
+    expect(io.output()).toContain('fixed answer')
+    expect(io.output()).toContain('HOST_PROTOCOL_INVALID')
+  })
+
+  it('waits for run EOF without starting business work and honors its total admission budget', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'atomic-host-cli-budget-'))
+    const path = join(root, 'host.json')
+    const config = hostConfig(join(root, 'sessions'))
+    const first = (config.members as readonly Record<string, unknown>[])[0]!
+    await writeFile(path, JSON.stringify({ ...config, members: [{ ...first,
+      spec: { ...(first.spec as object), limits: { ...((first.spec as Record<string, object>).limits), maxTurnsPerRun: 1 } } }],
+      scheduling: { ...(config.scheduling as object), maxBatchesPerRun: 1 } }))
+    await runHostCli(['init', '--config', path], streams())
+    const commands = [1, 2].map(index => JSON.stringify({ protocolVersion: 1, requestId: `task-${index}`, kind: 'task', agentKey: 'writer', text: 'task' })).join('\n')
+    const io = streams(commands)
+    expect(await runHostCli(['run', '--config', path], io)).toBe(12)
+    const report = JSON.parse(io.output().trim().split('\n').at(-1)!).report
+    expect(report).toMatchObject({ batches: 1, businessRuns: 1, counts: { pendingInputs: 1 } })
+  })
 })

@@ -57,7 +57,7 @@ describe('HTTPS message transport', () => {
     const server = await createHttpsMessageServer({ directory: recipientDirectory, host: '127.0.0.1', port: 0,
       tls: { ca: certs.ca, cert: certs.serverCert, key: certs.serverKey }, limits: httpsLimits,
       peers: [{ hostKey: 'sender-host', fingerprint256: certs.clientFingerprint, senders: new Set([senderHandle.header.address]) }] })
-    const client = createHttpsMessageClientTransport({ origin: server.origin, serverName: 'localhost', hostKey: 'sender-host',
+    const client = createHttpsMessageClientTransport({ directory: senderDirectory, origin: server.origin, serverName: 'localhost', hostKey: 'sender-host',
       tls: { ca: certs.ca, cert: certs.clientCert, key: certs.clientKey }, limits: httpsLimits })
     const routed = createRoutedMessageTransport(senderDirectory, address => address === recipient.address
       ? { kind: 'remote', transport: client } : { kind: 'unavailable' })
@@ -92,7 +92,7 @@ describe('HTTPS message transport', () => {
     const server = await createHttpsMessageServer({ directory: recipientDirectory, host: '127.0.0.1', port: 0,
       tls: { ca: certs.ca, cert: certs.serverCert, key: certs.serverKey }, limits: httpsLimits,
       peers: [{ hostKey: 'sender-host', fingerprint256: certs.clientFingerprint, senders: new Set([senderHandle.header.address]) }] })
-    const client = createHttpsMessageClientTransport({ origin: server.origin, serverName: 'localhost', hostKey: 'wrong-host',
+    const client = createHttpsMessageClientTransport({ directory: senderDirectory, origin: server.origin, serverName: 'localhost', hostKey: 'wrong-host',
       tls: { ca: certs.ca, cert: certs.clientCert, key: certs.clientKey }, limits: httpsLimits })
     const routed = createRoutedMessageTransport(senderDirectory, () => ({ kind: 'remote', transport: client }))
     const senderService = new CommunicationService({ directory: senderDirectory, transport: routed,

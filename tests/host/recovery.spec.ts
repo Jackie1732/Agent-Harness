@@ -8,6 +8,7 @@ import {
   acquireHostStorageLock,
   decodeHostConfig,
   initializeHost,
+  inspectHost,
   openHost,
   parseSessionId,
   recoverHost,
@@ -15,7 +16,7 @@ import {
   systemClock,
 } from '../../src/index.js'
 import { projectAgentSession } from '../../src/agent/projection.js'
-import { agentRunStartedEvent } from '../../src/agent/session-events.js'
+import { agentRunStartedEvent, agentControlRequestedEvent } from '../../src/agent/session-events.js'
 import { hostRuntimeEventCatalog } from '../../src/host/initialization.js'
 import { hostConfig } from './fixtures.js'
 
@@ -29,12 +30,17 @@ describe('Host recovery', () => {
       catalog: hostRuntimeEventCatalog, maxLineageDepth: spec.storage.maxLineageDepth })
     const session = await repository.open(parseSessionId(spec.members[0]!.sessionId!))
     const installed = projectAgentSession(session.snapshot()).spec!
-    await session.append(agentRunStartedEvent, { spec: installed.stored.eventId, kind: 'drive' })
+    const run = await session.append(agentRunStartedEvent, { spec: installed.stored.eventId, kind: 'drive' })
+    const recovery = await session.append(agentControlRequestedEvent, { kind: 'recovery', targetRun: run.stored.eventId,
+      controls: [], through: session.snapshot().localPosition, predecessorStopped: true, supersedes: null, maxRecoveryWrites: 10 })
     await repository.dispose(); await lock.dispose()
 
     await expect(openHost(spec)).rejects.toMatchObject({ code: 'HOST_RECOVERY_REQUIRED' })
+    expect((await inspectHost(spec))[0]!.openRecovery).toBe(recovery.stored.eventId)
+    await expect(recoverHost(spec, { predecessorStopped: true, maxRecoveryWrites: 10, maxJournalConflicts: 4 }))
+      .rejects.toMatchObject({ code: 'HOST_RECOVERY_REQUIRED' })
     const recovered = await recoverHost(spec, { predecessorStopped: true, maxRecoveryWrites: 10,
-      maxJournalConflicts: 4, clock: systemClock })
+      maxJournalConflicts: 4, clock: systemClock, supersedes: { writer: recovery.stored.eventId } })
     expect(recovered[0]?.result.kind).toBe('recovered')
     const host = await openHost(spec)
     await host.shutdown()

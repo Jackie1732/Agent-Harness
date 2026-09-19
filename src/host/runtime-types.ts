@@ -16,12 +16,16 @@ export interface HostSlot {
   readonly provider: ModelProvider
   readonly tools?: HostToolResources
   readonly agent: SessionAgent
+  dispose(): Promise<void>
 }
 
 export interface HostMemberReport {
   readonly agentKey: string
   readonly sessionId: string
   readonly paused: boolean
+  readonly faulted: boolean
+  readonly mailbox: 'online' | 'known-offline' | 'ended'
+  readonly routingPaused: boolean
   readonly readiness: AgentReadiness
   readonly agent: AgentRunReport
 }
@@ -34,4 +38,11 @@ export interface HostRunReport {
   readonly stoppedBy: 'quiescent' | 'batch-budget' | 'no-progress' | 'aborted' | 'host-stopping'
   readonly blockedRoutes: readonly string[]
   readonly members: readonly HostMemberReport[]
+  readonly counts: {
+    readonly members: number; readonly pendingInputs: number; readonly pendingWaits: number; readonly pendingOutbox: number
+    readonly pendingMaintenance: number; readonly runnableInputs: number; readonly reviewRequiredInputs: number
+    readonly unsupportedInputs: number; readonly blockedMembers: number
+    readonly failedRoots: number; readonly exhaustedRoots: number
+  }
+  readonly truncated: boolean
 }

@@ -6,9 +6,12 @@ import { createServer } from 'node:net'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { setTimeout as delay } from 'node:timers/promises'
+import { ackLossProxy } from './helpers/ack-loss-proxy.mjs'
 import {
   decodeHostConfig, FileSessionBackend, hostRuntimeEventCatalog, initializeHost, parseSessionId,
   projectCommunicationFacts, resolveHostConfig, SessionRepository,
+  unlockHostStorage,
 } from '../dist/index.js'
 
 const here = fileURLToPath(new URL('.', import.meta.url))
@@ -81,6 +84,7 @@ function config({ hostKey, root, port, local, remote, remoteHost, remotePort, cl
       maxNoProgressBatches: 2, retryIntervalMs: 100, maxReportEntries: 100 },
     cli: { maxLineBytes: 65536, maxQueuedCommands: 8, maxPendingControls: 8,
       maxOutputBytes: 1048576, outputDrainTimeoutMs: 1000 },
+    shutdown: { mode: 'cancel', diagnosticAfterMs: 1000 },
   }
 }
 
@@ -103,11 +107,12 @@ function waitMessage(child, requestId) {
 
 const base = await mkdtemp(join(tmpdir(), 'atomic-host-process-'))
 const [portA, portB] = await Promise.all([freePort(), freePort()])
+const proxy = await ackLossProxy(certRoot, portB)
 const [clientA, clientB] = await Promise.all([readFile(join(certRoot, 'client.pem')), readFile(join(certRoot, 'client-b.pem'))])
 const localA = localMember('writer', writerId, 'reviewer', reviewerId, 'writer-provider')
 const localB = localMember('reviewer', reviewerId, 'writer', writerId, 'reviewer-provider')
 const rawA = config({ hostKey: 'host-a', root: join(base, 'a'), port: portA, local: localA,
-  remote: { agentKey: 'reviewer', sessionId: reviewerId }, remoteHost: 'host-b', remotePort: portB,
+  remote: { agentKey: 'reviewer', sessionId: reviewerId }, remoteHost: 'host-b', remotePort: proxy.port,
   clientCert: 'client.pem', clientKey: 'client-key.pem', peerFingerprint: new X509Certificate(clientB).fingerprint256 })
 const rawB = config({ hostKey: 'host-b', root: join(base, 'b'), port: portB, local: localB,
   remote: { agentKey: 'writer', sessionId: writerId }, remoteHost: 'host-a', remotePort: portA,
@@ -117,25 +122,94 @@ const specB = resolveHostConfig(decodeHostConfig(rawB, base))
 await initializeHost(specA); await initializeHost(specB)
 const pathA = join(base, 'a.json'); const pathB = join(base, 'b.json')
 await writeFile(pathA, JSON.stringify(rawA)); await writeFile(pathB, JSON.stringify(rawB))
-const childB = fork(childPath, [pathB], { stdio: ['ignore', 'inherit', 'inherit', 'ipc'] })
-const childA = fork(childPath, [pathA], { stdio: ['ignore', 'inherit', 'inherit', 'ipc'] })
+const failureConfig = { ...rawA, storage: { ...rawA.storage, root: join(base, 'cleanup-failure') },
+  members: [localA, localB], https: { kind: 'disabled' },
+  routes: ['writer', 'reviewer'].map(memberKey => ({ memberKey, ownerHost: 'host-a', origin: null, serverName: null })) }
+await initializeHost(resolveHostConfig(decodeHostConfig(failureConfig, base)))
+const failurePath = join(base, 'failure.json')
+await writeFile(failurePath, JSON.stringify(failureConfig))
+const failureChild = fork(join(here, 'fixtures', 'host-cleanup-failure-child.mjs'), [failurePath], { stdio: ['ignore', 'inherit', 'inherit', 'ipc'] })
+const failureExit = new Promise(resolve => failureChild.once('exit', resolve))
+assert.equal((await waitMessage(failureChild, 'cleanup-failure')).retainedLock, true)
+assert.equal(await failureExit, 0)
+const residue = JSON.parse(await readFile(join(failureConfig.storage.root, '.atomic-harness.lock'), 'utf8'))
+await unlockHostStorage(failureConfig.storage.root, { predecessorStopped: true, expectedToken: residue.token })
+for (const [signal, exitCode] of [['SIGINT', 130], ['SIGTERM', 143]]) {
+  const cli = fork(join(here, 'fixtures', 'host-cli-signal-child.mjs'), [pathA], { stdio: ['pipe', 'pipe', 'inherit', 'ipc'] })
+  try {
+    await new Promise((resolve, reject) => {
+      let text = ''
+      const timer = setTimeout(() => reject(new Error('CLI ready timeout')), 15_000)
+      cli.stdout.on('data', chunk => {
+        text += chunk.toString()
+        if (text.includes('\n')) { clearTimeout(timer); assert.equal(JSON.parse(text.trim()).kind, 'ready'); resolve() }
+      })
+    })
+    // EOF leaves serve alive. IPC invokes the installed signal path, not Windows force-kill.
+    cli.stdin.end()
+    const exited = new Promise(resolve => cli.once('exit', resolve))
+    cli.send(signal)
+    assert.equal(await exited, exitCode)
+    assert.equal(await readFile(join(rawA.storage.root, '.atomic-harness.lock'), 'utf8').catch(() => null), null)
+  } finally { if (cli.connected) cli.kill() }
+}
+let childB = fork(childPath, [pathB], { stdio: ['ignore', 'inherit', 'inherit', 'ipc'] })
+let childA = fork(childPath, [pathA], { stdio: ['ignore', 'inherit', 'inherit', 'ipc'] })
+async function stop(child, requestId) {
+  const result = waitMessage(child, requestId)
+  child.send({ kind: 'shutdown', requestId })
+  await result
+}
+async function run(child, requestId) {
+  const result = waitMessage(child, requestId); child.send({ kind: 'run', requestId }); return await result
+}
 try {
   await Promise.all([waitMessage(childA, 'ready'), waitMessage(childB, 'ready')])
   const sent = waitMessage(childA, 'send')
   childA.send({ kind: 'send', requestId: 'send', agentKey: 'writer', command: {
     kind: 'send', peerKey: 'reviewer', type: 'test/note', payloadVersion: 1, payloadJson: '{"text":"cross-process"}',
   } })
-  assert.equal((await sent).deliveryAttempts, 1)
+  const first = await sent
+  assert.equal(first.deliveryAttempts, 1)
+  const pending = first.members[0].agent.pendingOutbox[0]
+  assert.equal(pending.attemptCount, 1)
+  assert.equal(proxy.receipt().messageId, pending.messageId)
+  await Promise.all([stop(childA, 'restart-a'), stop(childB, 'restart-b')])
+  childB = fork(childPath, [pathB], { stdio: ['ignore', 'inherit', 'inherit', 'ipc'] })
+  childA = fork(childPath, [pathA], { stdio: ['ignore', 'inherit', 'inherit', 'ipc'] })
+  await Promise.all([waitMessage(childA, 'ready'), waitMessage(childB, 'ready')])
+  assert.equal((await run(childA, 'restart-cooldown')).deliveryAttempts, 0)
+  await delay(rawA.scheduling.retryIntervalMs + 10)
+  assert.equal((await run(childA, 'retry-same-message')).deliveryAttempts, 1)
   const received = waitMessage(childB, 'run'); childB.send({ kind: 'run', requestId: 'run' })
   assert.equal((await received).members[0].agent.final.text, 'reviewer answer')
+  const reply = waitMessage(childB, 'reply')
+  childB.send({ kind: 'send', requestId: 'reply', agentKey: 'reviewer', command: {
+    kind: 'reply', messageId: pending.messageId, type: 'test/note', payloadVersion: 1, payloadJson: '{"text":"reviewed"}',
+  } })
+  assert.equal((await reply).deliveryAttempts, 1)
+  assert.equal((await run(childA, 'receive-reply')).members[0].agent.final.text, 'writer answer')
   const stopA = waitMessage(childA, 'stop-a'); childA.send({ kind: 'shutdown', requestId: 'stop-a' })
   const stopB = waitMessage(childB, 'stop-b'); childB.send({ kind: 'shutdown', requestId: 'stop-b' })
   await Promise.all([stopA, stopB])
   const backend = new FileSessionBackend({ root: rawB.storage.root, maxRecordBytes: rawB.storage.maxRecordBytes })
   const repository = new SessionRepository({ backend, catalog: hostRuntimeEventCatalog, maxLineageDepth: 4 })
   const session = await repository.open(parseSessionId(reviewerId))
-  assert.equal(projectCommunicationFacts(session.snapshot()).inbox.length, 1)
+  const recipientFacts = projectCommunicationFacts(session.snapshot())
+  assert.equal(recipientFacts.inbox.length, 1)
+  assert.equal(recipientFacts.inbox[0].messageId, pending.messageId)
+  assert.equal(recipientFacts.inbox[0].acceptedEventId, proxy.receipt().inboxEventId)
   await repository.dispose()
+  const senderRepository = new SessionRepository({ backend: new FileSessionBackend({ root: rawA.storage.root,
+    maxRecordBytes: rawA.storage.maxRecordBytes }), catalog: hostRuntimeEventCatalog, maxLineageDepth: 4 })
+  const senderFacts = projectCommunicationFacts((await senderRepository.read(parseSessionId(writerId))))
+  assert.equal(senderFacts.outbox[0].messageId, pending.messageId)
+  assert.equal(senderFacts.outbox[0].attemptCount, 2)
+  assert.equal(senderFacts.outbox[0].status, 'delivered')
+  assert.equal(senderFacts.inbox[0].envelope.replyTo, pending.messageId)
+  await senderRepository.dispose()
+  process.stdout.write('Host mTLS: ACK loss, two-process restart, one Inbox, two attempts, durable reply passed\n')
 } finally {
   for (const child of [childA, childB]) if (child.connected) child.kill()
+  await proxy.close()
 }

@@ -46,6 +46,7 @@ export function hostConfig(root: string): JsonObject {
       maxNoProgressBatches: 2, retryIntervalMs: 100, maxReportEntries: 100 },
     cli: { maxLineBytes: 65536, maxQueuedCommands: 8, maxPendingControls: 8,
       maxOutputBytes: 1048576, outputDrainTimeoutMs: 1000 },
+    shutdown: { mode: 'cancel', diagnosticAfterMs: 1000 },
   }
 }
 

@@ -18,6 +18,21 @@ function provider(action) {
       yield { kind: 'block-end', index: 0 }; yield { kind: 'complete', stopReason: next === null ? 'stop' : 'tool-calls' }
     } })
 }
+
+test('all file prefixes: maintenance v2 deadline settlement and interrupted recovery', async () => fixture(async f => {
+  let now = clock.now()
+  const agent = await assemble(f, provider(() => ({ name: 'agent_ask_user', args: { question: 'continue?', timeoutMs: 1000 } })),
+    { nativeActions: ['agent_ask_user'] }, { clock: { now: () => now } })
+  try {
+    await agent.submitInput({ kind: 'task', text: 'wait then expire', originLabel: 'maintenance-prefix' })
+    await agent.start()
+    now += 60_001
+    await agent.maintain()
+    assert.equal(agent.snapshot().runs.at(-1).started.stored.payloadVersion, 2)
+    assert.equal(agent.snapshot().roots[0].outcome, 'timed-out')
+    await verifyAgentPrefixes('maintenance-v2-expiry', f.session.snapshot())
+  } finally { await agent.dispose() }
+}, { catalog: definitions, clock }))
 async function assemble(f, model, overrides = {}, extra = {}) {
   f.providers.push(model)
   const messages = extra.messageCatalog ?? h.createMessageCatalog()

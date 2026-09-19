@@ -97,17 +97,19 @@ export class SessionAgent {
     }
     if (options.signal?.aborted === true) throw new AgentError('AGENT_CANCELLED', 'maintenance-cancelled-before-admission')
     if (!this.readiness().canMaintain) return Promise.resolve(this.report())
+    this.#driveController = new AbortController()
+    const signal = AbortSignal.any([this.#driveController.signal, options.signal, this.#runtime.signal, this.#runtime.scope?.signal]
+      .filter((value): value is AbortSignal => value !== undefined))
     return this.#launch('maintenance', async () => {
       assertAgentExecutionQuiescent(this.#runtime.session.snapshot())
       const run = await this.#runtime.journal.append(events.agentMaintenanceRunStartedEvent, state => ({
         spec: state.spec!.stored.eventId, kind: 'maintenance' as const,
       }))
       this.#ownedRun = run.stored.eventId
-      const runtime: AgentRuntime = { ...this.#runtime,
-        ...(options.signal === undefined ? {} : { signal: options.signal }),
+      const runtime: AgentRuntime = { ...this.#runtime, signal,
         management: { remaining: this.snapshot().spec!.payload.limits.maxManagementPerRun } }
       let stoppedBy: 'idle' | 'run-budget' | 'cancelled' = 'idle'
-      if (options.signal?.aborted === true) stoppedBy = 'cancelled'
+      if (signal.aborted) stoppedBy = 'cancelled'
       else {
         await manageAgentWaits(runtime)
         if (runtime.management!.remaining === 0) stoppedBy = 'run-budget'

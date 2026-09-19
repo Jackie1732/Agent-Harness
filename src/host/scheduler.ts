@@ -3,151 +3,169 @@ import type { HostSchedulingConfig } from './config.js'
 import type { HostRunReport, HostSlot } from './runtime-types.js'
 import type { OutboxMessageSnapshot } from '../communication/types.js'
 import { CommunicationError } from '../communication/errors.js'
+import type { HostTimer } from './timer.js'
+import { observeHostMembers } from './report.js'
+import type { HostObservations } from './observation.js'
+import type { HostAssembly } from './assembly.js'
 
+export interface HostSchedulerState {
+  cursor: number
+  businessCursor: number
+  readonly faults: Set<string>
+  readonly stalled: Map<string, { position: number; count: number }>
+  readonly cooldowns: Map<string, number>
+  readonly observations: HostObservations
+}
 export interface HostSchedulerInput {
   readonly slots: readonly HostSlot[]
   readonly paused: ReadonlySet<string>
+  readonly routingPaused: ReadonlySet<string>
+  readonly offline: ReadonlySet<string>
   readonly scheduling: HostSchedulingConfig
   readonly clock: Clock
-  readonly signal?: AbortSignal
+  readonly timer: HostTimer
+  readonly signal: AbortSignal
+  readonly wakeSignal: AbortSignal
   readonly isStopping: () => boolean
   readonly canAttempt: (message: OutboxMessageSnapshot) => boolean
   readonly blockRoute: (error: CommunicationError) => boolean
   readonly blockedRoutes: () => readonly string[]
-  readonly cursor: number
+  readonly state: HostSchedulerState
+  readonly scanWake: () => AbortSignal
+  readonly assembly: HostAssembly
 }
 
-export interface HostSchedulerResult {
-  readonly report: HostRunReport
-  readonly cursor: number
-}
-
-function members(slots: readonly HostSlot[], paused: ReadonlySet<string>, clock: Clock): HostRunReport['members'] {
-  const observedAt = new Date(clock.now()).toISOString()
-  return Object.freeze(slots.map(slot => Object.freeze({
-    agentKey: slot.member.agentKey,
-    sessionId: slot.member.sessionId,
-    paused: paused.has(slot.member.agentKey),
-    readiness: slot.agent.readiness(observedAt),
-    agent: slot.agent.report(),
-  })))
-}
-
-function retryReady(slot: HostSlot, message: OutboxMessageSnapshot, now: number, retryIntervalMs: number): boolean {
-  if (message.lastFailure === undefined) return true
-  const event = slot.session.snapshot().history.at(-1)?.events.find(item => item.stored.eventId === message.lastFailure!.eventId)
-  if (event === undefined) return false
-  return Date.parse(event.stored.recordedAt) + retryIntervalMs <= now
-}
-
-async function dispatchMessages(
-  slot: HostSlot,
-  candidates: readonly OutboxMessageSnapshot[],
-  attempted: Set<string>,
-  signal?: AbortSignal,
-  blockRoute?: (error: CommunicationError) => boolean,
-): Promise<number> {
-  const selected = candidates
-  if (selected.length === 0) return 0
-  const ids = new Set(selected.map(item => item.messageId))
-  const attemptsBefore = new Map(selected.map(item => [item.messageId, item.attemptCount]))
-  let dispatch
-  try {
-    dispatch = await slot.dispatcher.dispatch({
-      ...(signal === undefined ? {} : { signal }),
-      onlyMessageIds: ids,
-    })
-  } catch (cause) {
-    const started = markAttempted(slot, attemptsBefore, attempted)
-    if (cause instanceof CommunicationError && cause.code === 'MESSAGE_TRANSPORT_SOURCE_INVALID'
-      && blockRoute?.(cause) === true) return started
-    throw cause
+/** Run shells are observations, not domain progress. */
+function domainPosition(slot: HostSlot): number {
+  const events = slot.session.snapshot().history.at(-1)?.events ?? []
+  for (let index = events.length - 1; index >= 0; index--) {
+    const event = events[index]!
+    if (event.stored.type !== 'agent/run-started' && event.stored.type !== 'agent/run-settled') return event.stored.sequence
   }
-  markAttempted(slot, attemptsBefore, attempted)
-  return dispatch.startedAttempts
+  return 0
 }
 
-function markAttempted(slot: HostSlot, attemptsBefore: ReadonlyMap<string, number>, attempted: Set<string>): number {
-  let started = 0
-  for (const item of slot.mailbox.snapshot().outbox) {
-    const before = attemptsBefore.get(item.messageId)
-    if (before !== undefined && item.attemptCount > before) {
-      attempted.add(item.messageId)
-      started += item.attemptCount - before
-    }
+function retryReady(input: HostSchedulerInput, slot: HostSlot, message: OutboxMessageSnapshot): boolean {
+  const retry = input.scheduling.retryIntervalMs
+  if (message.lastFailure === undefined && message.attemptCount === 0) return true
+  const events = slot.session.snapshot().history.at(-1)?.events ?? []
+  const last = message.lastFailure === undefined ? undefined : events.find(item => item.stored.eventId === message.lastFailure!.eventId)
+  const observed = input.state.cooldowns.get(message.messageId)
+  if (observed === undefined) {
+    input.state.cooldowns.set(message.messageId, input.timer.now() + retry)
+    return false
   }
-  return started
+  return input.timer.now() >= observed && (last === undefined || Date.parse(last.stored.recordedAt) + retry <= input.clock.now())
 }
 
-/** Run bounded persistent-work scans; notifications only reduce later scan latency. */
-export async function runHostScheduler(input: HostSchedulerInput): Promise<HostSchedulerResult> {
-  const { slots, paused, scheduling, clock } = input
-  if (slots.length === 0) return {
-    cursor: 0,
-    report: Object.freeze({ batches: 0, businessRuns: 0, maintenanceRuns: 0, deliveryAttempts: 0,
-      stoppedBy: 'quiescent', blockedRoutes: Object.freeze(input.blockedRoutes()), members: Object.freeze([]) }),
-  }
-  let cursor = input.cursor % slots.length
+/** A finite admission budget with independent business, maintenance and delivery lanes. */
+export async function runHostScheduler(input: HostSchedulerInput): Promise<HostRunReport> {
+  const { slots, state, scheduling } = input
   let batches = 0
   let businessRuns = 0
   let maintenanceRuns = 0
   let deliveryAttempts = 0
-  let noProgress = 0
-  let stoppedBy: HostRunReport['stoppedBy'] = 'batch-budget'
+  let scannedWithoutWork = 0
+  let stoppedBy: HostRunReport['stoppedBy'] = 'quiescent'
+  let business: Promise<void> | undefined
+  let maintenance: Promise<void> | undefined
+  let delivery: Promise<void> | undefined
+  const busy = new Set<HostSlot>()
+  const expirations = new Map<string, Promise<void>>()
   const attempted = new Set<string>()
-  const signalOptions = input.signal === undefined ? {} : { signal: input.signal }
-  for (; batches < scheduling.maxBatchesPerRun; batches++) {
-    if (input.signal?.aborted === true) { stoppedBy = 'aborted'; break }
-    if (input.isStopping()) { stoppedBy = 'host-stopping'; break }
-    const before = slots.map(slot => slot.session.snapshot().localPosition)
+  const failed = (slot: HostSlot): void => { state.faults.add(slot.member.agentKey) }
+  const work = (slot: HostSlot, operation: () => Promise<unknown>): Promise<void> => {
+    const before = domainPosition(slot)
+    busy.add(slot)
+    return Promise.resolve().then(operation).then(() => {
+      const position = domainPosition(slot)
+      const previous = state.stalled.get(slot.member.agentKey)
+      state.stalled.set(slot.member.agentKey, { position, count: position === before ? (previous?.count ?? 0) + 1 : 0 })
+    }, () => failed(slot)).finally(() => busy.delete(slot))
+  }
+  const pending = (slot: HostSlot) => input.routingPaused.has(slot.member.agentKey) ? [] : state.observations.read(slot, input.clock.now()).communication.outbox.filter(item =>
+    item.status === 'pending' && !attempted.has(item.messageId) && input.canAttempt(item) && retryReady(input, slot, item))
+  while (slots.length > 0) {
+    const notified = input.scanWake()
+    const stopping = input.signal.aborted || input.isStopping()
+    const atBudget = batches >= scheduling.maxBatchesPerRun
+    if (stopping) stoppedBy = input.signal.aborted ? 'aborted' : 'host-stopping'
+    else if (atBudget) stoppedBy = 'batch-budget'
     const count = Math.min(scheduling.maxSlotsPerScan, slots.length)
-    const selected = Array.from({ length: count }, (_, offset) => slots[(cursor + offset) % slots.length]!)
-    cursor = (cursor + count) % slots.length
-    let admittedBusiness = false
+    const selected = Array.from({ length: count }, (_, offset) => slots[(state.cursor + offset) % slots.length]!)
+    state.cursor = (state.cursor + count) % slots.length
+    let admitted = false
     for (const slot of selected) {
-      if (input.isStopping()) break
-      const pending = slot.mailbox.snapshot().outbox.filter(item => item.status === 'pending' && !attempted.has(item.messageId)
-        && input.canAttempt(item) && retryReady(slot, item, clock.now(), scheduling.retryIntervalMs))
-      deliveryAttempts += await dispatchMessages(slot, pending, attempted, input.signal, input.blockRoute)
-      const readiness = slot.agent.readiness(new Date(clock.now()).toISOString())
-      if (readiness.canMaintain) {
-        await slot.agent.maintain(signalOptions)
-        maintenanceRuns += 1
+      if (input.offline.has(slot.member.agentKey)) continue
+      // Expiry continues while an accepted run drains, even after its admission budget is exhausted.
+      if (!input.signal.aborted && slot.agent.status === 'accepting') {
+        for (const root of state.observations.read(slot, input.clock.now()).roots) {
+          if (root.outcome !== null || root.stopControl !== null || Date.parse(root.deadline) > input.clock.now() || expirations.has(root.id)) continue
+          const task = slot.agent.expire(root.id).then(() => undefined, () => failed(slot)).finally(() => expirations.delete(root.id))
+          expirations.set(root.id, task)
+        }
       }
-      const refreshed = slot.agent.readiness(new Date(clock.now()).toISOString())
-      if (!admittedBusiness && !paused.has(slot.member.agentKey) && refreshed.canRun) {
-        await slot.agent.start(signalOptions)
-        businessRuns += 1
-        admittedBusiness = true
-        const generated = slot.mailbox.snapshot().outbox.filter(item => item.status === 'pending' && !attempted.has(item.messageId)
-          && input.canAttempt(item) && retryReady(slot, item, clock.now(), scheduling.retryIntervalMs))
-        deliveryAttempts += await dispatchMessages(slot, generated, attempted, input.signal, input.blockRoute)
+      if (stopping || batches >= scheduling.maxBatchesPerRun || state.faults.has(slot.member.agentKey)) continue
+      if (delivery === undefined) {
+        const candidates = pending(slot)
+        if (candidates.length > 0) {
+          batches++; admitted = true
+          const before = new Map(candidates.map(item => [item.messageId, item.attemptCount]))
+          delivery = Promise.resolve().then(() => slot.dispatcher.dispatch({ signal: input.signal,
+            onlyMessageIds: new Set(candidates.map(item => item.messageId)) })).catch(cause => {
+            if (!(cause instanceof CommunicationError && input.blockRoute(cause))) failed(slot)
+          }).then(() => {
+            for (const item of slot.mailbox.snapshot().outbox) {
+              const prior = before.get(item.messageId)
+              if (prior !== undefined && item.attemptCount > prior) {
+                deliveryAttempts += item.attemptCount - prior; attempted.add(item.messageId)
+                state.cooldowns.set(item.messageId, input.timer.now() + scheduling.retryIntervalMs)
+              }
+              if (item.status !== 'pending') state.cooldowns.delete(item.messageId)
+            }
+          }).finally(() => { delivery = undefined })
+        }
+      }
+      if (batches >= scheduling.maxBatchesPerRun || busy.has(slot)) continue
+      const stalled = state.stalled.get(slot.member.agentKey)
+      if (stalled !== undefined && stalled.position === domainPosition(slot) && stalled.count >= scheduling.maxNoProgressBatches) continue
+      if (maintenance === undefined && state.observations.read(slot, input.clock.now()).readiness.canMaintain) {
+        batches++; maintenanceRuns++; admitted = true
+        maintenance = work(slot, () => slot.agent.maintain({ signal: input.signal })).finally(() => { maintenance = undefined })
       }
     }
-    const progressed = slots.some((slot, index) => slot.session.snapshot().localPosition !== before[index])
-    noProgress = progressed ? 0 : noProgress + 1
-    const observedAt = new Date(clock.now()).toISOString()
-    const actionable = slots.some(slot => {
-      const readiness = slot.agent.readiness(observedAt)
-      return readiness.canMaintain || !paused.has(slot.member.agentKey) && readiness.canRun
-        || slot.mailbox.snapshot().outbox.some(item => item.status === 'pending' && !attempted.has(item.messageId)
-          && input.canAttempt(item) && retryReady(slot, item, clock.now(), scheduling.retryIntervalMs))
-    })
-    if (!actionable) {
-      stoppedBy = slots.some(slot => slot.mailbox.snapshot().outbox.some(item => item.status === 'pending')) ? 'no-progress' : 'quiescent'
-      batches += 1
-      break
+    if (!stopping && batches < scheduling.maxBatchesPerRun && business === undefined) {
+      const eligible = selected.filter(slot => !busy.has(slot) && !input.offline.has(slot.member.agentKey) && !input.paused.has(slot.member.agentKey) && !state.faults.has(slot.member.agentKey))
+        .sort((a, b) => (slots.indexOf(a) - state.businessCursor + slots.length) % slots.length - (slots.indexOf(b) - state.businessCursor + slots.length) % slots.length)
+      for (const slot of eligible) {
+        const stalled = state.stalled.get(slot.member.agentKey)
+        if (stalled !== undefined && stalled.position === domainPosition(slot) && stalled.count >= scheduling.maxNoProgressBatches) continue
+        if (!state.observations.read(slot, input.clock.now()).readiness.canRun) continue
+        state.businessCursor = (slots.indexOf(slot) + 1) % slots.length
+        batches++; businessRuns++; admitted = true
+        business = work(slot, () => slot.agent.start({ signal: input.signal })).finally(() => { business = undefined })
+        break
+      }
     }
-    if (noProgress >= scheduling.maxNoProgressBatches) {
-      stoppedBy = 'no-progress'
-      batches += 1
-      break
+    const tasks = [business, maintenance, delivery, ...expirations.values()].filter((task): task is Promise<void> => task !== undefined)
+    if (tasks.length === 0) {
+      if (stopping || batches >= scheduling.maxBatchesPerRun) break
+      scannedWithoutWork = admitted ? 0 : scannedWithoutWork + count
+      if (scannedWithoutWork >= slots.length) break
+      continue
     }
+    scannedWithoutWork = 0
+    // The local wait is always cancelled after a lane settles; no orphan timeout accumulates.
+    const wake = new AbortController()
+    const waitSignal = input.isStopping() ? wake.signal : AbortSignal.any([wake.signal, input.wakeSignal, notified])
+    try { await Promise.race([...tasks, input.timer.wait(scheduling.scanIntervalMs, waitSignal)]) }
+    finally { wake.abort() }
   }
-  return {
-    cursor,
-    report: Object.freeze({ batches, businessRuns, maintenanceRuns, deliveryAttempts, stoppedBy,
-      blockedRoutes: Object.freeze(input.blockedRoutes()),
-      members: members(slots, paused, clock) }),
-  }
+  const observed = observeHostMembers(slots, input.paused, state.faults, input.clock, scheduling.maxReportEntries, state.observations, input.assembly, input.routingPaused)
+  const remaining = new Set<string>(slots.flatMap(slot => state.observations.read(slot, input.clock.now()).communication.outbox.filter(item => item.status === 'pending').map(item => item.messageId)))
+  for (const id of state.cooldowns.keys()) if (!remaining.has(id)) state.cooldowns.delete(id)
+  if (stoppedBy === 'quiescent' && (observed.counts.pendingOutbox > 0 || state.faults.size > 0
+    || [...state.stalled.values()].some(item => item.count >= scheduling.maxNoProgressBatches))) stoppedBy = 'no-progress'
+  return Object.freeze({ batches, businessRuns, maintenanceRuns, deliveryAttempts, stoppedBy,
+    blockedRoutes: Object.freeze(input.blockedRoutes()), ...observed })
 }
