@@ -62,14 +62,16 @@ export class SessionRepository implements SessionHandleOwner {
     this.#identitySource = options.identitySource ?? systemSessionIdentitySource
   }
 
-  /** Create a root Session and return its exclusive writable Handle. */
-  async create(): Promise<SessionHandle> {
+  /** Create a root Session, optionally at one caller-reserved canonical identity. */
+  async create(options: { readonly sessionId?: SessionId } = {}): Promise<SessionHandle> {
     this.assertActive()
-    return await this.#track(this.#create())
+    const sessionId = options.sessionId === undefined
+      ? parseSessionId(this.#identitySource.nextSessionId())
+      : parseSessionId(options.sessionId)
+    return await this.#track(this.#create(sessionId))
   }
 
-  async #create(): Promise<SessionHandle> {
-    const sessionId = parseSessionId(this.#identitySource.nextSessionId())
+  async #create(sessionId: SessionId): Promise<SessionHandle> {
     const header: SessionHeader = Object.freeze({
       formatVersion: SESSION_FORMAT_VERSION,
       sessionId,

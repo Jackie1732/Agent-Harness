@@ -1,6 +1,7 @@
 import { hasPendingAgentAbandon } from './input-ownership.js'
 import type { CommittedSessionEvent } from '../session/types.js'
 import type { AgentEventPayloads } from './event-contract.js'
+import type { AgentMaintenanceRunSettled, AgentMaintenanceRunStarted } from './event-contract.js'
 import { emptyAgentBudget } from './budget.js'
 import { invalidAgent } from './errors.js'
 import { inputKey, referenceKey } from './input-codec.js'
@@ -23,6 +24,26 @@ export function applyRunSettled(state: AgentProjectionState, event: CommittedSes
   const commandStop = ['command-settled', 'command-budget'].includes(event.payload.stoppedBy)
   if (run.started.payload.kind === 'drive' && commandStop || run.started.payload.kind === 'command'
     && !commandStop && !['faulted', 'interrupted', 'cancelled'].includes(event.payload.stoppedBy)) invalidAgent('run-stop-kind')
+  run.settled = event; state.openRun = null
+}
+export function applyMaintenanceRunStarted(
+  state: AgentProjectionState,
+  event: CommittedSessionEvent<AgentMaintenanceRunStarted>,
+): void {
+  const pending = [...state.controls.values()].filter(control => control.settled === null && control.supersededBy === null)
+  if (state.openRun !== null || state.openTurn !== null || state.openRecovery !== null || state.closing !== null
+    || pending.some(control => !['cancel-work', 'expire-work'].includes(control.requested.payload.kind))) invalidAgent('maintenance-not-admissible')
+  if (event.payload.spec !== requireSpec(state).stored.eventId) invalidAgent('run-spec-mismatch')
+  state.runs.set(event.stored.eventId, { started: event, settled: null }); state.openRun = event.stored.eventId
+}
+export function applyMaintenanceRunSettled(
+  state: AgentProjectionState,
+  event: CommittedSessionEvent<AgentMaintenanceRunSettled>,
+): void {
+  const run = requireOpenRun(state, event.payload.run, 'maintenance')
+  if (state.openTurn !== null || [...state.commands.values()].some(command => command.payload.run === event.payload.run)) {
+    invalidAgent('maintenance-has-business-work')
+  }
   run.settled = event; state.openRun = null
 }
 export function applyTurnStarted(state: AgentProjectionState, event: CommittedSessionEvent<AgentEventPayloads['turn-started']>): void {

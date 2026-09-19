@@ -16,6 +16,8 @@ import { selectAgentInput } from './scheduling.js'
 import { driveAgentTurn } from './turn-driver.js'
 import { executeAgentSend } from './action-driver.js'
 import { manageAgentWaits, settleAgentStops, synchronizeAgentReceipts } from './management.js'
+import { inspectAgentReadiness } from './readiness.js'
+import { expireAgentRoot } from './root-policy.js'
 import * as events from './session-events.js'
 
 const driverTask = new AsyncLocalStorage<ReadonlySet<symbol>>()
@@ -28,7 +30,7 @@ export class SessionAgent {
   #status: 'accepting' | 'disposing' | 'disposed' | 'faulted' = 'accepting'
   #desired: 'continue' | 'pause' = 'continue'
   #task: Promise<AgentRunReport> | undefined
-  #taskKind: 'drive' | 'command' | undefined
+  #taskKind: 'drive' | 'command' | 'maintenance' | undefined
   #ownedRun: SessionEventId | null = null
   #failure: AgentError | undefined
   #driveController: AbortController | undefined
@@ -53,6 +55,9 @@ export class SessionAgent {
   get failure() { return this.#failure }
   snapshot() { return projectAgentSession(this.#runtime.session.snapshot()) }
   report(): AgentRunReport { return projectAgentReport(this.#runtime.session.snapshot()) }
+  readiness(observedAt = clockTimestamp(this.#runtime.clock)) {
+    return inspectAgentReadiness(this.#runtime.session.snapshot(), this.#runtime.messageCatalog, observedAt)
+  }
 
   /** Acceptance persists a copied input; it does not start or interrupt a Turn. */
   submitInput(value: AgentInput) {
@@ -80,6 +85,53 @@ export class SessionAgent {
   wait(): Promise<AgentRunReport> {
     if (this.#isReentrant() && this.#task !== undefined) throw new AgentError('AGENT_REENTRANT_WAIT', 'driver-cannot-join-itself')
     return this.#task ?? Promise.resolve(this.report())
+  }
+
+  /** Perform bounded management work without admitting a Turn, Model, Tool or send command. */
+  maintain(options: { readonly signal?: AbortSignal } = {}): Promise<AgentRunReport> {
+    this.#accepting()
+    if (this.#isReentrant()) throw new AgentError('AGENT_REENTRANT_WAIT', 'driver-cannot-join-itself')
+    if (this.#task !== undefined) {
+      if (this.#taskKind !== 'maintenance') throw new AgentError('AGENT_BUSY', 'driver-active')
+      return this.#task
+    }
+    if (options.signal?.aborted === true) throw new AgentError('AGENT_CANCELLED', 'maintenance-cancelled-before-admission')
+    if (!this.readiness().canMaintain) return Promise.resolve(this.report())
+    return this.#launch('maintenance', async () => {
+      assertAgentExecutionQuiescent(this.#runtime.session.snapshot())
+      const run = await this.#runtime.journal.append(events.agentMaintenanceRunStartedEvent, state => ({
+        spec: state.spec!.stored.eventId, kind: 'maintenance' as const,
+      }))
+      this.#ownedRun = run.stored.eventId
+      const runtime: AgentRuntime = { ...this.#runtime,
+        ...(options.signal === undefined ? {} : { signal: options.signal }),
+        management: { remaining: this.snapshot().spec!.payload.limits.maxManagementPerRun } }
+      let stoppedBy: 'idle' | 'run-budget' | 'cancelled' = 'idle'
+      if (options.signal?.aborted === true) stoppedBy = 'cancelled'
+      else {
+        await manageAgentWaits(runtime)
+        if (runtime.management!.remaining === 0) stoppedBy = 'run-budget'
+        else if (runtime.signal?.aborted === true) stoppedBy = 'cancelled'
+      }
+      await runtime.journal.append(events.agentMaintenanceRunSettledEvent, () => ({
+        run: run.stored.eventId, stoppedBy, reason: stoppedBy,
+      }))
+      return this.report()
+    })
+  }
+
+  /** Observe one root deadline and notify its active Turn before persisting expiry. */
+  expire(rootTurnId: SessionEventId): Promise<AgentRunReport> {
+    this.#accepting()
+    return this.#track((async () => {
+      const root = this.snapshot().roots.find(item => item.id === rootTurnId)
+      if (root === undefined) throw new AgentError('AGENT_SOURCE_INVALID', 'unknown-root')
+      if (root.outcome !== null || root.stopControl !== null) return this.report()
+      if (root.deadline > clockTimestamp(this.#runtime.clock)) return this.report()
+      if (this.#turn?.root === rootTurnId) this.#turn.controller.abort()
+      await expireAgentRoot(this.#runtime, rootTurnId)
+      return this.report()
+    })())
   }
 
   /** Persist one root's stop request. A returned report may still show an executing action awaiting actual release. */
@@ -218,7 +270,7 @@ export class SessionAgent {
     })
     return task
   }
-  #launch(kind: 'drive' | 'command', operation: () => Promise<AgentRunReport>): Promise<AgentRunReport> {
+  #launch(kind: 'drive' | 'command' | 'maintenance', operation: () => Promise<AgentRunReport>): Promise<AgentRunReport> {
     this.#token = Symbol('Agent task')
     const chain = new Set(driverTask.getStore()); chain.add(this.#token)
     const task = driverTask.run(chain, () => Promise.resolve().then(operation))

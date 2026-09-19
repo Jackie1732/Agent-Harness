@@ -7,6 +7,12 @@ import type { AgentActionReference, AgentBudget, AgentInput, AgentInputDispositi
 export type AgentInputAccepted = { readonly spec: SessionEventId; readonly input: AgentInput }
 export type AgentRunStarted = { readonly spec: SessionEventId; readonly kind: 'drive' | 'command' }
 export type AgentRunSettled = { readonly run: SessionEventId; readonly stoppedBy: AgentRunStop; readonly reason: string }
+export type AgentMaintenanceRunStarted = { readonly spec: SessionEventId; readonly kind: 'maintenance' }
+export type AgentMaintenanceRunSettled = {
+  readonly run: SessionEventId
+  readonly stoppedBy: 'idle' | 'run-budget' | 'cancelled' | 'faulted' | 'interrupted'
+  readonly reason: string
+}
 export type AgentTurnStarted = {
   readonly run: SessionEventId
   readonly input: AgentInputReference

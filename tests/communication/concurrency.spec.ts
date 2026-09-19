@@ -50,6 +50,37 @@ function blockingCommitBackend(
 }
 
 describe('communication concurrency', () => {
+  it('does not prepare excluded Channel heads or exceed a zero run budget', async () => {
+    const repository = createRepository()
+    const directory = createSessionDirectory()
+    const transport = createInProcessMessageTransport(directory)
+    const service = new CommunicationService({ directory, transport, limits, identitySource: communicationIdentities() })
+    try {
+      const senderHandle = await repository.create()
+      const recipientHandle = await repository.create()
+      const policy = { canSend: () => ({ kind: 'allow' as const }), canReceive: () => ({ kind: 'allow' as const }) }
+      const sender = await service.attach(senderHandle, { catalog: messageCatalog, policy })
+      await service.attach(recipientHandle, { catalog: messageCatalog, policy })
+      const first = await sender.send(requestMessage, {
+        kind: 'root', recipient: recipientHandle.header.address, channelId: parseChannelId(channelIds[0]),
+      }, { text: 'first' })
+      const second = await sender.send(requestMessage, {
+        kind: 'root', recipient: recipientHandle.header.address, channelId: parseChannelId(channelIds[0]),
+      }, { text: 'second' })
+      const dispatcher = service.createDispatcher(sender)
+      await expect(dispatcher.dispatch({ onlyMessageIds: new Set([second.messageId]) }))
+        .resolves.toMatchObject({ startedAttempts: 0 })
+      await expect(dispatcher.dispatch({ onlyMessageIds: new Set([first.messageId]), maxAttempts: 0 }))
+        .resolves.toMatchObject({ startedAttempts: 0, stoppedBy: 'run-budget' })
+      expect(sender.snapshot().outbox.map(item => item.attemptCount)).toEqual([0, 0])
+    } finally {
+      await service.dispose()
+      await transport.dispose()
+      await directory.dispose()
+      await repository.dispose()
+    }
+  })
+
   it('deduplicates a retry accepted while the recipient is ending', async () => {
     const started = createDeferred<void>()
     const release = createDeferred<void>()

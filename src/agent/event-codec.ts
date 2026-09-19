@@ -1,5 +1,5 @@
 import { parseModelInvocationId } from '../model/ids.js'
-import type { AgentEventPayloads, AgentActionResult } from './event-contract.js'
+import type { AgentEventPayloads, AgentActionResult, AgentMaintenanceRunSettled, AgentMaintenanceRunStarted } from './event-contract.js'
 import { decodeAgentBudget } from './budget.js'
 import { rootOutcomes } from './control-codec.js'
 import { actionReference, decodeAgentCommand, decodeAgentInput, decodeWaitDescriptor, inputReference } from './input-codec.js'
@@ -18,6 +18,15 @@ export function decodeRunSettled(value: unknown): AgentEventPayloads['run-settle
   choice(input.stoppedBy, ['idle', 'paused', 'waiting', 'run-budget', 'cancelled', 'faulted', 'interrupted', 'command-settled', 'command-budget'])
   text(input.reason, 128)
   return input as AgentEventPayloads['run-settled']
+}
+export function decodeMaintenanceRunStarted(value: unknown): AgentMaintenanceRunStarted {
+  const input = record(agentJson(value)); exact(input, ['spec', 'kind']); eventId(input.spec); choice(input.kind, ['maintenance'])
+  return input as AgentMaintenanceRunStarted
+}
+export function decodeMaintenanceRunSettled(value: unknown): AgentMaintenanceRunSettled {
+  const input = record(agentJson(value)); exact(input, ['run', 'stoppedBy', 'reason']); eventId(input.run)
+  choice(input.stoppedBy, ['idle', 'run-budget', 'cancelled', 'faulted', 'interrupted']); text(input.reason, 128)
+  return input as AgentMaintenanceRunSettled
 }
 export function decodeTurnStarted(value: unknown): AgentEventPayloads['turn-started'] {
   const input = record(agentJson(value)); exact(input, ['run', 'input', 'lane', 'ordinal', 'root', 'predecessor', 'deadline', 'observedAt'])

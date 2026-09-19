@@ -1,9 +1,9 @@
 import { invalidAgent } from './errors.js'
 import { createDurableEventDefinition } from '../session/event-catalog.js'
-import type { AgentEventPayloads } from './event-contract.js'
+import type { AgentEventPayloads, AgentMaintenanceRunSettled, AgentMaintenanceRunStarted } from './event-contract.js'
 import { decodeAgentSpec } from './spec-codec.js'
 import { decodeControlRequest, decodeControlSettled } from './control-codec.js'
-import { decodeActionSettled, decodeCommandAccepted, decodeInputAccepted, decodeRunSettled, decodeRunStarted,
+import { decodeActionSettled, decodeCommandAccepted, decodeInputAccepted, decodeMaintenanceRunSettled, decodeMaintenanceRunStarted, decodeRunSettled, decodeRunStarted,
   decodeStepDecided, decodeStepOpened, decodeTurnSettled, decodeTurnStarted, decodeWaitSettled } from './event-codec.js'
 
 function definition<K extends keyof AgentEventPayloads>(name: K, decode: (value: unknown) => AgentEventPayloads[K]) {
@@ -13,6 +13,13 @@ export const agentSpecRecordedEvent = definition('spec-recorded', decodeAgentSpe
 export const agentInputAcceptedEvent = definition('input-accepted', decodeInputAccepted)
 export const agentRunStartedEvent = definition('run-started', decodeRunStarted)
 export const agentRunSettledEvent = definition('run-settled', decodeRunSettled)
+/** Maintenance owns management writes without admitting Turns, commands, Models or Tools. */
+export const agentMaintenanceRunStartedEvent = createDurableEventDefinition<AgentMaintenanceRunStarted>({
+  type: 'agent/run-started', payloadVersion: 2, ignorable: false, decode: decodeMaintenanceRunStarted,
+})
+export const agentMaintenanceRunSettledEvent = createDurableEventDefinition<AgentMaintenanceRunSettled>({
+  type: 'agent/run-settled', payloadVersion: 2, ignorable: false, decode: decodeMaintenanceRunSettled,
+})
 export const agentTurnStartedEvent = definition('turn-started', decodeTurnStarted)
 export const agentTurnSettledEvent = definition('turn-settled', decodeTurnSettled)
 export const agentStepOpenedEvent = definition('step-opened', decodeStepOpened)
@@ -33,6 +40,7 @@ export const agentLegacyAbandonSettledEvent = createDurableEventDefinition({ typ
 /** Required event versions keep data replay independent from execution providers. */
 export const agentSessionEventDefinitions = Object.freeze([
   agentSpecRecordedEvent, agentInputAcceptedEvent, agentRunStartedEvent, agentRunSettledEvent,
+  agentMaintenanceRunStartedEvent, agentMaintenanceRunSettledEvent,
   agentTurnStartedEvent, agentTurnSettledEvent, agentStepOpenedEvent, agentStepDecidedEvent,
   agentActionSettledEvent, agentWaitSettledEvent, agentCommandAcceptedEvent, agentControlRequestedEvent, agentControlSettledEvent, agentInputAbandonRequestedEvent, agentLegacyAbandonSettledEvent,
 ])

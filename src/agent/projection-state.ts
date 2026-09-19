@@ -48,7 +48,7 @@ export function requireSpec(state: AgentProjectionState): CommittedSessionEvent<
   if (state.spec === null) invalidAgent('missing-spec')
   return state.spec
 }
-export function requireOpenRun(state: AgentProjectionState, id: SessionEventId, kind?: 'drive' | 'command') {
+export function requireOpenRun(state: AgentProjectionState, id: SessionEventId, kind?: 'drive' | 'command' | 'maintenance') {
   const run = requireEntry(state.runs, id, 'missing-run')
   if (state.openRun !== id || run.settled !== null || kind !== undefined && run.started.payload.kind !== kind) invalidAgent('run-not-open')
   return run

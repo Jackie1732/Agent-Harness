@@ -19,16 +19,22 @@ export { keyedOutboxAcceptedEvent } from './keyed-event.js'
 export type { KeyedOutboxAcceptedPayload } from './keyed-event.js'
 export type { MessageSendKey, MessageSendCommand, MessageCommandContent } from './send-command.js'
 export { createInProcessMessageTransport } from './transport.js'
+export { createRoutedMessageTransport } from './routed-transport.js'
+export { createHttpsMessageClientTransport, createHttpsMessageServer } from './https-transport.js'
 
 export type { CommunicationServiceComponentOptions } from './component.js'
 export type { SessionDirectory, SessionDirectoryDeclaration, DirectoryStatus } from './directory.js'
-export type { OutboxDispatcher } from './dispatcher.js'
+export type { OutboxDispatcher, OutboxDispatchOptions } from './dispatcher.js'
 export type { CommunicationErrorCode } from './errors.js'
 export type { ChannelId, ChannelSequence, CommunicationIdentitySource, MessageId } from './ids.js'
 export type { SessionMailbox } from './mailbox.js'
 export type { MessageCatalog, MessageDefinition, MessageDefinitionOptions } from './message-catalog.js'
 export type { CommunicationServiceOptions, MailboxAttachmentOptions } from './service.js'
 export type { MessageTransport } from './transport.js'
+export type { MessageRoute, MessageRouteResolver } from './routed-transport.js'
+export type {
+  HttpsMessageClientOptions, HttpsMessageLimits, HttpsMessageServer, HttpsMessageServerOptions, HttpsPeerAuthorization,
+} from './https-transport.js'
 export type {
   CommunicationPolicy,
   CommunicationFacts,

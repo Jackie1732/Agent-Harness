@@ -2,7 +2,8 @@ import type { MessageEnvelope } from '../communication/types.js'
 import type { SessionEventId } from '../session/ids.js'
 import type { CommittedSessionEvent } from '../session/types.js'
 import type { AgentActionReference, AgentBudget, AgentInput, AgentInputReference, AgentInputStatus, AgentRootOutcome, AgentSpec } from './contract.js'
-import type { AgentActionSettled, AgentCommandAccepted, AgentControlRequest, AgentControlSettled, AgentRunSettled, AgentRunStarted,
+import type { AgentActionSettled, AgentCommandAccepted, AgentControlRequest, AgentControlSettled, AgentMaintenanceRunSettled,
+  AgentMaintenanceRunStarted, AgentRunSettled, AgentRunStarted,
   AgentStepDecided, AgentStepOpened, AgentTurnSettled, AgentTurnStarted, AgentWaitSettled } from './event-contract.js'
 
 export type AgentInputState = {
@@ -26,7 +27,10 @@ export type AgentRootState = {
   readonly reason: string | null
   readonly stopControl: SessionEventId | null
 }
-export type AgentRunState = { readonly started: CommittedSessionEvent<AgentRunStarted>; readonly settled: CommittedSessionEvent<AgentRunSettled> | null }
+export type AgentRunState = {
+  readonly started: CommittedSessionEvent<AgentRunStarted | AgentMaintenanceRunStarted>
+  readonly settled: CommittedSessionEvent<AgentRunSettled | AgentMaintenanceRunSettled> | null
+}
 export type AgentTurnState = { readonly started: CommittedSessionEvent<AgentTurnStarted>; readonly root: SessionEventId; readonly settled: CommittedSessionEvent<AgentTurnSettled> | null }
 export type AgentStepState = { readonly opened: CommittedSessionEvent<AgentStepOpened>; readonly decided: CommittedSessionEvent<AgentStepDecided> | null }
 export type AgentWaitState = {

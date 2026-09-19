@@ -111,7 +111,9 @@ export async function recoverAgentSession(session: SessionHandle, options: Agent
         finalStep: complete ? final!.opened.stored.eventId : null, budget: root.budget })); writes++; continue
     }
     if (state.openRun !== null) {
-      await journal.append(events.agentRunSettledEvent, () => ({ run: state.openRun!, stoppedBy: 'interrupted' as const, reason: 'driver-interrupted' })); writes++; continue
+      const run = state.runs.find(item => item.started.stored.eventId === state.openRun)!
+      const definition = run.started.payload.kind === 'maintenance' ? events.agentMaintenanceRunSettledEvent : events.agentRunSettledEvent
+      await journal.append(definition, () => ({ run: state.openRun!, stoppedBy: 'interrupted' as const, reason: 'driver-interrupted' })); writes++; continue
     }
     const control = state.controls.find(item => item.requested.stored.eventId !== owner.stored.eventId && item.settled === null && item.supersededBy === null)
     if (control === undefined) break

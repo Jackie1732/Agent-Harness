@@ -8,7 +8,7 @@ import type { CommittedSessionEvent, SessionSnapshot } from '../session/types.js
 import { invalidAgent } from './errors.js'
 import { inputKey, referenceKey } from './input-codec.js'
 import { applyControlRequested, applyControlSettled, applyWaitSettled } from './projection-controls.js'
-import { applyRunSettled, applyRunStarted, applyTurnSettled, applyTurnStarted } from './projection-runs.js'
+import { applyMaintenanceRunSettled, applyMaintenanceRunStarted, applyRunSettled, applyRunStarted, applyTurnSettled, applyTurnStarted } from './projection-runs.js'
 import { applyActionSettled, applyStepDecided, applyStepOpened } from './projection-steps.js'
 import type { AgentProjectionState } from './projection-state.js'
 import { initialAgentState, requireEntry, requireOpenRun, requireSpec } from './projection-state.js'
@@ -35,7 +35,9 @@ function applyInput(state: AgentProjectionState, event: CommittedSessionEvent): 
     sequence: event.stored.sequence, lane: 'user', status: 'queued', claimedBy: null, reservedBy: null, everMatched: false, reason: null })
 }
 function applyAgentEvent(state: AgentProjectionState, event: CommittedSessionEvent): void {
-  if (event.stored.payloadVersion !== 1 && !(event.stored.payloadVersion === 2 && ['agent/control-requested', 'agent/control-settled'].includes(event.stored.type)) || event.stored.ignorable === true) invalidAgent('unsupported-agent-event')
+  if (event.stored.payloadVersion !== 1 && !(event.stored.payloadVersion === 2
+    && ['agent/control-requested', 'agent/control-settled', 'agent/run-started', 'agent/run-settled'].includes(event.stored.type))
+    || event.stored.ignorable === true) invalidAgent('unsupported-agent-event')
   const decoded = <T,>(decode: (value: JsonValue) => T) => ({ ...event, payload: decode(event.payload) })
   switch (event.stored.type) {
     case 'agent/spec-recorded': {
@@ -47,8 +49,14 @@ function applyAgentEvent(state: AgentProjectionState, event: CommittedSessionEve
       state.spec = { ...event, payload: spec }; break
     }
     case 'agent/input-accepted': applyInput(state, event); break
-    case 'agent/run-started': applyRunStarted(state, decoded(events.agentRunStartedEvent.decode)); break
-    case 'agent/run-settled': applyRunSettled(state, decoded(events.agentRunSettledEvent.decode)); break
+    case 'agent/run-started':
+      if (event.stored.payloadVersion === 2) applyMaintenanceRunStarted(state, decoded(events.agentMaintenanceRunStartedEvent.decode))
+      else applyRunStarted(state, decoded(events.agentRunStartedEvent.decode))
+      break
+    case 'agent/run-settled':
+      if (event.stored.payloadVersion === 2) applyMaintenanceRunSettled(state, decoded(events.agentMaintenanceRunSettledEvent.decode))
+      else applyRunSettled(state, decoded(events.agentRunSettledEvent.decode))
+      break
     case 'agent/turn-started': applyTurnStarted(state, decoded(events.agentTurnStartedEvent.decode)); break
     case 'agent/turn-settled': applyTurnSettled(state, decoded(events.agentTurnSettledEvent.decode)); break
     case 'agent/step-opened': applyStepOpened(state, decoded(events.agentStepOpenedEvent.decode)); break

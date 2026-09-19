@@ -28,6 +28,24 @@ export interface HttpProtocol {
   readonly decode: ModelStreamDecoder
 }
 
+/** Derive one HTTP Provider descriptor without reading credentials or creating a client. */
+export function httpModelDescriptor(
+  options: Omit<HttpModelProviderOptions, 'apiKey'>,
+  protocol: Pick<HttpProtocol, 'name' | 'version' | 'support' | 'semanticHeaders'>,
+): ModelProviderDescriptor {
+  let endpoint: URL
+  try { endpoint = new URL(options.endpoint) }
+  catch { throw new ModelError('MODEL_REQUEST_INVALID', 'model endpoint is not an absolute URL') }
+  if (endpoint.protocol !== 'https:' && !(endpoint.protocol === 'http:' && ['127.0.0.1', '[::1]'].includes(endpoint.hostname))) {
+    throw new ModelError('MODEL_REQUEST_INVALID', 'model endpoint requires HTTPS except for literal loopback tests')
+  }
+  return decodeProviderDescriptor(snapshotJson({
+    providerId: options.providerId, endpoint: endpoint.href, protocol: protocol.name, adapterVersion: protocol.version,
+    support: protocol.support, semanticHeaders: protocol.semanticHeaders, streamLimits: options.streamLimits,
+    maxConcurrentExchanges: options.maxConcurrentExchanges,
+  }))
+}
+
 /** Shared HTTP provider owner: explicit admission, client lifetime, immutable binding. */
 export class HttpModelProvider {
   readonly descriptor: ModelProviderDescriptor
@@ -37,20 +55,10 @@ export class HttpModelProvider {
   readonly #authentication: Readonly<Record<string, string>>
 
   constructor(options: HttpModelProviderOptions, protocol: HttpProtocol) {
-    let endpoint: URL
-    try { endpoint = new URL(options.endpoint) }
-    catch { throw new ModelError('MODEL_REQUEST_INVALID', 'model endpoint is not an absolute URL') }
-    if (endpoint.protocol !== 'https:' && !(endpoint.protocol === 'http:' && ['127.0.0.1', '[::1]'].includes(endpoint.hostname))) {
-      throw new ModelError('MODEL_REQUEST_INVALID', 'model endpoint requires HTTPS except for literal loopback tests')
-    }
     if (typeof options.apiKey !== 'string' || options.apiKey.length === 0 || /[^\x21-\x7e]/.test(options.apiKey)) {
       throw new ModelError('MODEL_REQUEST_INVALID', 'model credential must be nonempty printable ASCII without whitespace')
     }
-    this.descriptor = decodeProviderDescriptor(snapshotJson({
-      providerId: options.providerId, endpoint: endpoint.href, protocol: protocol.name, adapterVersion: protocol.version,
-      support: protocol.support, semanticHeaders: protocol.semanticHeaders, streamLimits: options.streamLimits,
-      maxConcurrentExchanges: options.maxConcurrentExchanges,
-    }))
+    this.descriptor = httpModelDescriptor(options, protocol)
     this.#capacity = new ExchangeCapacity(options.maxConcurrentExchanges)
     this.#protocol = protocol
     this.#authentication = Object.freeze(protocol.authentication(options.apiKey))

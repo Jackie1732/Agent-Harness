@@ -20,6 +20,18 @@ export interface ScriptedModelProviderOptions {
   readonly onClose?: (submission: PreparedSubmission) => Awaitable<void>
 }
 
+/** Derive the immutable binding recorded by a scripted Provider without creating runtime state. */
+export function scriptedModelDescriptor(
+  options: Pick<ScriptedModelProviderOptions, 'providerId' | 'maxConcurrentExchanges' | 'streamLimits'>,
+): ModelProviderDescriptor {
+  return decodeProviderDescriptor(snapshotJson({
+    providerId: options.providerId, protocol: 'scripted', adapterVersion: '1',
+    endpoint: `scripted:${options.providerId}`, semanticHeaders: {},
+    support: { text: true, instructions: true, tools: true, controls: ['temperature', 'topP'], profiles: [], continuations: [] },
+    streamLimits: options.streamLimits, maxConcurrentExchanges: options.maxConcurrentExchanges,
+  }))
+}
+
 /** Scripted requests obey the same prepared/started/settled and ownership contracts. */
 export class ScriptedModelProvider implements ModelProvider {
   readonly descriptor: ModelProviderDescriptor
@@ -31,12 +43,7 @@ export class ScriptedModelProvider implements ModelProvider {
 
   constructor(options: ScriptedModelProviderOptions) {
     if (typeof options.script !== 'function') throw new ModelError('MODEL_REQUEST_INVALID', 'Scripted provider requires a script')
-    this.descriptor = decodeProviderDescriptor(snapshotJson({
-      providerId: options.providerId, protocol: 'scripted', adapterVersion: '1',
-      endpoint: `scripted:${options.providerId}`, semanticHeaders: {},
-      support: { text: true, instructions: true, tools: true, controls: ['temperature', 'topP'], profiles: [], continuations: [] },
-      streamLimits: options.streamLimits, maxConcurrentExchanges: options.maxConcurrentExchanges,
-    }))
+    this.descriptor = scriptedModelDescriptor(options)
     this.#capacity = new ExchangeCapacity(options.maxConcurrentExchanges)
     this.#script = options.script
     this.#onPrepare = options.onPrepare

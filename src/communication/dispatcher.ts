@@ -7,7 +7,14 @@ import type { MessageDeliveryOutcome, OutboxDispatchReport, OutboxMessageSnapsho
 /** Explicit, bounded driver for one Session Outbox. */
 export interface OutboxDispatcher {
   /** Run eligible Channel heads once within the configured run budget. */
-  dispatch(options?: { readonly signal?: AbortSignal }): Promise<OutboxDispatchReport>
+  dispatch(options?: OutboxDispatchOptions): Promise<OutboxDispatchReport>
+}
+
+/** Per-run restrictions can only remove work from the Service-owned candidate set. */
+export interface OutboxDispatchOptions {
+  readonly signal?: AbortSignal
+  readonly onlyMessageIds?: ReadonlySet<OutboxMessageSnapshot['messageId']>
+  readonly maxAttempts?: number
 }
 
 function channelKey(message: OutboxMessageSnapshot): string {
@@ -36,7 +43,13 @@ export function createOutboxDispatcher(
 ): OutboxDispatcher {
   let runTask: Promise<OutboxDispatchReport> | undefined
 
-  const run = async (signal?: AbortSignal): Promise<OutboxDispatchReport> => {
+  const run = async (options: OutboxDispatchOptions): Promise<OutboxDispatchReport> => {
+    const signal = options.signal
+    const maximum = options.maxAttempts ?? mailbox.limits.maxAttemptsPerRun
+    if (!Number.isSafeInteger(maximum) || maximum < 0 || maximum > mailbox.limits.maxAttemptsPerRun) {
+      throw new RangeError('maxAttempts must be within the Mailbox run budget')
+    }
+    const allowed = options.onlyMessageIds === undefined ? undefined : new Set(options.onlyMessageIds)
     let startedAttempts = 0
     let delivered = 0
     let rejected = 0
@@ -55,9 +68,13 @@ export function createOutboxDispatcher(
       }
       const candidate = nextChannelHead(mailbox.currentSnapshot().outbox, blockedChannels)
       if (candidate === undefined) break
-      if (startedAttempts >= mailbox.limits.maxAttemptsPerRun) {
+      if (startedAttempts >= maximum) {
         stoppedBy = 'run-budget'
         break
+      }
+      if (allowed !== undefined && !allowed.has(candidate.messageId)) {
+        blockedChannels.add(channelKey(candidate))
+        continue
       }
       const prepared = await mailbox.prepareAttempt(candidate.messageId, signal)
       if (prepared.kind === 'ineligible') {
@@ -100,9 +117,14 @@ export function createOutboxDispatcher(
   }
 
   const dispatcher: OutboxDispatcher = Object.freeze({
-    dispatch(options: { readonly signal?: AbortSignal } = {}) {
+    dispatch(options: OutboxDispatchOptions = {}) {
       if (runTask !== undefined) return runTask
-      const task = run(options.signal).finally(() => {
+      const accepted: OutboxDispatchOptions = {
+        ...(options.signal === undefined ? {} : { signal: options.signal }),
+        ...(options.onlyMessageIds === undefined ? {} : { onlyMessageIds: new Set(options.onlyMessageIds) }),
+        ...(options.maxAttempts === undefined ? {} : { maxAttempts: options.maxAttempts }),
+      }
+      const task = run(accepted).finally(() => {
         if (runTask === task) runTask = undefined
       })
       runTask = task

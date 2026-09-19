@@ -6,6 +6,7 @@ import {
   createDurableEventDefinition,
   createSessionRepositoryComponent,
   MemorySessionBackend,
+  parseSessionId,
   SessionRepository,
   SessionRepositoryKey,
 } from '../../src/index.js'
@@ -20,6 +21,16 @@ import {
 import type { Delta } from './fixtures.js'
 
 describe('Session Repository and Handle', () => {
+  it('creates at a reserved identity and refuses to overwrite it', async () => {
+    const repo = createTestRepository()
+    const sessionId = parseSessionId(firstId)
+    const handle = await repo.create({ sessionId })
+    expect(handle.header.sessionId).toBe(sessionId)
+    await handle.dispose()
+    await expect(repo.create({ sessionId })).rejects.toMatchObject({ code: 'SESSION_ALREADY_EXISTS' })
+    await repo.dispose()
+  })
+
   it('serializes accepted appends, snapshots payloads, and ends independently of disposal', async () => {
     const repo = createTestRepository()
     const handle = await repo.create()
