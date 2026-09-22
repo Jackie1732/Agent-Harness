@@ -37,6 +37,7 @@ export async function inspectHost(
   const repository = new SessionRepository({ backend, catalog: hostRuntimeEventCatalog,
     maxLineageDepth: spec.storage.maxLineageDepth, clock: options.clock ?? systemClock })
   try {
+    const discovered = await discoverHostDelegations(spec, repository)
     const reports = []
     const parents = []
     for (const member of spec.members.filter(isLocalHostMember)) {
@@ -48,7 +49,11 @@ export async function inspectHost(
         lifecycle: snapshot.lifecycle, openRecovery: projectAgentSession(snapshot).openRecovery, report: projectAgentReport(snapshot) }))
     }
     if (options.protocolVersion !== 2) return Object.freeze(reports)
-    const discovered = await discoverHostDelegations(spec, repository)
+    for (const relation of discovered) {
+      if (!parents.some(item => item.snapshot.header.sessionId === relation.parent.header.sessionId)) {
+        parents.push({ parentKey: relation.parentKey, snapshot: relation.parent })
+      }
+    }
     return Object.freeze({ members: Object.freeze(reports), subagents: delegationReport(parents, spec.scheduling.maxReportEntries, id => {
       const found = discovered.find(item => item.requested.stored.eventId === id)
       const child = found?.child == null ? null : projectAgentSession(found.child)

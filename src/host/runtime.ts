@@ -1,4 +1,5 @@
 import { bindParentSubagents } from './parent-subagents.js'
+import { HostObservationTasks } from './observation-tasks.js'
 import { projectAgentSession } from '../agent/projection.js'
 import { AsyncLocalStorage } from 'node:async_hooks'
 import type { Clock } from '../foundation/clock.js'
@@ -50,8 +51,9 @@ class HostRuntime {
   readonly #wake = new AbortController()
   readonly #tokens = new Set<symbol>()
   readonly #operations = new Set<Promise<unknown>>()
+  readonly #observers = new HostObservationTasks()
   readonly #scheduler: HostSchedulerState = {
-    cursor: 0, laneOrder: ['delivery', 'maintenance', 'business'], memberCursors: { delivery: 0, maintenance: 0, business: 0 },
+    cursor: 0, protocolNext: true, laneOrder: ['delivery', 'maintenance', 'business'], memberCursors: { delivery: 0, maintenance: 0, business: 0 },
     faults: new Set(), stalled: new Map(), cooldowns: new Map(), observations: new HostObservations(),
   }
   #status: HostStatus = 'ready'
@@ -78,9 +80,10 @@ class HostRuntime {
     this.#assertReady()
     const parent = this.#assembly.slots.find(slot => slot.session.header.address === parentAddress && this.#assembly.local.some(item => item.session === slot.session))
     const domain = this.#assembly.subagents
-    if (parent === undefined || domain === undefined || !domain.options.config.parents.some(item => item.agentKey === parent.member.agentKey)
+    if (parent === undefined || this.#offline.has(parent.member.agentKey) || domain === undefined || !domain.options.config.parents.some(item => item.agentKey === parent.member.agentKey)
       || !projectAgentSession(parent.session.snapshot()).roots.some(root => root.id === parentRoot)) throw new HostError('HOST_NOT_READY', 'parent-control-not-authorized')
     return bindParentSubagents({ domain, parent, root: parentRoot, timer: this.#timer, scanIntervalMs: this.#spec.scheduling.scanIntervalMs,
+      ...this.#observers.bind(parent.member.agentKey, task => this.#track(task)),
       assertReady: () => this.#assertReady(), assertExternalWait: () => {
         if ([...hostTasks.getStore() ?? []].some(token => this.#tokens.has(token))) throw new HostError('HOST_REENTRANT_WAIT', 'parent-cannot-wait-on-own-business-lane')
       }, track: task => this.#track(task), wake: () => this.#assembly.wakeup.notify() })
@@ -132,6 +135,7 @@ class HostRuntime {
     if (this.#mailboxTransitions.has(agentKey)) throw new HostError('HOST_BUSY', 'mailbox-transition-active')
     if (online === !this.#offline.has(agentKey)) return Promise.resolve()
     if (!online) { this.#offline.add(agentKey); this.#paused.add(agentKey); slot?.agent.pause(); this.#assembly.subagents?.stopParent(agentKey) }
+    const observers = online ? undefined : this.#observers.closeParent(agentKey)
     const task = this.#track(async () => {
       if (online) {
         const replacement = await this.#assembly.reopen(agentKey)
@@ -143,6 +147,7 @@ class HostRuntime {
         this.#scheduler.faults.delete(agentKey)
         this.#assembly.wakeup.notify()
       } else if (slot !== undefined) {
+        await observers
         await this.#assembly.subagents?.releaseParent(agentKey)
         if (mode === 'drain') await slot.agent.wait()
         await slot.dispose()
@@ -204,6 +209,7 @@ class HostRuntime {
         }
       }).finally(() => this.#tokens.delete(closingToken)))
       void this.#shutdownTask.catch(() => undefined)
+      this.#observers.close()
       for (const slot of this.#assembly.slots) if (slot.agent.status === 'accepting') slot.agent.pause()
       this.#assembly.server?.stopAdmission()
       this.#wake.abort()

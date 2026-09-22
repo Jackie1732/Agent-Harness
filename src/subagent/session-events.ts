@@ -18,12 +18,14 @@ export const subagentInputDisposedEvent = createDurableEventDefinition({ type: '
 export const subagentProvisionSettledEvent = createDurableEventDefinition({ type: 'subagent/provision-settled', payloadVersion: 1, ignorable: false, decode: lifecycle.decodeProvisionSettled })
 export const subagentDeliveryFailedEvent = createDurableEventDefinition({ type: 'subagent/delivery-failed', payloadVersion: 1, ignorable: false, decode: lifecycle.decodeDeliveryFailed })
 export const subagentControlRequestedEvent = createDurableEventDefinition({ type: 'subagent/control-requested', payloadVersion: 1, ignorable: false, decode: lifecycle.decodeSubagentControlRequested })
+/** Control sources in v2 are unique within one delegation; v1 retains Session-wide uniqueness. */
+export const subagentControlRequestedV2Event = createDurableEventDefinition({ type: 'subagent/control-requested', payloadVersion: 2, ignorable: false, decode: lifecycle.decodeSubagentControlRequested })
 export const subagentControlSettledEvent = createDurableEventDefinition({ type: 'subagent/control-settled', payloadVersion: 1, ignorable: false, decode: lifecycle.decodeSubagentControlSettled })
 export const subagentSettlementObservedEvent = createDurableEventDefinition({ type: 'subagent/settlement-observed', payloadVersion: 1, ignorable: false, decode: lifecycle.decodeSettlementObserved })
 export const subagentRecoveryRequestedEvent = createDurableEventDefinition({ type: 'subagent/recovery-requested', payloadVersion: 1, ignorable: false, decode: lifecycle.decodeRecoveryRequested })
 export const subagentRecoverySettledEvent = createDurableEventDefinition({ type: 'subagent/recovery-settled', payloadVersion: 1, ignorable: false, decode: lifecycle.decodeRecoverySettled })
 export const subagentSessionEventDefinitions = Object.freeze([
-  workspaceBaselineRecordedEvent, subagentProvisionSettledEvent, subagentDeliveryFailedEvent, subagentControlRequestedEvent, subagentControlSettledEvent, subagentSettlementObservedEvent, subagentRecoveryRequestedEvent, subagentRecoverySettledEvent,
+  workspaceBaselineRecordedEvent, subagentProvisionSettledEvent, subagentDeliveryFailedEvent, subagentControlRequestedEvent, subagentControlRequestedV2Event, subagentControlSettledEvent, subagentSettlementObservedEvent, subagentRecoveryRequestedEvent, subagentRecoverySettledEvent,
   delegationRequestedEvent, childBoundEvent, childReadyEvent, subagentResourceOpenedEvent, subagentReleaseRecordedEvent,
   subagentProtocolRecordedEvent, subagentMessageClassifiedEvent, subagentInputDisposedEvent,
 ])

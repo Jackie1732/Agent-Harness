@@ -9,11 +9,13 @@ import type { HostObservations } from './observation.js'
 import type { HostAssembly } from './assembly.js'
 import { HostSchedulerTasks } from './scheduler-tasks.js'
 import { projectCommunicationFacts } from '../communication/projection.js'
+import { isModelAdmissionPending } from './model-admission.js'
 
 type HostSchedulerLane = 'delivery' | 'maintenance' | 'business'
 
 export interface HostSchedulerState {
   cursor: number
+  protocolNext: boolean
   readonly laneOrder: HostSchedulerLane[]
   readonly memberCursors: Record<HostSchedulerLane, number>
   readonly faults: Set<string>
@@ -72,7 +74,6 @@ export async function runHostScheduler(input: HostSchedulerInput): Promise<HostR
   let maintenanceRuns = 0
   let deliveryAttempts = 0
   let scannedWithoutWork = 0
-  let protocolNext = true
   let stoppedBy: HostRunReport['stoppedBy'] = 'quiescent'
   let business: Promise<void> | undefined
   let maintenance: Promise<void> | undefined
@@ -89,8 +90,14 @@ export async function runHostScheduler(input: HostSchedulerInput): Promise<HostR
       state.stalled.set(slot.member.agentKey, { position, count: position === before ? (previous?.count ?? 0) + 1 : 0 })
     }, () => failed(slot)).finally(() => busy.delete(slot))
   }
-  const pending = (slot: HostProtocolSlot) => input.routingPaused.has(slot.member.agentKey) ? [] : projectCommunicationFacts(slot.session.snapshot()).outbox.filter(item =>
-    item.status === 'pending' && !attempted.has(item.messageId) && input.canAttempt(item) && retryReady(input, slot, item))
+  const pending = (slot: HostProtocolSlot) => {
+    if (input.routingPaused.has(slot.member.agentKey) || isModelAdmissionPending(slot.session.snapshot())) return []
+    return projectCommunicationFacts(slot.session.snapshot()).outbox.filter(item => {
+      const receiver = slots.find(candidate => candidate.session.header.address === item.envelope.recipient && candidate.mailbox.status === 'open')
+      return item.status === 'pending' && !attempted.has(item.messageId) && input.canAttempt(item) && retryReady(input, slot, item)
+        && (receiver === undefined || !isModelAdmissionPending(receiver.session.snapshot()))
+    })
+  }
   try {
     while (slots.length > 0) {
       const notified = input.scanWake()
@@ -119,16 +126,16 @@ export async function runHostScheduler(input: HostSchedulerInput): Promise<HostR
       for (const lane of lanes) {
         if (stopping || batches >= scheduling.maxBatchesPerRun) break
         if (lane === 'delivery' && delivery !== undefined || lane === 'maintenance' && maintenance !== undefined || lane === 'business' && business !== undefined) continue
-        if (lane === 'maintenance' && protocolNext) {
+        if (lane === 'maintenance' && state.protocolNext) {
           const operation = input.assembly.subagents?.nextAction()
           if (operation !== undefined) {
-            batches++; maintenanceRuns++; admitted = true; protocolNext = false
+            batches++; maintenanceRuns++; admitted = true; state.protocolNext = false
             maintenance = accepted.run(() => Promise.resolve().then(operation).then(() => undefined).finally(() => { maintenance = undefined }))
             state.laneOrder.splice(state.laneOrder.indexOf(lane), 1); state.laneOrder.push(lane)
             continue
           }
         }
-        if (lane === 'maintenance') protocolNext = true
+        if (lane === 'maintenance') state.protocolNext = true
         const deliverySlots: readonly HostProtocolSlot[] = [...slots, ...input.assembly.protocolSlots.filter(item => !slots.some(slot => slot.session === item.session))]
         const start = state.memberCursors[lane]
         const page = lane === 'delivery' ? deliverySlots : slots

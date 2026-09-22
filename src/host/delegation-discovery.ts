@@ -23,8 +23,8 @@ export interface DiscoveredDelegation {
 
 /** Bounded one-level inventory detects removed managed parents; children are followed only through committed CP-D references. */
 export async function discoverHostDelegations(spec: ResolvedHostSpec, repository: SessionRepository): Promise<readonly DiscoveredDelegation[]> {
-  if (spec.schemaVersion !== 2) return []
-  const maximum = spec.subagents.kind === 'enabled' ? spec.subagents.limits.maxDiscoveryEntries : 10000
+  const domain = spec.schemaVersion === 2 ? spec.subagents : { kind: 'disabled' as const }
+  const maximum = domain.kind === 'enabled' ? domain.limits.maxDiscoveryEntries : 10000
   const snapshots: SessionSnapshot[] = []
   const directory = await opendir(join(spec.storage.root, 'sessions'))
   let entries = 0
@@ -56,9 +56,9 @@ export async function discoverHostDelegations(spec: ResolvedHostSpec, repository
       const closed = delegationClosure(state, requested.stored.eventId, parent.history.at(-1)!.events.filter(item => item.kind === 'known')).closed
       validateDelegationCausality(parent, child, requested)
       if (!closed && !spec.members.some(member => member.kind === 'local' && member.agentKey === binding.payload.agentKey && member.sessionId === parent.header.sessionId)) throw new HostError('HOST_RECOVERY_REQUIRED', 'removed-parent-has-delegations')
-      if (!closed && spec.subagents.kind === 'disabled') throw new HostError('HOST_RECOVERY_REQUIRED', 'disabled-subagents-have-obligations')
-      if (!closed && spec.subagents.kind === 'enabled') {
-        const template = spec.subagents.templates.find(item => item.templateKey === requested.payload.request.templateKey && item.templateVersion === requested.payload.request.templateVersion)
+      if (!closed && domain.kind === 'disabled') throw new HostError('HOST_RECOVERY_REQUIRED', 'disabled-subagents-have-obligations')
+      if (!closed && domain.kind === 'enabled') {
+        const template = domain.templates.find(item => item.templateKey === requested.payload.request.templateKey && item.templateVersion === requested.payload.request.templateVersion)
         if (template === undefined || !equal(template, requested.payload.effectivePlan.template)) throw new HostError('HOST_BINDING_CONFLICT', 'delegation-template-changed')
       }
       found.push({ parentKey: binding.payload.agentKey, parent, requested, child, closed })

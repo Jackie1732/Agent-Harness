@@ -51,7 +51,10 @@ export function applySubagentLifecycle(state: AgentProjectionState, event: Commi
       const value = events.subagentControlRequestedEvent.decode(p); requireDelegationBinding(state.subagents, value)
       if (state.subagents.bound?.payload.delegation !== value.delegation && !state.subagents.delegations.has(value.delegation)) invalid('control-owner')
       if (value.source.kind === 'parent-stop') childReference(value.source.eventId, parseSessionEventId(value.delegation).sessionId)
-      if ([...state.subagents.controls.values()].some(item => equal(item.requested.payload.source, value.source))) invalid('duplicate-subagent-control')
+      const duplicate = [...state.subagents.controls.values()].some(item =>
+        equal(item.requested.payload.source, value.source)
+        && (event.stored.payloadVersion === 1 || item.requested.payload.delegation === value.delegation))
+      if (duplicate) invalid('duplicate-subagent-control')
       state.subagents.controls.set(event.stored.eventId, { requested: { ...event, payload: value }, settled: null }); break
     }
     case 'subagent/control-settled': {

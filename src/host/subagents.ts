@@ -31,6 +31,7 @@ import { protocolFailureAction } from '../subagent/protocol-failure.js'
 import { ChildInstance } from './child-instance.js'
 import { HostError } from './errors.js'
 import { SubagentError } from '../subagent/errors.js'
+import { isModelAdmissionPending } from './model-admission.js'
 
 export interface HostSubagentOptions {
   readonly config: Extract<HostSubagentConfig, { kind: 'enabled' }>
@@ -117,7 +118,7 @@ export class HostSubagents {
     const maintenance = await Promise.allSettled(entries.map(item => this.#maintenance.get(item.event.stored.eventId)))
     const results = await Promise.allSettled(entries.map(async item => {
       const id = item.event.stored.eventId
-      await this.cancel(parentKey, item.event.payload.parentRoot, id, 'parent-mailbox-offline')
+      await this.cancel(parentKey, item.event.payload.parentRoot, id, 'parent-mailbox-offline:' + id)
       const child = this.#children.get(id)
       await child?.dispose()
       const state = projectAgentSession(item.parent.snapshot())
@@ -177,15 +178,35 @@ export class HostSubagents {
   }
   async cancel(parentKey: string, root: SessionEventId, id: SessionEventId, requestKey: string) {
     text(requestKey, 128)
-    if (this.inspect(parentKey, root, id).closed) return { kind: 'already-closed' as const }
+    const entry = this.inspect(parentKey, root, id)
+    const parent = this.options.localMembers.find(item => item.member.agentKey === parentKey)!.session
+    const previous = () => projectAgentSession(parent.snapshot()).subagents.controls.find(item =>
+      item.requested.payload.delegation === id && item.requested.payload.source.kind === 'controller'
+      && item.requested.payload.source.requestKey === requestKey)
+    const receipt = () => {
+      const prior = previous()
+      if (prior === undefined) return undefined
+      if (prior.requested.payload.kind !== 'cancel' || prior.requested.payload.reasonCode !== 'caller-cancelled-delegation') {
+        throw new SubagentError('SUBAGENT_REQUEST_CONFLICT', 'control-key-content-conflict')
+      }
+      return { eventId: prior.requested.stored.eventId }
+    }
+    const prior = receipt()
+    if (prior !== undefined) return prior
+    if (entry.closed) return { kind: 'already-closed' as const }
     const accepted = this.admission.accepted.find(item => item.event.stored.eventId === id)!
-    const prior = projectAgentSession(accepted.parent.snapshot()).subagents.controls.find(item => item.requested.payload.delegation === id && item.requested.payload.source.kind === 'controller' && item.requested.payload.source.requestKey === requestKey)
-    if (prior !== undefined) return { eventId: prior.requested.stored.eventId }
     this.notifyParentStop(parentKey, root)
-    const event = await accepted.journal.append(events.subagentControlRequestedEvent, () => ({ delegation: id,
-      parentAddress: accepted.event.payload.parentAddress, childAddress: accepted.event.payload.childAddress, kind: 'cancel' as const,
-      source: { kind: 'controller' as const, requestKey }, reasonCode: 'caller-cancelled-delegation', observedAt: clockTimestamp(this.options.clock) }))
-    return { eventId: event.stored.eventId }
+    try {
+      const event = await accepted.journal.append(events.subagentControlRequestedV2Event, () => ({ delegation: id,
+        parentAddress: accepted.event.payload.parentAddress, childAddress: accepted.event.payload.childAddress, kind: 'cancel' as const,
+        source: { kind: 'controller' as const, requestKey }, reasonCode: 'caller-cancelled-delegation', observedAt: clockTimestamp(this.options.clock) }))
+      return { eventId: event.stored.eventId }
+    } catch (cause) {
+      // A concurrent identical request may commit before this conditional append's preflight.
+      const committed = accepted.journal.faulted ? undefined : receipt()
+      if (committed !== undefined) return committed
+      throw cause
+    }
   }
   report(limit: number) {
     const parents = this.options.localMembers
@@ -219,6 +240,8 @@ export class HostSubagents {
     const stopped = parentState.subagents.controls.some(item => item.requested.payload.delegation === id)
       || parentState.subagents.failures.some(item => item.payload.delegation === id)
       || root.outcome !== null && root.outcome !== 'completed' || root.stopControl !== null || clockTimestamp(this.options.clock) >= accepted.event.payload.deadline
+    if (!stopped && (isModelAdmissionPending(accepted.parent.snapshot())
+      || child.session !== undefined && isModelAdmissionPending(child.session.snapshot()))) return undefined
     if ((!stopped || this.#restored.has(id) || child.session !== undefined) && !this.#failed.has(id)) {
       const install = child.installationAction(stopped)
       if (install !== undefined) return install
@@ -239,7 +262,7 @@ export class HostSubagents {
     const state = projectAgentSession(session.snapshot())
     if (stopped && state.subagents.bound !== null && state.subagents.controls.length === 0) return async () => {
       this.notifyParentStop(accepted.parentKey, root.id)
-      await journal.append(events.subagentControlRequestedEvent, () => ({ ...child.identity, kind: 'cancel' as const,
+      await journal.append(events.subagentControlRequestedV2Event, () => ({ ...child.identity, kind: 'cancel' as const,
         source: root.stopControl === null ? { kind: 'controller' as const, requestKey: 'parent-stop:' + root.id } : { kind: 'parent-stop' as const, eventId: root.stopControl },
         reasonCode: 'parent-stopped-or-deadline', observedAt: clockTimestamp(this.options.clock) }))
     }

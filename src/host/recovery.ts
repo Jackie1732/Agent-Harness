@@ -1,4 +1,5 @@
 import { recoverHostDelegations } from './delegation-recovery.js'
+import { discoverHostDelegations } from './delegation-discovery.js'
 import type { Clock } from '../foundation/clock.js'
 import { systemClock } from '../foundation/clock.js'
 import { projectAgentSession } from '../agent/projection.js'
@@ -34,6 +35,7 @@ export async function recoverHost(spec: ResolvedHostSpec, options: RecoverHostOp
     maxLineageDepth: spec.storage.maxLineageDepth, clock })
   try {
     if (spec.schemaVersion === 2) return await recoverHostDelegations(spec, repository, options, clock)
+    await discoverHostDelegations(spec, repository)
     const results = []
     for (const member of spec.members.filter(isLocalHostMember)) {
       const session = await repository.open(parseSessionId(member.sessionId))

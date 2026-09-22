@@ -13,9 +13,11 @@ export interface ParentSubagentOptions {
   readonly root: SessionEventId
   readonly timer: HostTimer
   readonly scanIntervalMs: number
+  readonly stopSignal: AbortSignal
   assertReady(): void
   assertExternalWait(): void
   track<T>(task: () => Promise<T>): Promise<T>
+  trackObservation<T>(task: () => Promise<T>): Promise<T>
   wake(): void
 }
 /** The Host facade itself is the caller's control capability; IDs only select work already owned by this parent. */
@@ -38,15 +40,19 @@ export function bindParentSubagents(options: ParentSubagentOptions) {
       return options.track(async () => { const result = await domain.cancel(parent.member.agentKey, root, delegation, requestKey); options.wake(); return result })
     },
     async wait(delegation: SessionEventId, query: { readonly until: 'business' | 'closed'; readonly signal?: AbortSignal }) {
+      options.assertReady()
       options.assertExternalWait()
       if (query.until !== 'business' && query.until !== 'closed') throw new HostError('HOST_PROTOCOL_INVALID', 'delegation-wait-mode')
-      while (true) {
-        query.signal?.throwIfAborted()
-        const result = inspect(delegation)
-        if (query.until === 'closed' ? result.closed : result.inputDisposed || result.adopted || result.resultAvailable) return result
-        if (result.recoveryRequired || result.suspended) throw new HostError('HOST_RECOVERY_REQUIRED', 'delegation-wait-blocked')
-        await options.timer.wait(options.scanIntervalMs, query.signal ?? new AbortController().signal)
-      }
+      const signal = query.signal === undefined ? options.stopSignal : AbortSignal.any([query.signal, options.stopSignal])
+      return options.trackObservation(async () => {
+        while (true) {
+          signal.throwIfAborted()
+          const result = inspect(delegation)
+          if (query.until === 'closed' ? result.closed : result.inputDisposed || result.adopted || result.resultAvailable) return result
+          if (result.recoveryRequired || result.suspended) throw new HostError('HOST_RECOVERY_REQUIRED', 'delegation-wait-blocked')
+          await options.timer.wait(options.scanIntervalMs, signal)
+        }
+      })
     },
   })
 }
