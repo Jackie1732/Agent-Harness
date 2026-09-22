@@ -1,3 +1,4 @@
+import { delegationClosure } from '../subagent/closure.js'
 import { agentRootUsageUnknown, expireAgentRoot } from './root-policy.js'
 import type { SessionEventId } from '../session/ids.js'
 import { clockTimestamp } from '../foundation/clock.js'
@@ -26,7 +27,7 @@ export async function driveAgentTurn(runtime: AgentRuntime, turnId: SessionEvent
   const rootView = () => view().roots.find(item => item.id === turn.root)!
   const finish = async (outcome: AgentTurnOutcome, reason: string, rootOutcome: AgentRootOutcome | null, finalStep: SessionEventId | null = null) => {
     await expireAgentRoot(runtime, turn.root)
-    await runtime.journal.append(events.agentTurnSettledEvent, state => {
+    await runtime.journal.append(runtime.events.turnSettled, state => {
       const root = state.roots.find(item => item.id === turn.root)!
       if (root.stopControl !== null && outcome !== 'waiting' && outcome !== 'result-unknown') {
         outcome = 'cancelled'; reason = 'root-stopped'; finalStep = null
@@ -83,7 +84,7 @@ export async function driveAgentTurn(runtime: AgentRuntime, turnId: SessionEvent
     }
     await expireAgentRoot(runtime, turn.root)
     const amount = actionBudget(classification.actions.map(item => item.route))
-    const decision = await runtime.journal.append(events.agentStepDecidedEvent, state => {
+    const decision = await runtime.journal.append(runtime.events.stepDecided, state => {
       const current = state.roots.find(item => item.id === turn.root)!
       const observedAt = clockTimestamp(runtime.clock)
       const admitted = classification.classification === 'actions' && classification.actions.length <= spec.payload.limits.maxActionsPerStep && classification.reason !== 'invalid-control-batch' && !signal.aborted
@@ -93,13 +94,14 @@ export async function driveAgentTurn(runtime: AgentRuntime, turnId: SessionEvent
         reassemblies: Math.min(reassemblies, spec.payload.limits.maxReassemblies), observedAt }
     })
     const admitted = decision.payload.admitted
-    let waiting = false; let failedAction = false; let uncertain = false
+    let waiting = false; let failedAction = false; let uncertain = false; let questionLimit = false
     for (const [index, intent] of classification.actions.entries()) {
       const action = { eventId: decision.stored.eventId, index }
       const result: AgentActionResult = admitted && !uncertain ? await executeAgentAction(runtime, turnId, action, intent, signal)
         : { kind: 'not-started' as const, reason: uncertain ? 'prior-result-uncertain' : 'batch-not-admitted' }
-      await runtime.journal.append(events.agentActionSettledEvent, () => ({ action, result }))
+      await runtime.journal.append(runtime.events.actionSettled, () => ({ action, result }))
       waiting ||= result.kind === 'wait'
+      questionLimit ||= result.kind === 'not-started' && intent.route === 'ask-parent' && result.reason === 'question-limit'
       failedAction ||= result.kind === 'not-started' || result.kind === 'communication-not-accepted'
       if (result.kind === 'tool') {
         const tool: import('../tool/projection.js').ToolInvocationSnapshot | undefined = projectToolSession(runtime.session.snapshot()).invocations.find(item => item.state === 'settled' && item.settled.stored.eventId === result.settled)
@@ -119,6 +121,11 @@ export async function driveAgentTurn(runtime: AgentRuntime, turnId: SessionEvent
     if (agentRootUsageUnknown(runtime.session.snapshot(), view(), root.id)) { await finish('failed', 'model-usage-unknown', 'failed'); return }
     if (classification.classification === 'final') {
       const state = view()
+      const sources = runtime.session.snapshot().history.at(-1)!.events.filter(item => item.kind === 'known')
+      if (state.subagents.delegations.filter(item => item.payload.parentRoot === turn.root).some(item => {
+        const closure = delegationClosure(state, item.stored.eventId, sources)
+        return !closure.businessResolved || !closure.executionReleased || !closure.adopted
+      })) { await finish('failed', 'unresolved-delegation', 'failed'); return }
       const unfulfilled = hasUnfulfilledAgentReply(turn.root, state, projectCommunicationFacts(runtime.session.snapshot()))
       if (unfulfilled) { await finish('failed', 'reply-obligation-unsatisfied', 'failed'); return }
       await finish('completed', classification.reason, 'completed', step.stored.eventId); return
@@ -127,6 +134,7 @@ export async function driveAgentTurn(runtime: AgentRuntime, turnId: SessionEvent
       await finish('failed', classification.reason, 'failed'); return
     }
     if (!admitted && classification.reason !== 'invalid-control-batch') { await finish('budget-exhausted', 'action-budget', 'budget-exhausted'); return }
+    if (questionLimit) { await finish('failed', 'question-limit', 'failed'); return }
     if (failedAction && spec.payload.errorFeedback === 'stop') { await finish('failed', 'action-failed', 'failed'); return }
   }
 }

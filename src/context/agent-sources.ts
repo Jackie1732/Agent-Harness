@@ -25,8 +25,9 @@ export function agentTurnUnits(snapshot: SessionSnapshot, state: AgentSessionSna
     const input = state.inputs.find(item => inputKey(item.reference) === inputKey(turn.started.payload.input))
     if (input === undefined) invalidSource('agent-claim-source')
     const reference: ContextUnitReference = { eventId: input.reference.eventId, selector: input.reference.kind === 'user' ? 'user-input' : 'peer-message' }
-    units.push({ reference, sourceEventIds: [input.reference.eventId, turn.started.stored.eventId], messages: [agentDataMessage(
-      input.message === null ? 'agent-user-input' : 'agent-peer-input', input.reference, input.input ?? input.message!)] })
+    units.push({ reference, sourceEventIds: [input.reference.eventId, turn.started.stored.eventId, ...(input.protocol === undefined ? [] : [input.protocol.inbox])], messages: [agentDataMessage(
+      input.protocol === undefined ? input.message === null ? 'agent-user-input' : 'agent-peer-input' : `subagent-${input.protocol.kind}`,
+      input.reference, input.input ?? input.message ?? snapshot.history.at(-1)!.events.find(item => item.stored.eventId === input.reference.eventId)!.stored.payload)] })
     for (const step of state.steps.filter(item => item.opened.payload.turn === turn.started.stored.eventId)) {
       const decision = step.decided
       if (decision === null) continue

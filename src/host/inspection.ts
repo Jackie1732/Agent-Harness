@@ -10,6 +10,9 @@ import type { ResolvedHostSpec } from './config.js'
 import { hostRuntimeEventCatalog } from './initialization.js'
 import { projectHostSession } from './session-projection.js'
 import { acquireHostStorageLock } from './storage-lock.js'
+import { discoverHostDelegations } from './delegation-discovery.js'
+import { delegationReport } from '../subagent/report.js'
+import { effectiveResourceRelease } from '../subagent/resource-evidence.js'
 
 export interface HostInspectionMember {
   readonly agentKey: string
@@ -21,25 +24,37 @@ export interface HostInspectionMember {
   readonly report: ReturnType<typeof projectAgentReport>
 }
 
-/** Read saved Host facts under the same exclusive root ownership gate, without Providers. */
+export interface HostInspectionV2 { readonly members: readonly HostInspectionMember[]; readonly subagents: ReturnType<typeof delegationReport> }
+export function inspectHost(spec: ResolvedHostSpec, options: { readonly clock?: Clock; readonly protocolVersion: 2 }): Promise<HostInspectionV2>
+export function inspectHost(spec: ResolvedHostSpec, options?: { readonly clock?: Clock; readonly protocolVersion?: 1 }): Promise<readonly HostInspectionMember[]>
+/** Read saved facts under exclusive root ownership; explicit v2 adds bounded public delegation state. */
 export async function inspectHost(
   spec: ResolvedHostSpec,
-  options: { readonly clock?: Clock } = {},
-): Promise<readonly HostInspectionMember[]> {
+  options: { readonly clock?: Clock; readonly protocolVersion?: 1 | 2 } = {},
+): Promise<readonly HostInspectionMember[] | HostInspectionV2> {
   const lock = await acquireHostStorageLock(spec.storage.root, spec.hostKey)
   const backend = new FileSessionBackend({ root: lock.root, maxRecordBytes: spec.storage.maxRecordBytes })
   const repository = new SessionRepository({ backend, catalog: hostRuntimeEventCatalog,
     maxLineageDepth: spec.storage.maxLineageDepth, clock: options.clock ?? systemClock })
   try {
     const reports = []
+    const parents = []
     for (const member of spec.members.filter(isLocalHostMember)) {
       const snapshot = await repository.read(parseSessionId(member.sessionId))
       const binding = projectHostSession(snapshot)
+      parents.push({ parentKey: member.agentKey, snapshot })
       reports.push(Object.freeze({ agentKey: member.agentKey, sessionId: member.sessionId,
         bindingMode: binding.ready?.payload.mode ?? null, localPosition: snapshot.localPosition,
         lifecycle: snapshot.lifecycle, openRecovery: projectAgentSession(snapshot).openRecovery, report: projectAgentReport(snapshot) }))
     }
-    return Object.freeze(reports)
+    if (options.protocolVersion !== 2) return Object.freeze(reports)
+    const discovered = await discoverHostDelegations(spec, repository)
+    return Object.freeze({ members: Object.freeze(reports), subagents: delegationReport(parents, spec.scheduling.maxReportEntries, id => {
+      const found = discovered.find(item => item.requested.stored.eventId === id)
+      const child = found?.child == null ? null : projectAgentSession(found.child)
+      return { suspended: found?.closed === false, failed: false, recoveryRequired: child !== null && (child.openRun !== null || child.openRecovery !== null
+        || child.subagents.resources.some(item => effectiveResourceRelease(item, child.subagents.recoveries)?.outcome !== 'released')) }
+    }) })
   } finally {
     await repository.dispose()
     await lock.dispose()

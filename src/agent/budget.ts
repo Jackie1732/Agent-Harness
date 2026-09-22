@@ -1,4 +1,5 @@
 import type { AgentBudget } from './contract.js'
+import type { AgentActionIntent } from './event-contract.js'
 import { invalidAgent } from './errors.js'
 import { exact, integer, record } from './validation.js'
 
@@ -23,10 +24,10 @@ export function reserveAgentBudget(used: AgentBudget, amount: AgentBudget, maxim
   return Object.freeze(next)
 }
 
-export function actionBudget(routes: readonly ('tool' | 'send' | 'reply' | 'wait' | 'ask' | 'invalid')[]): AgentBudget {
+export function actionBudget(routes: readonly AgentActionIntent['route'][]): AgentBudget {
   return Object.freeze({ ...emptyAgentBudget,
     tools: routes.filter(route => route === 'tool').length,
     messages: routes.filter(route => route === 'send' || route === 'reply').length,
-    waits: routes.filter(route => route === 'wait' || route === 'ask').length,
+    waits: routes.filter(route => ['wait', 'ask', 'spawn', 'await-subagent', 'answer-subagent', 'ask-parent'].includes(route)).length,
   })
 }

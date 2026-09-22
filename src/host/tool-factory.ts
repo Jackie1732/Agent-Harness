@@ -1,3 +1,5 @@
+import type { HostExecutionExtensions } from './slot.js'
+import { createWorkspaceWriteTextProvider, createWriteTextDefinition } from '../tool/providers/workspace-write.js'
 import { EffectOwner } from '../effect/owner.js'
 import type { Scope } from '../extension/types.js'
 import type { SessionHandle } from '../session/session-handle.js'
@@ -21,16 +23,23 @@ export async function createHostTools(
   member: ResolvedHostLocalMember,
   protectedRoots: readonly string[],
   scope: Scope,
+  extensions: HostExecutionExtensions = {},
 ): Promise<HostToolResources | undefined> {
-  if (member.tools.kind === 'none') return undefined
-  const configured = member.tools
+  const { workspaceAccess: access, childTools, workspaceLease } = extensions
+  const child = childTools?.kind === 'workspace-text' ? childTools : undefined
+  if (member.tools.kind === 'none' && child === undefined) return undefined
+  const configured = child !== undefined && workspaceLease !== undefined ? { ...child, rootId: workspaceLease.request.resourceId, rootPath: workspaceLease.root.path,
+    protectedRoots: [], policy: { policyId: 'delegated-workspace', version: 1, decision: 'allow' as const, reasonCode: 'delegation-grant' } } : member.tools
+  if (configured.kind === 'none') return undefined
   const owner = new EffectOwner(`tools:${member.agentKey}`)
   const policyLife = new AbortController()
   let handedOff = false
   try {
     const lease = await owner.run('tool resources', async effect => {
       const registry = await effect.apply('registry', () => new ToolRegistry(configured.schemaLimits), value => value.dispose())
-      const provider = await effect.apply('provider', () => createWorkspaceReadTextProvider({
+      if (child?.read !== false) {
+      const provider = await effect.apply('read provider', () => createWorkspaceReadTextProvider({
+        ...(access === undefined ? {} : { access }),
         rootId: configured.rootId,
         rootPath: configured.rootPath,
         protectedRoots: [...configured.protectedRoots, ...protectedRoots],
@@ -41,6 +50,11 @@ export async function createHostTools(
         schemaLimits: configured.schemaLimits,
       }), value => value.dispose())
       await effect.apply('registration', () => registry.register(scope, createReadTextDefinition(configured.schemaLimits), provider), value => value.dispose())
+      }
+      if (child?.write && access !== undefined) {
+        const writer = await effect.apply('write provider', () => createWorkspaceWriteTextProvider({ ...configured, maxWriteBytes: child.maxWriteBytes, access, protectedRoots: [...configured.protectedRoots, ...protectedRoots] }), value => value.dispose())
+        await effect.apply('write registration', () => registry.register(scope, createWriteTextDefinition(configured.schemaLimits), writer), value => value.dispose())
+      }
       const configuredPolicy = configured.policy
       const policy: ToolPolicy = Object.freeze({
         policyId: configuredPolicy.policyId,

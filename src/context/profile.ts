@@ -41,6 +41,13 @@ export function decodeAgentContextProfile(value: unknown): ContextProfile {
   return result
 }
 
+/** V3 preserves protocol source labels for claimed delegation inputs. */
+export function decodeSubagentContextProfile(value: unknown): ContextProfile {
+  const result = decodeProfile(value, 'context-neutral/v3')
+  if (result.purpose !== 'generation' || result.historyScope !== 'local-only') invalidContext('agent-profile-purpose')
+  return result
+}
+
 function decodeProfile(value: unknown, renderer: ContextProfile['rendererVersion']): ContextProfile {
   const input = record(contextJson(value))
   exact(input, ['profileKey', 'purpose', 'previousEventId', 'sections', 'toolNames', 'rendererVersion', 'historyScope', 'tokenAccounting', 'budget'])

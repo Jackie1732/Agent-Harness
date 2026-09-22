@@ -1,4 +1,5 @@
 import { pendingOutboxContext } from './communication-history.js'
+import { subagentObligationUnits } from './subagent-obligations.js'
 import type { SessionSnapshot } from '../session/types.js'
 import { projectAgentSession } from '../agent/projection.js'
 import { agentNativeToolDefinitions } from '../agent/native-actions.js'
@@ -17,7 +18,7 @@ import { retrieveSessionMemory } from './memory.js'
 import { memoryReferences } from './material-state.js'
 import { resolveSelectedCompactions } from './compaction-replay.js'
 import { prepareContextFacts } from './prepare.js'
-import { decodeAgentContextProfile } from './profile.js'
+import { decodeAgentContextProfile, decodeSubagentContextProfile } from './profile.js'
 import { decodeCapturedFacts } from './surface-codec.js'
 import { digest, equalJson } from './validation.js'
 import { knownEvent, requireSourceIndex } from './sources.js'
@@ -34,8 +35,8 @@ export function assembleAgentContext(snapshot: SessionSnapshot, consumerInput: A
   if (spec?.stored.eventId !== consumer.spec || state.openRun !== consumer.run || state.openTurn !== consumer.turn
     || turn?.started.payload.run !== consumer.run || step?.opened.payload.turn !== consumer.turn || step.decided !== null) invalidSource('agent-context-consumer')
   const rawProfile = knownEvent(requireSourceIndex(snapshot), spec.payload.profileEventId, 'context/profile-recorded')
-  if (rawProfile.stored.payloadVersion !== 2) invalidSource('agent-profile-version')
-  const profile = decodeAgentContextProfile(rawProfile.payload)
+  if (rawProfile.stored.payloadVersion !== (spec.payload.protocolVersion === 1 ? 2 : 3)) invalidSource('agent-profile-version')
+  const profile = spec.payload.protocolVersion === 1 ? decodeAgentContextProfile(rawProfile.payload) : decodeSubagentContextProfile(rawProfile.payload)
   if (profile.tokenAccounting.mode === 'exact-required') return { kind: 'blocked', reason: 'estimator-unavailable', references: [] }
   if (profile.budget.outputReserveTokens < spec.payload.target.maxOutputTokens) invalidSource('agent-output-reserve')
   const facts = prepareContextFacts(snapshot, profile)
@@ -43,7 +44,7 @@ export function assembleAgentContext(snapshot: SessionSnapshot, consumerInput: A
   const captured = decodeCapturedFacts(capturedInput)
   if (!equalJson(captured.tools.map(tool => tool.definition.name), spec.payload.toolNames)) return { kind: 'blocked', reason: 'tool-unavailable', references: [] }
   const chain = state.turns.filter(item => item.root === turn.root)
-  const required = [...agentTurnUnits(snapshot, state, chain)]
+  const required = [...agentTurnUnits(snapshot, state, chain), ...subagentObligationUnits(state, turn.root)]
   const optional: AgentContextUnit[][] = []
   const historyPolicy = spec.payload.context.history
   const historyRoots = historyPolicy.mode === 'none' || historyPolicy.maxRoots === 0 ? []
@@ -79,6 +80,7 @@ export function assembleAgentContext(snapshot: SessionSnapshot, consumerInput: A
     sourceEventIds: [spec.stored.eventId, step.opened.stored.eventId, ...pendingOutbox.map(item => item.acceptedEventId), ...state.waits.filter(wait => wait.settled === null).map(wait => wait.created.stored.eventId)],
     messages: [agentDataMessage('agent-runtime', { spec: spec.stored.eventId, step: step.opened.stored.eventId }, {
       label: spec.payload.label, responsibility: spec.payload.responsibility, nonGoals: spec.payload.nonGoals, peers: spec.payload.peers, messageKinds: spec.payload.messages,
+      ...(spec.payload.protocolVersion === 2 ? { delegationAuthority: spec.payload.subagents } : {}),
       root: turn.root, budgetUsed: state.roots.find(item => item.id === turn.root)!.budget, budgetLimits: spec.payload.budget, pendingWaits, pendingOutbox,
     })] })
   const selectedInputs = new Set(chain.map(item => inputKey(item.started.payload.input)))
@@ -141,7 +143,7 @@ export function assembleAgentContext(snapshot: SessionSnapshot, consumerInput: A
     messageIndex++
   }
   if (provenance.length > profile.budget.maxProvenanceEntries) return { kind: 'resource-limit', limit: 'provenance', maximum: profile.budget.maxProvenanceEntries }
-  const assembly: AgentContextAssembly = { purpose: 'generation', rendererVersion: 'context-neutral/v2', consumer, claimedInput: turn.started.payload.input,
+  const assembly: AgentContextAssembly = { purpose: 'generation', rendererVersion: profile.rendererVersion, consumer, claimedInput: turn.started.payload.input,
     requiredTurns: chain.map(item => item.started.stored.eventId), historyRoots,
     deferredInputs: state.inputs.filter(item => !selectedInputs.has(inputKey(item.reference)) && ['queued', 'reserved', 'claimed'].includes(item.status)).map(item => item.reference),
     coverage: facts.index.coverage, selection, captured, required: required.map(unit => unit.reference),
@@ -158,5 +160,5 @@ export function assembleAgentContext(snapshot: SessionSnapshot, consumerInput: A
   for (const [limit, available] of [['assembly-bytes', profile.budget.maxAssemblyBytes], ['session-record-bytes', sessionMaxRecordBytes]] as const) {
     if (measuredAssembly.budget.assemblyEnvelopeUpperBoundBytes > available) return { kind: 'budget-exceeded', limit, required: measuredAssembly.budget.assemblyEnvelopeUpperBoundBytes, available, references: assembly.required }
   }
-  return { kind: 'ready', assembly: decodeAgentContextAssembly(measuredAssembly), request }
+  return { kind: 'ready', assembly: decodeAgentContextAssembly(measuredAssembly, spec.payload.protocolVersion === 1 ? 2 : 3), request }
 }

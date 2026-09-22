@@ -1,3 +1,4 @@
+import { assertDelegatedWriteCapacity } from '../subagent/write-capacity.js'
 import type { SessionId, SessionLogPosition } from '../session/ids.js'
 import { formatSessionEventId, sessionSequence } from '../session/ids.js'
 import type { CommittedSessionEvent, SessionProjectionCoverage, SessionSnapshot } from '../session/types.js'
@@ -49,6 +50,7 @@ export function projectToolSession(snapshot: SessionSnapshot): ToolSessionSnapsh
       if (type === toolRequestedEvent.type) {
         const payload = toolRequestedEvent.decode(event.payload)
         if (pending !== null || records.has(payload.invocationId)) invalid()
+        assertDelegatedWriteCapacity(snapshot, payload, sequence)
         validateRequestSource(payload, snapshot, sequence)
         const key = sourceKey(payload.source)
         if (key !== null) { if (sources.has(key)) invalid(); sources.add(key) }

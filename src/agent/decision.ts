@@ -30,11 +30,16 @@ export function classifyAgentModel(
           case 'agent_reply_message': route = 'reply'; break
           case 'agent_await_reply': route = 'wait'; break
           case 'agent_ask_user': route = 'ask'; break
+          case 'agent_spawn_subagent': if (spec.protocolVersion === 2) route = 'spawn'; break
+          case 'agent_await_subagent': if (spec.protocolVersion === 2) route = 'await-subagent'; break
+          case 'agent_answer_subagent': if (spec.protocolVersion === 2) route = 'answer-subagent'; break
+          case 'agent_ask_parent': if (spec.protocolVersion === 2) route = 'ask-parent'; break
+          case 'agent_report_progress': if (spec.protocolVersion === 2) route = 'progress'; break
         }
       }
     }
     return { source: { invocationId: result.invocationId, outputBlockIndex: block.index }, route }
   })
-  return { classification: 'actions', reason: actions.length > 1 && actions.some(action => action.route === 'wait' || action.route === 'ask')
+  return { classification: 'actions', reason: actions.length > 1 && actions.some(action => ['wait', 'ask', 'spawn', 'await-subagent', 'answer-subagent', 'ask-parent'].includes(action.route))
     ? 'invalid-control-batch' : 'model-actions', actions }
 }

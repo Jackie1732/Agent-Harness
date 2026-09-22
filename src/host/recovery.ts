@@ -1,3 +1,4 @@
+import { recoverHostDelegations } from './delegation-recovery.js'
 import type { Clock } from '../foundation/clock.js'
 import { systemClock } from '../foundation/clock.js'
 import { projectAgentSession } from '../agent/projection.js'
@@ -18,17 +19,21 @@ export interface RecoverHostOptions {
   readonly maxRecoveryWrites: number
   readonly maxJournalConflicts: number
   readonly clock?: Clock
+  readonly domainSupersedes?: Readonly<Record<string, SessionEventId | null>>
   readonly supersedes?: Readonly<Record<string, SessionEventId | null>>
 }
 
 /** Reconcile interrupted local facts without loading Providers, tools, mailboxes or network listeners. */
 export async function recoverHost(spec: ResolvedHostSpec, options: RecoverHostOptions) {
+  if (spec.schemaVersion === 1 && Object.keys(options.domainSupersedes ?? {}).length > 0) throw new HostError('HOST_CONFIG_INVALID', 'domain-recovery-requires-host-v2')
+  if (spec.schemaVersion === 2 && Object.keys(options.supersedes ?? {}).length > 0) throw new HostError('HOST_CONFIG_INVALID', 'host-v2-requires-domain-supersedes')
   const clock = options.clock ?? systemClock
   const lock = await acquireHostStorageLock(spec.storage.root, spec.hostKey)
   const backend = new FileSessionBackend({ root: lock.root, maxRecordBytes: spec.storage.maxRecordBytes })
   const repository = new SessionRepository({ backend, catalog: hostRuntimeEventCatalog,
     maxLineageDepth: spec.storage.maxLineageDepth, clock })
   try {
+    if (spec.schemaVersion === 2) return await recoverHostDelegations(spec, repository, options, clock)
     const results = []
     for (const member of spec.members.filter(isLocalHostMember)) {
       const session = await repository.open(parseSessionId(member.sessionId))

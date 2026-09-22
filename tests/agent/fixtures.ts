@@ -2,7 +2,7 @@ import { SessionContext, toolSessionEventDefinitions, communicationSessionEventD
 import type { ModelProvider } from '../../src/model/contract.js'
 import type { MessageCatalog } from '../../src/communication/message-catalog.js'
 import type { SessionBackend } from '../../src/session/backend.js'
-import type { AgentSpec } from '../../src/agent/contract.js'
+import type { AgentSpecV1 } from '../../src/agent/contract.js'
 import { AgentJournal } from '../../src/agent/journal.js'
 import * as events from '../../src/agent/session-events.js'
 import { emptyMessageCatalog, profile, repository, scriptedModel } from '../context/fixtures.js'
@@ -10,13 +10,13 @@ import { emptyMessageCatalog, profile, repository, scriptedModel } from '../cont
 export const clock = { now: () => 1_789_257_600_000 }
 export const observedAt = new Date(clock.now()).toISOString()
 
-export async function agentFixture(overrides: Partial<AgentSpec> = {}, providerInput?: ModelProvider, messageCatalog: MessageCatalog = emptyMessageCatalog, backend?: SessionBackend) {
+export async function agentFixture(overrides: Partial<AgentSpecV1> = {}, providerInput?: ModelProvider, messageCatalog: MessageCatalog = emptyMessageCatalog, backend?: SessionBackend) {
   const repo = repository(backend, [...events.agentSessionEventDefinitions, ...toolSessionEventDefinitions, ...communicationSessionEventDefinitions])
   const session = await repo.create()
   const context = new SessionContext({ session, messageCatalog })
   const provider = providerInput ?? scriptedModel()
   const p = await context.recordProfile(profile('generation', { rendererVersion: 'context-neutral/v2' }))
-  const spec: AgentSpec = { protocolVersion: 1, label: 'test', responsibility: 'answer tasks', nonGoals: [], profileEventId: p.stored.eventId,
+  const spec: AgentSpecV1 = { protocolVersion: 1, label: 'test', responsibility: 'answer tasks', nonGoals: [], profileEventId: p.stored.eventId,
     target: { model: 'fixture-model', maxOutputTokens: 256, provider: provider.descriptor }, toolNames: [], nativeActions: [], peers: [], messages: [],
     context: { history: { mode: 'none', maxRoots: 0 }, memory: { required: [], query: { requiredTags: [], queryTags: [], topK: 0 } }, compactions: [] },
     budget: { models: 5, steps: 5, tools: 5, messages: 5, waits: 5, outputTokens: 2048 }, rootDurationMs: 60_000,

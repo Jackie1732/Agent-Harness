@@ -52,7 +52,7 @@ export type ContextProfile = {
   readonly previousEventId: SessionEventId | null
   readonly sections: readonly PromptSection[]
   readonly toolNames: readonly string[]
-  readonly rendererVersion: 'context-neutral/v1' | 'context-neutral/v2'
+  readonly rendererVersion: 'context-neutral/v1' | 'context-neutral/v2' | 'context-neutral/v3'
   readonly historyScope: 'local-only' | 'allow-lineage'
   readonly tokenAccounting: ContextTokenAccounting
   readonly budget: ContextBudgetLimits

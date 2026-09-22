@@ -1,3 +1,4 @@
+import type { DelegationChannels } from './delegation-channels.js'
 import type { Clock } from '../foundation/index.js'
 import { SerialGate } from '../foundation/serial-gate.js'
 import type { SessionAddress, SessionHandle } from '../session/index.js'
@@ -23,6 +24,7 @@ import type {
 
 /** Dependencies of the private durable Mailbox transition owner. */
 export interface MailboxJournalOptions {
+  readonly channels?: DelegationChannels
   readonly handle: SessionHandle
   readonly catalog: MessageCatalog
   readonly policy: CommunicationPolicy
@@ -62,7 +64,8 @@ export class MailboxJournal {
     authenticatedSender: SessionAddress,
     acceptNew: boolean,
   ): Promise<MessageDeliveryOutcome> {
-    return this.#receiveGate.run(() => this.#receive(envelope, authenticatedSender, acceptNew))
+    return this.#receiveGate.run(() => this.#options.channels === undefined ? this.#receive(envelope, authenticatedSender, acceptNew)
+      : this.#options.channels.run(() => this.#receive(envelope, authenticatedSender, acceptNew)))
   }
 
   settleInbox(
@@ -117,8 +120,10 @@ export class MailboxJournal {
       type: envelope.type,
       payloadVersion: envelope.payloadVersion,
     }))
-    if (decision.kind === 'deny') return Object.freeze({ kind: 'rejected', code: 'receive-forbidden' })
-    if (pendingCount(snapshot.inbox) >= this.#options.limits.maxPendingInbox) {
+    const protocol = envelope.type.startsWith('subagent/')
+    if (protocol ? !this.#options.channels?.authorizeReceive(envelope) : decision.kind === 'deny') return Object.freeze({ kind: 'rejected', code: 'receive-forbidden' })
+    if (this.#options.channels !== undefined ? !this.#options.channels.hasCapacity(this.#options.handle, 'inbox', envelope)
+      : pendingCount(snapshot.inbox) >= this.#options.limits.maxPendingInbox) {
       return Object.freeze({ kind: 'retry', code: 'recipient-backpressure' })
     }
     try {

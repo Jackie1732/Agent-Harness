@@ -18,8 +18,9 @@ export function hostExitCode(report: HostRunReport): number {
 }
 
 /** Own CLI streams, bounded command admission and signal subscriptions around one Host. */
-export async function interactive(spec: ResolvedHostSpec, mode: 'run' | 'serve', io: HostCliIo, protectedRoots: readonly string[]): Promise<number> {
+export async function interactive(spec: ResolvedHostSpec, mode: 'run' | 'serve', io: HostCliIo, protectedRoots: readonly string[], protocolVersion: 1 | 2 = 1): Promise<number> {
   const refs = new Set(spec.members.filter(isLocalHostMember).flatMap(member => member.model.kind === 'scripted-fixed' ? [] : [member.model.credentialRef]))
+  if (spec.schemaVersion === 2 && spec.subagents.kind === 'enabled') for (const template of spec.subagents.templates) if (template.model.kind !== 'scripted-fixed') refs.add(template.model.credentialRef)
   const credentials = Object.fromEntries([...refs].flatMap(reference => process.env[reference] === undefined ? [] : [[reference, process.env[reference]!]]))
   const host = await openHost(spec, { credentials, bindings: { protectedRoots } })
   const write = createJsonLineWriter(io.stdout, spec.cli.maxOutputBytes, spec.cli.outputDrainTimeoutMs)
@@ -39,18 +40,18 @@ export async function interactive(spec: ResolvedHostSpec, mode: 'run' | 'serve',
   const terminate = (): void => { signalCode = 143; io.stdin.destroy(); shutdown('cancel') }
   process.on('SIGINT', interrupt); process.on('SIGTERM', terminate)
   try {
-    await write({ protocolVersion: 1, kind: 'ready', hostKey: spec.hostKey, instanceId: host.instanceId, mode })
+    await write({ protocolVersion, kind: 'ready', hostKey: spec.hostKey, instanceId: host.instanceId, mode })
     if (mode === 'serve') driver = host.serve().catch(() => { infrastructureError = true; shutdown('cancel'); return undefined })
     try {
       for await (const command of boundedJsonLines(io.stdin, spec.cli.maxLineBytes, { recover: true })) {
         let requestId: string | undefined
         try {
           if (command instanceof HostError) throw command
-          const envelope = commandEnvelope(command)
+          const envelope = commandEnvelope(command, protocolVersion)
           requestId = envelope.requestId
           if (inFlight.has(requestId) || recent.has(requestId)) {
             usageError = true
-            await write({ protocolVersion: 1, kind: 'error', error: hostDiagnostic(new HostError('HOST_PROTOCOL_INVALID', 'duplicate-request-id')) })
+            await write({ protocolVersion, kind: 'error', error: hostDiagnostic(new HostError('HOST_PROTOCOL_INVALID', 'duplicate-request-id')) })
             continue
           }
           const control = ['cancel', 'shutdown', 'pause', 'resume', 'report'].includes(envelope.kind)
@@ -59,13 +60,13 @@ export async function interactive(spec: ResolvedHostSpec, mode: 'run' | 'serve',
           while (lane.size >= maximum) await Promise.race(lane)
           inFlight.add(requestId)
           const id = requestId
-          const execute = () => executeCommand(host, command)
+          const execute = () => executeCommand(host, command, protocolVersion)
           const response = control ? Promise.resolve().then(execute) : inputTail.then(execute)
           if (!control) inputTail = response.catch(() => undefined)
           const task = response.then(value => write(value), error => {
             if (isHostUsageError(error)) usageError = true
             else { infrastructureError = true; shutdown(spec.shutdown.mode) }
-            return write({ protocolVersion: 1, requestId: id, kind: 'error', error: hostDiagnostic(error) })
+            return write({ protocolVersion, requestId: id, kind: 'error', error: hostDiagnostic(error) })
           }).catch(() => { infrastructureError = true; shutdown(spec.shutdown.mode) }).finally(() => {
             lane.delete(task); inFlight.delete(id); recent.add(id)
             // Request IDs are correlations, not durable or lifetime submission deduplication.
@@ -75,7 +76,7 @@ export async function interactive(spec: ResolvedHostSpec, mode: 'run' | 'serve',
           lane.add(task)
         } catch (error) {
           usageError = true
-          await write({ protocolVersion: 1, kind: 'error', ...(requestId === undefined ? {} : { requestId }), error: hostDiagnostic(error) })
+          await write({ protocolVersion, kind: 'error', ...(requestId === undefined ? {} : { requestId }), error: hostDiagnostic(error) })
         }
       }
     } catch (error) {
@@ -85,8 +86,10 @@ export async function interactive(spec: ResolvedHostSpec, mode: 'run' | 'serve',
     let result = 0
     if (mode === 'run' && host.status === 'ready') {
       const report = await host.run()
-      await write({ protocolVersion: 1, kind: 'complete', report })
+      await write({ protocolVersion, kind: 'complete', report: protocolVersion === 1 ? report : { ...report, subagents: host.delegationReport() } })
       result = hostExitCode(report)
+      if (host.delegationReport().blocked > 0 || host.delegationReport().failed > 0) result = 11
+      else if (host.delegationReport().unresolved > 0 && result === 0) result = 10
       await host.shutdown({ mode: 'drain' })
     } else if (driver !== undefined) await driver
     if (infrastructureError || host.status === 'failed') return 1

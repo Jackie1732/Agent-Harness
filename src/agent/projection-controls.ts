@@ -14,6 +14,13 @@ export function matchesAgentWait(wait: AgentWaitState, input: AgentInputState, s
   if (hasPendingAgentAbandon(state.controls.values(), input, 2)) return false
   const descriptor = result.descriptor
   if (descriptor.kind === 'user') return input.input?.kind === 'answer' && equal(input.input.wait, wait.reference)
+  if (descriptor.kind === 'delegation') return input.protocol?.delegation === descriptor.delegation && ['question', 'result', 'failure'].includes(input.protocol.kind)
+  if (descriptor.kind === 'parent-answer') {
+    if (input.protocol?.delegation !== descriptor.delegation || input.protocol.kind !== 'answer' || input.message === null) return false
+    const question = [...state.sources.values()].find(item => item.stored.type === 'communication/outbox-accepted' && item.stored.payloadVersion === 2
+      && equal(record(item.payload).sendKey, { eventId: descriptor.question, index: 0 }))
+    return question !== undefined && input.message.replyTo === record(record(question.payload).envelope).messageId
+  }
   const envelope = input.message
   if (envelope === null) return false
   const outgoing = state.sources.get(descriptor.outboxEventId)
@@ -34,12 +41,13 @@ export function applyWaitSettled(state: AgentProjectionState, event: CommittedSe
   const root = requireEntry(state.roots, descriptor.root, 'missing-root')
   if (root.outcome !== null) invalidAgent('wait-root-terminal')
   if (new Set(p.supportedMessages.map(item => `${item.type}@${item.payloadVersion}`)).size !== p.supportedMessages.length
-    || p.supportedMessages.some(item => !requireSpec(state).payload.messages.some(kind => kind.type === item.type && kind.payloadVersion === item.payloadVersion))) invalidAgent('wait-support-observation')
+    || p.supportedMessages.some(item => !requireSpec(state).payload.messages.some(kind => kind.type === item.type && kind.payloadVersion === item.payloadVersion)
+      && !(requireSpec(state).payload.protocolVersion === 2 && item.payloadVersion === 1 && ['task', 'question', 'answer', 'progress', 'result'].some(kind => item.type === `subagent/${kind}`)))) invalidAgent('wait-support-observation')
   const eligible = [...state.inputs.values()].filter(input => matchesAgentWait(wait, input, state) && (input.message === null
     || p.supportedMessages.some(kind => kind.type === input.message!.type && kind.payloadVersion === input.message!.payloadVersion)))
   if (p.outcome !== 'unavailable' && p.outboxTerminal !== null) invalidAgent('unexpected-outbox-terminal')
   if (p.outcome === 'matched') {
-    if (p.response === null || root.stopControl !== null) invalidAgent('match-stopped')
+    if (p.response === null || root.stopControl !== null || requireSpec(state).payload.protocolVersion === 2 && p.observedAt >= root.deadline) invalidAgent('match-stopped')
     const input = requireEntry(state.inputs, inputKey(p.response), 'missing-response')
     if (!matchesAgentWait(wait, input, state) || eligible[0] !== input) invalidAgent('response-mismatch')
     input.status = 'reserved'; input.reservedBy = p.wait; input.everMatched = true
@@ -131,7 +139,7 @@ export function applyControlSettled(state: AgentProjectionState, event: Committe
       })
       if (reserved.length > 1) invalidAgent('multiple-root-responses')
       const response = reserved[0]
-      const disposition = response === undefined ? null : response.message === null ? 'not-adopted' : 'release-peer'
+      const disposition = response === undefined ? null : response.message === null || response.protocol !== undefined ? 'not-adopted' : 'release-peer'
       if (p.responseDisposition !== disposition) invalidAgent('stop-response-disposition')
       if (response !== undefined) {
         response.status = disposition === 'release-peer' ? 'queued' : 'not-adopted'

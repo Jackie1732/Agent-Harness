@@ -1,3 +1,4 @@
+import type { DelegationChannelLease } from './delegation-channels.js'
 import { clockTimestamp } from '../foundation/clock.js'
 import { canonicalJsonBytes } from '../foundation/canonical-json.js'
 import type { JsonValue } from '../foundation/json.js'
@@ -33,7 +34,7 @@ export class OutboxAcceptance {
   reply<T extends JsonValue>(inboxId: MessageId, definition: MessageDefinition<T>, decoded: T): Promise<OutgoingMessageAccepted<T>> {
     return this.#gate.run(() => this.#commit(definition, this.#replyRequest(inboxId), decoded, inboxId)) as Promise<OutgoingMessageAccepted<T>>
   }
-  sendOnce(keyInput: MessageSendKey, commandInput: MessageSendCommand): Promise<OutgoingMessageAccepted> {
+  sendOnce(keyInput: MessageSendKey, commandInput: MessageSendCommand, lease?: DelegationChannelLease): Promise<OutgoingMessageAccepted> {
     const key = decodeSendKey(keyInput)
     const command = decodeSendCommand(commandInput)
     return this.#gate.run(() => {
@@ -44,7 +45,7 @@ export class OutboxAcceptance {
       if (definition === undefined) throw new CommunicationError('MESSAGE_DEFINITION_UNREGISTERED', 'new keyed send requires its message definition')
       const payload = decodeMessagePayload(definition, command.payload)
       const request = command.kind === 'send' ? command.request : this.#replyRequest(command.inboxMessageId)
-      return this.#commit(definition, request, payload, command.kind === 'reply' ? command.inboxMessageId : undefined, { key, command })
+      return this.#commit(definition, request, payload, command.kind === 'reply' ? command.inboxMessageId : undefined, { key, command }, lease)
     })
   }
   #assertKey(key: MessageSendKey): void {
@@ -71,12 +72,22 @@ export class OutboxAcceptance {
   }
   async #commit(
     definition: MessageDefinition, request: MessageSendRequest, payload: JsonValue, replyTo?: MessageId,
-    keyed?: { readonly key: MessageSendKey; readonly command: MessageSendCommand },
+    keyed?: { readonly key: MessageSendKey; readonly command: MessageSendCommand }, lease?: DelegationChannelLease,
   ): Promise<OutgoingMessageAccepted> {
+    return this.options.channels === undefined ? this.#accept(definition, request, payload, replyTo, keyed, lease)
+      : this.options.channels.run(() => this.#accept(definition, request, payload, replyTo, keyed, lease))
+  }
+  async #accept(definition: MessageDefinition, request: MessageSendRequest, payload: JsonValue, replyTo?: MessageId,
+    keyed?: { readonly key: MessageSendKey; readonly command: MessageSendCommand }, lease?: DelegationChannelLease): Promise<OutgoingMessageAccepted> {
     const { handle, limits, policy } = this.options
     const decision = evaluatePolicyDecision(() => policy.canSend({ sender: handle.header.address, recipient: request.recipient,
       channelId: request.channelId, type: definition.type, payloadVersion: definition.payloadVersion }))
-    if (decision.kind === 'deny') throw new CommunicationError('MESSAGE_SEND_FORBIDDEN', 'outgoing communication policy denied the message', { details: { reasonCode: decision.reasonCode } })
+    const protocol = definition.type.startsWith('subagent/')
+    if (protocol) {
+      if (lease === undefined || keyed === undefined || this.options.channels === undefined) throw new CommunicationError('MESSAGE_SEND_FORBIDDEN', 'reserved protocol requires a channel lease')
+      this.options.channels.assertSend(lease, handle, keyed.key, keyed.command)
+    }
+    if (!protocol && decision.kind === 'deny') throw new CommunicationError('MESSAGE_SEND_FORBIDDEN', 'outgoing communication policy denied the message', { details: { reasonCode: decision.reasonCode } })
     const messageId = parseMessageId(this.options.identitySource.nextMessageId())
     const createdAt = clockTimestamp(this.options.clock)
     for (let attempt = 0; attempt <= limits.maxSendJournalConflicts; attempt++) {
@@ -87,7 +98,6 @@ export class OutboxAcceptance {
       const snapshot = handle.snapshot()
       if (snapshot.lifecycle === 'ended') throw new CommunicationError('MESSAGE_SESSION_ENDED', 'Session is already ended')
       const facts = projectCommunicationFacts(snapshot)
-      if (facts.outbox.filter(item => item.status === 'pending').length >= limits.maxPendingOutbox) throw new CommunicationError('MESSAGE_OUTBOX_FULL', 'Outbox pending limit is reached')
       if ([...facts.outbox, ...facts.inbox].some(item => item.messageId === messageId)) throw new CommunicationError('MESSAGE_ID_CONFLICT', 'generated Message identity already exists locally')
       const previous = facts.outbox.filter(item => item.envelope.recipient === request.recipient && item.envelope.channelId === request.channelId)
         .reduce((maximum, item) => Math.max(maximum, item.envelope.channelSequence), 0)
@@ -96,6 +106,8 @@ export class OutboxAcceptance {
         channelId: request.channelId, channelSequence: channelSequence(previous + 1), correlationId: request.kind === 'root' ? messageId : request.correlationId,
         ...(request.kind === 'derived' ? { causationId: request.causationId } : {}), ...(replyTo === undefined ? {} : { replyTo }),
         createdAt, type: definition.type, payloadVersion: definition.payloadVersion, payload })
+      if (this.options.channels !== undefined ? !this.options.channels.hasCapacity(handle, 'outbox', envelope)
+        : facts.outbox.filter(item => item.status === 'pending').length >= limits.maxPendingOutbox) throw new CommunicationError('MESSAGE_OUTBOX_FULL', 'Outbox pending limit is reached')
       if (canonicalJsonBytes(envelope).byteLength > limits.maxMessageBytes) throw new CommunicationError('MESSAGE_ENVELOPE_INVALID', 'Message Envelope exceeds maxMessageBytes')
       if (keyed !== undefined && canonicalJsonBytes(keyed.command).byteLength > limits.maxMessageBytes) throw new CommunicationError('MESSAGE_ENVELOPE_INVALID', 'raw command exceeds maxMessageBytes')
       try {

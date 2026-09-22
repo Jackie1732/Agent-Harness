@@ -1,9 +1,10 @@
 import { randomUUID } from 'node:crypto'
 import { isAbsolute, resolve } from 'node:path'
-import { decodeAgentSpec } from '../agent/spec-codec.js'
+import { decodeHostSubagents, parentSubagentRole } from './subagent-config.js'
+import { decodeAgentSpec, decodeSubagentAgentSpec } from '../agent/spec-codec.js'
 import type { MailboxLimits } from '../communication/types.js'
 import { parseChannelId } from '../communication/ids.js'
-import { decodeAgentContextProfile } from '../context/profile.js'
+import { decodeAgentContextProfile, decodeSubagentContextProfile } from '../context/profile.js'
 import type { JsonObject, JsonValue } from '../foundation/json.js'
 import { snapshotJson } from '../foundation/json.js'
 import { formatSessionAddress, parseSessionId } from '../session/ids.js'
@@ -72,13 +73,14 @@ function decodeConfig(value: unknown, baseDirectory: string, limits: JsonValidat
   let data: JsonValue
   try { data = boundedJson(value, limits) } catch { invalid('config-json-limits') }
   const input = record(data, 'host')
-  keys(input, ['schemaVersion', 'hostKey', 'storage', 'members', 'messages', 'channels', 'routes', 'https', 'communication', 'scheduling', 'cli', 'shutdown'], 'host')
-  if (input.schemaVersion !== 1) invalid('schema-version')
+  keys(input, ['schemaVersion', 'hostKey', 'storage', 'members', 'messages', 'channels', 'routes', 'https', 'communication', 'scheduling', 'cli', 'shutdown', ...(input.schemaVersion === 2 ? ['subagents'] : [])], 'host')
+  if (input.schemaVersion !== 1 && input.schemaVersion !== 2) invalid('schema-version')
+  const subagents = input.schemaVersion === 2 ? decodeHostSubagents(input.subagents) : undefined
   const hostKey = identifier(input.hostKey, 'hostKey')
   const storage = record(input.storage, 'storage'); keys(storage, ['root', 'maxRecordBytes', 'maxLineageDepth'], 'storage')
   const rootInput = text(storage.root, 'storage.root', 4096)
   const root = isAbsolute(rootInput) ? resolve(rootInput) : resolve(baseDirectory, rootInput)
-  const members = array(input.members, 'members').map((item, index) => decodeMember(item, index, baseDirectory))
+  const members = array(input.members, 'members').map((item, index) => decodeMember(item, index, baseDirectory, input.schemaVersion as 1 | 2))
   const messages = array(input.messages, 'messages').map(item => {
     const message = record(item, 'message'); keys(message, ['type', 'payloadVersion', 'schema'], 'message')
     const schema = record(message.schema, 'message.schema') as JsonObject; validateInlineSchema(schema)
@@ -126,7 +128,9 @@ function decodeConfig(value: unknown, baseDirectory: string, limits: JsonValidat
       || member.kind === 'local' && route.origin !== null || member.kind === 'remote' && route.origin === null
   })) invalid('route-ownership')
   if (https.kind === 'disabled' && routes.some(route => route.origin !== null)) invalid('https-disabled-with-remote-route')
-  return snapshotJson({ schemaVersion: 1, hostKey, storage: { root, maxRecordBytes: integer(storage.maxRecordBytes, 'maxRecordBytes', 4096),
+  if (subagents?.kind === 'enabled' && subagents.parents.some(parent => !members.some(member => member.kind === 'local' && member.agentKey === parent.agentKey && member.spec.protocolVersion === 2))) invalid('subagent-parent-reference')
+  if (messages.some(message => message.type.startsWith('subagent/'))) invalid('reserved-message-type')
+  return snapshotJson({ schemaVersion: input.schemaVersion, ...(subagents === undefined ? {} : { subagents }), hostKey, storage: { root, maxRecordBytes: integer(storage.maxRecordBytes, 'maxRecordBytes', 4096),
     maxLineageDepth: integer(storage.maxLineageDepth, 'maxLineageDepth', 0) }, members, messages, channels, routes,
     https, communication, scheduling, cli, shutdown }) as unknown as HostConfig
 }
@@ -172,7 +176,7 @@ function decodeIntegerRecord(
   return Object.freeze(Object.fromEntries(fields.map(field => [field, integer(input[field], `${label}.${field}`, zeroFields.has(field) ? 0 : 1)])))
 }
 
-function decodeMember(value: JsonValue, index: number, baseDirectory: string): HostMemberConfig {
+function decodeMember(value: JsonValue, index: number, baseDirectory: string, version: 1 | 2): HostMemberConfig {
   const member = record(value, `members[${index}]`)
   if (member.kind === 'remote') {
     keys(member, ['kind', 'agentKey', 'sessionId', 'ownerHost'], 'member')
@@ -186,7 +190,9 @@ function decodeMember(value: JsonValue, index: number, baseDirectory: string): H
   if (typeof member.enabled !== 'boolean') invalid('member-enabled')
   const sessionId = member.sessionId === null ? null : parseSessionId(text(member.sessionId, 'member.sessionId'))
   if (mode === 'adopt' && sessionId === null) invalid('adopt-session-id')
-  const profile = decodeAgentContextProfile(member.profile)
+  const specVersion = record(member.spec, 'spec').protocolVersion
+  if (specVersion !== 1 && specVersion !== 2 || version === 1 && specVersion !== 1) invalid('member-spec-version')
+  const profile = specVersion === 1 ? decodeAgentContextProfile(member.profile) : decodeSubagentContextProfile(member.profile)
   const model = record(member.model, 'model')
   if (model.kind !== 'scripted-fixed' && model.kind !== 'deepseek' && model.kind !== 'anthropic') invalid('model-kind')
   const modelKind: HostModelConfig['kind'] = model.kind
@@ -304,7 +310,8 @@ export function resolveHostConfig(config: HostConfig): ResolvedHostSpec {
       address: formatSessionAddress(parseSessionId(members.get(peer.memberKey)!.sessionId!)), channelId: parseChannelId(channels.get(peer.channelKey)!) }))
     const provisional = { ...member.spec, profileEventId: 'ah-event:00000000-0000-4000-8000-000000000000:1',
       target: { ...member.spec.target, provider: descriptor }, peers }
-    const { profileEventId: _profileEventId, ...spec } = decodeAgentSpec(provisional)
+    const { profileEventId: _profileEventId, ...spec } = member.spec.protocolVersion === 1 ? decodeAgentSpec(provisional)
+      : decodeSubagentAgentSpec({ ...provisional, subagents: parentSubagentRole(config.schemaVersion === 2 ? config.subagents : undefined, member.agentKey) })
     return Object.freeze({ ...member, sessionId: parseSessionId(member.sessionId!), spec })
   })
   const routes = config.routes.map(route => ({ ...route, sessionId: members.get(route.memberKey)!.sessionId! }))

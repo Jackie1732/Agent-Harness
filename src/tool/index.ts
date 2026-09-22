@@ -27,3 +27,7 @@ export type {
   ToolAuthorizationPayload, ToolStartedPayload, ToolOutcome, ToolExecutionEvidence,
   ToolPhase, ToolResult, ToolCleanup, ToolSettlement, DirectToolRequest,
 } from './contract.js'
+
+export { createWriteTextDefinition, createWorkspaceWriteTextProvider } from './providers/workspace-write.js'
+export type { WorkspaceWriteTextOptions } from './providers/workspace-write.js'
+export type { WorkspaceAccess } from './providers/workspace-access.js'

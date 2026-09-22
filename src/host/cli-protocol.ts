@@ -32,15 +32,15 @@ interface CliCommandEnvelope {
   readonly kind: string
 }
 
-export function commandEnvelope(value: unknown): CliCommandEnvelope {
+export function commandEnvelope(value: unknown, protocolVersion: 1 | 2 = 1): CliCommandEnvelope {
   const input = object(value)
-  if (input.protocolVersion !== 1) throw new HostError('HOST_PROTOCOL_INVALID', 'cli-protocol-version')
+  if (input.protocolVersion !== protocolVersion) throw new HostError('HOST_PROTOCOL_INVALID', 'cli-protocol-version')
   return { input, requestId: text(input.requestId, 'cli-request-id', 128), kind: text(input.kind, 'cli-command-kind', 64) }
 }
 
-export async function executeCommand(host: AtomicHost, value: unknown): Promise<unknown> {
-  const { input, requestId, kind } = commandEnvelope(value)
-  const response = (value: Record<string, unknown>) => ({ protocolVersion: 1, requestId, ...value })
+export async function executeCommand(host: AtomicHost, value: unknown, protocolVersion: 1 | 2 = 1): Promise<unknown> {
+  const { input, requestId, kind } = commandEnvelope(value, protocolVersion)
+  const response = (value: Record<string, unknown>) => ({ protocolVersion, requestId, ...value })
   switch (kind) {
     case 'task': {
       exact(input, ['protocolVersion', 'requestId', 'kind', 'agentKey', 'text'])
@@ -62,8 +62,8 @@ export async function executeCommand(host: AtomicHost, value: unknown): Promise<
     case 'resume': {
       exact(input, ['protocolVersion', 'requestId', 'kind', 'agentKey'])
       const agentKey = text(input.agentKey, 'cli-agent-key', 128)
-      if (kind === 'pause') host.pause(agentKey); else host.resume(agentKey)
-      return response({ kind: 'control', command: kind, agentKey })
+      const delegations = kind === 'pause' ? (host.pause(agentKey), undefined) : host.resume(agentKey)
+      return response({ kind: 'control', command: kind, agentKey, ...(protocolVersion === 2 && delegations !== undefined ? { delegations } : {}) })
     }
     case 'cancel': {
       exact(input, ['protocolVersion', 'requestId', 'kind', 'agentKey', 'rootTurnId'], ['reason'])
@@ -74,7 +74,7 @@ export async function executeCommand(host: AtomicHost, value: unknown): Promise<
     }
     case 'report':
       exact(input, ['protocolVersion', 'requestId', 'kind'])
-      return response({ kind: 'report', report: host.report() })
+      return response({ kind: 'report', report: protocolVersion === 1 ? host.report() : { ...host.report(), subagents: host.delegationReport() } })
     case 'shutdown': {
       exact(input, ['protocolVersion', 'requestId', 'kind', 'mode'])
       if (input.mode !== 'drain' && input.mode !== 'cancel') throw new HostError('HOST_PROTOCOL_INVALID', 'cli-shutdown-mode')

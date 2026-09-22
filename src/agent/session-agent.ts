@@ -7,7 +7,7 @@ import type { AgentInput, AgentInputReference, AgentSendCommand, AgentSpec } fro
 import type { SessionAgentOptions, AgentRuntime, AgentTurnControl } from './runtime-contract.js'
 import { AgentError } from './errors.js'
 import { AgentJournal } from './journal.js'
-import { decodeAgentSpec } from './spec-codec.js'
+import { decodeAgentSpec, decodeSubagentAgentSpec } from './spec-codec.js'
 import { decodeAgentInput, decodeAgentCommand, referenceKey, inputReference } from './input-codec.js'
 import { projectAgentSession } from './projection.js'
 import { projectAgentReport } from './report.js'
@@ -19,6 +19,8 @@ import { manageAgentWaits, settleAgentStops, synchronizeAgentReceipts } from './
 import { inspectAgentReadiness } from './readiness.js'
 import { expireAgentRoot } from './root-policy.js'
 import * as events from './session-events.js'
+import { subagentSessionEventDefinitions } from '../subagent/session-events.js'
+import { subagentContextProfileRecordedEvent, subagentContextAssemblyCommittedEvent } from '../context/session-events.js'
 
 const driverTask = new AsyncLocalStorage<ReadonlySet<symbol>>()
 
@@ -49,7 +51,11 @@ export class SessionAgent {
     if (options.model.snapshot().sessionId !== options.session.header.sessionId || options.context.snapshot().sessionId !== options.session.header.sessionId
       || options.tools !== undefined && options.tools.snapshot().sessionId !== options.session.header.sessionId
       || options.mailbox !== undefined && options.mailbox.sessionId !== options.session.header.sessionId) throw new AgentError('AGENT_SOURCE_INVALID', 'borrowed-session-mismatch')
-    this.#runtime = { ...options, journal: new AgentJournal(options.session, state.spec.payload.limits.maxJournalConflicts, options.clock) }
+    const executionEvents = events.agentExecutionEvents(state.spec.payload.protocolVersion)
+    if (Object.values(executionEvents).some(definition => !options.session.supportsEventDefinition(definition))) throw new AgentError('AGENT_CATALOG_INCOMPATIBLE', 'execution-events-required')
+    if (state.spec.payload.protocolVersion === 2 && [...subagentSessionEventDefinitions, subagentContextProfileRecordedEvent, subagentContextAssemblyCommittedEvent]
+      .some(definition => !options.session.supportsEventDefinition(definition))) throw new AgentError('AGENT_CATALOG_INCOMPATIBLE', 'delegation-events-required')
+    this.#runtime = { ...options, events: executionEvents, journal: new AgentJournal(options.session, state.spec.payload.limits.maxJournalConflicts, options.clock) }
   }
   get status() { return this.#status }
   get failure() { return this.#failure }
@@ -136,6 +142,9 @@ export class SessionAgent {
     })())
   }
 
+  /** Notify only the current runtime Turn; the owning control protocol separately persists its request. */
+  notifyStop(rootTurnId: SessionEventId): void { if (this.#turn?.root === rootTurnId) this.#turn.controller.abort() }
+
   /** Persist one root's stop request. A returned report may still show an executing action awaiting actual release. */
   cancel(rootTurnId: SessionEventId, reason = 'caller-cancelled'): Promise<AgentRunReport> {
     this.#accepting()
@@ -159,9 +168,9 @@ export class SessionAgent {
   /** Release a queued/review input explicitly; historical unknown execution and cleanup remain unchanged. */
   abandonInput(input: AgentInputReference, reason = 'caller-requested'): Promise<AgentRunReport> {
     this.#accepting()
-    const copied = inputReference(input)
+    const copied = inputReference(input, this.snapshot().spec!.payload.protocolVersion)
     return this.#track((async () => {
-      const control = await this.#runtime.journal.append(events.agentInputAbandonRequestedEvent, () => ({ kind: 'abandon-input' as const, input: copied, reason }))
+      const control = await this.#runtime.journal.append(this.#runtime.events.abandonRequested, () => ({ kind: 'abandon-input' as const, input: copied, reason }))
       await this.#runtime.journal.append(events.agentControlSettledEvent, () => ({ control: control.stored.eventId, outcome: 'completed' as const,
         reason, rootOutcome: null, responseDisposition: null }))
       await synchronizeAgentReceipts(this.#runtime)
@@ -191,7 +200,7 @@ export class SessionAgent {
       const accepted = await runtime.journal.append(events.agentCommandAcceptedEvent, state => ({ run: run.stored.eventId, spec: state.spec!.stored.eventId, root: null, command }))
       const action = { eventId: accepted.stored.eventId, index: 0 }
       const result = await executeAgentSend(runtime, action, command)
-      await runtime.journal.append(events.agentActionSettledEvent, () => ({ action, result }))
+      await runtime.journal.append(runtime.events.actionSettled, () => ({ action, result }))
       await runtime.journal.append(events.agentRunSettledEvent, () => ({ run: run.stored.eventId, stoppedBy: 'command-settled' as const, reason: result.kind }))
       return this.report()
     })
@@ -332,14 +341,16 @@ export class SessionAgent {
       }
       if (candidate === null) { stoppedBy = this.snapshot().waits.some(wait => wait.settled === null) ? 'waiting' : 'idle'; break }
       let turn
-      try { turn = await runtime.journal.append(events.agentTurnStartedEvent, state => {
+      try { turn = await runtime.journal.append(runtime.events.turnStarted, state => {
         const selected = selectAgentInput(state, runtime.messageCatalog)
         if (selected === null) throw new AgentError('AGENT_BUSY', 'input-selection-changed')
         const wait = selected.reservedBy === null ? undefined : state.waits.find(wait => referenceKey(wait.reference) === referenceKey(selected.reservedBy!))
         const descriptor = wait?.created.payload.result.kind === 'wait' ? wait.created.payload.result.descriptor : undefined
         const root = descriptor === undefined ? undefined : state.roots.find(root => root.id === descriptor.root)
-        return { run: run.stored.eventId, input: selected.reference, lane: selected.lane, ordinal: state.turns.length + 1,
-          root: root?.id ?? null, predecessor: selected.reservedBy, deadline: root?.deadline ?? null, observedAt: clockTimestamp(runtime.clock) }
+        return { ...(state.spec!.payload.protocolVersion === 2 ? { protocolSource: selected.reference.kind === 'subagent' ? selected.protocol?.inbox ?? selected.reference.eventId : null } : {}), run: run.stored.eventId, input: selected.reference, lane: selected.lane, ordinal: state.turns.length + 1,
+          root: root?.id ?? null, predecessor: selected.reservedBy,
+          deadline: root?.deadline ?? (state.spec!.payload.protocolVersion === 2 && state.spec!.payload.subagents.role === 'child' ? state.spec!.payload.subagents.deadline : null),
+          observedAt: clockTimestamp(runtime.clock) }
       }) } catch (error) {
         if (error instanceof AgentError && error.code === 'AGENT_BUSY' && error.message.includes('input-selection-changed')) { stoppedBy = 'idle'; break }
         throw error
@@ -361,7 +372,7 @@ export class SessionAgent {
 
 /** Install a complete immutable Spec through the same compare-and-append admission as runtime events. */
 export function installAgentSpec(session: SessionAgentOptions['session'], value: AgentSpec, clock: SessionAgentOptions['clock']) {
-  const spec = decodeAgentSpec(value)
+  const spec = value.protocolVersion === 2 ? decodeSubagentAgentSpec(value) : decodeAgentSpec(value)
   if (session.maxRecordBytes < 4096 || spec.limits.maxResultBytes + 4096 > session.maxRecordBytes) throw new AgentError('AGENT_LIMIT_EXCEEDED', 'minimum-settlement-budget')
-  return new AgentJournal(session, spec.limits.maxJournalConflicts, clock).append(events.agentSpecRecordedEvent, () => spec)
+  return new AgentJournal(session, spec.limits.maxJournalConflicts, clock).append(spec.protocolVersion === 2 ? events.subagentAgentSpecRecordedEvent : events.agentSpecRecordedEvent, () => spec)
 }

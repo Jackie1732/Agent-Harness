@@ -1,3 +1,5 @@
+import { ToolError } from '../tool/errors.js'
+import { SubagentError } from '../subagent/errors.js'
 import type { AgentActionReference, AgentSendCommand } from './contract.js'
 import type { AgentActionIntent, AgentActionResult } from './event-contract.js'
 import type { AgentRuntime } from './runtime-contract.js'
@@ -65,12 +67,17 @@ export async function executeAgentAction(runtime: AgentRuntime, turnId: SessionE
       const committed = projectToolSession(runtime.session.snapshot()).invocations.find(item => item.requested.payload.source.kind === 'model'
         && item.requested.payload.source.intent.invocationId === intent.source.invocationId && item.requested.payload.source.intent.outputBlockIndex === intent.source.outputBlockIndex)
       if (runtime.session.status === 'open' && committed?.state === 'settled') return { kind: 'tool', settled: committed.settled.stored.eventId }
+      if (error instanceof ToolError && error.code === 'TOOL_RECORD_BUDGET' && committed === undefined) return { kind: 'not-started', reason: error.message }
       throw error
     }
   }
   let parsed
   try {
     parsed = record(agentJson(JSON.parse(block.argumentsText)))
+    if (['spawn', 'await-subagent', 'answer-subagent', 'ask-parent', 'progress'].includes(intent.route)) {
+      if (runtime.subagentActions === undefined) return { kind: 'not-started', reason: 'subagent-capability-unavailable' }
+      return await runtime.subagentActions.execute(turnId, action, intent, parsed, signal)
+    }
     if (intent.route === 'send' || intent.route === 'reply') {
       const command = decodeAgentCommand({ ...parsed, kind: intent.route })
       if (command.kind === 'reply') {
@@ -94,7 +101,8 @@ export async function executeAgentAction(runtime: AgentRuntime, turnId: SessionE
     if (state.turns.find(item => item.started.stored.eventId === ownerStep?.opened.payload.turn)?.root !== root.id) throw new Error('watched-outbox-not-owned')
     return waitResult(runtime, { ...common, kind: 'reply', messageId, outboxEventId: accepted.acceptedEventId })
   } catch (error) {
+    if (error instanceof SubagentError && error.code === 'SUBAGENT_COMMIT_UNKNOWN') throw new AgentError('AGENT_COMMIT_UNKNOWN', 'subagent-commit-unknown')
     if (error instanceof AgentError && ['AGENT_COMMIT_UNKNOWN', 'AGENT_WRITE_FAILED'].includes(error.code)) throw error
-    return { kind: 'not-started', reason: 'native-arguments-invalid' }
+    return { kind: 'not-started', reason: error instanceof SubagentError ? error.message : 'native-arguments-invalid' }
   }
 }

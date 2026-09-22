@@ -3,22 +3,22 @@ import { HostError } from './errors.js'
 import type { HostSlot } from './runtime-types.js'
 
 /** Owns every generation of one member; incomplete cleanup permanently closes acquisition. */
-export class HostSlotOwner {
+export class HostSlotOwner<T extends { dispose(): Promise<void> } = HostSlot> {
   readonly #effects: EffectOwner
-  readonly #acquire: () => Promise<HostSlot>
+  readonly #acquire: () => Promise<T>
   readonly #agentKey: string
   #generation = 0
   #state: 'offline-clean' | 'starting' | 'online' | 'stopping' | 'cleanup-incomplete' = 'offline-clean'
   #failure: unknown
   #dispose: Promise<void> | undefined
 
-  constructor(agentKey: string, acquire: () => Promise<HostSlot>) {
+  constructor(agentKey: string, acquire: () => Promise<T>) {
     this.#effects = new EffectOwner(`host-slot:${agentKey}`)
     this.#acquire = acquire
     this.#agentKey = agentKey
   }
 
-  async open(): Promise<HostSlot> {
+  async open(): Promise<T> {
     if (this.#failure !== undefined) throw new HostError('HOST_CLEANUP_FAILED', 'slot-cleanup-incomplete',
       { agentKey: this.#agentKey, generation: this.#generation }, { cause: this.#failure })
     if (this.#dispose !== undefined || this.#state !== 'offline-clean') throw new HostError('HOST_NOT_READY', 'slot-generation-unavailable')

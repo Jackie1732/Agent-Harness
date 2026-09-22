@@ -1,3 +1,4 @@
+import { assertDelegatedWriteCapacity } from '../subagent/write-capacity.js'
 import { HarnessError } from '../foundation/error.js'
 import type { JsonValue } from '../foundation/json.js'
 import type { DurableEventDefinition } from '../session/event-catalog.js'
@@ -30,6 +31,7 @@ export class ToolJournal {
       const previous = key === null ? undefined : view.invocations.find(item => sourceKey(item.requested.payload.source) === key)
       if (previous?.state === 'settled') return { kind: 'existing', invocation: previous }
       if (view.pendingInvocationId !== null || previous !== undefined) throw new ToolError('TOOL_SESSION_BUSY', 'Session has pending tool work')
+      assertDelegatedWriteCapacity(snapshot, payload)
       this.preview(snapshot, toolRequestedEvent, payload)
       try { return { kind: 'created', event: await this.handle.appendIfPosition(snapshot.localPosition, toolRequestedEvent, payload) } }
       catch (reason) { if (this.conflict(reason, conflicts, payload.invocationId, toolRequestedEvent.type)) continue; throw reason }

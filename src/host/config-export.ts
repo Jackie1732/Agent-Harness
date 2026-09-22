@@ -6,7 +6,9 @@ import type { ResolvedHostSpec } from './config.js'
 
 /** Export deployment comparisons with paths removed; the result is not an executable configuration. */
 export function exportHostConfig(spec: ResolvedHostSpec) {
-  const data = snapshotJson({ ...spec, storage: { ...spec.storage, root: '<storage-root>' },
+  const subagents = spec.schemaVersion === 2 ? { subagents: spec.subagents.kind === 'disabled' ? spec.subagents : { ...spec.subagents,
+    workspaceResources: spec.subagents.workspaceResources.map(resource => ({ ...resource, rootPath: '<workspace-root>', protectedRoots: resource.protectedRoots.map(() => '<protected-root>') })) } } : {}
+  const data = snapshotJson({ ...spec, ...subagents, storage: { ...spec.storage, root: '<storage-root>' },
     members: spec.members.map(member => member.kind !== 'local' || member.tools.kind === 'none' ? member : { ...member,
       tools: { ...member.tools, rootPath: '<tool-root>', protectedRoots: member.tools.protectedRoots.map(() => '<protected-root>') } }),
     https: spec.https.kind === 'disabled' ? spec.https : { ...spec.https,

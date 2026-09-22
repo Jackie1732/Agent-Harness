@@ -1,3 +1,4 @@
+import type { SubagentActionExecutor } from '../subagent/action-port.js'
 import type { Scope } from '../extension/types.js'
 import type { Clock } from '../foundation/clock.js'
 import type { SessionHandle } from '../session/session-handle.js'
@@ -11,9 +12,11 @@ import type { AgentJournal } from './journal.js'
 import type { SessionEventId } from '../session/ids.js'
 import type { CommunicationService } from '../communication/service.js'
 import type { CommunicationPolicy } from '../communication/types.js'
+import type { agentExecutionEvents } from './session-events.js'
 
 /** Runners/Context and a lazily attached Mailbox are owned; supplied Mailboxes, Service and Session remain borrowed. */
 export interface SessionAgentOptions {
+  readonly subagentActions?: SubagentActionExecutor
   readonly session: SessionHandle
   readonly model: SessionModelRunner
   readonly context: SessionContext
@@ -29,6 +32,7 @@ export interface SessionAgentOptions {
   readonly signal?: AbortSignal
 }
 export interface AgentRuntime extends SessionAgentOptions {
+  readonly events: ReturnType<typeof agentExecutionEvents>
   readonly journal: AgentJournal
   readonly management?: { remaining: number }
 }

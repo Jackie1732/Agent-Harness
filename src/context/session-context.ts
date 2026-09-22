@@ -13,9 +13,10 @@ import { buildCapturedContext } from './assembler.js'
 import { assembleAgentContext } from './agent-assembler.js'
 import { decodeAgentContextConsumer } from './agent-codec.js'
 import type { AgentContextConsumer } from './agent-contract.js'
-import { decodeAgentContextProfile } from './profile.js'
-import { agentContextProfileRecordedEvent, agentContextAssemblyCommittedEvent } from './session-events.js'
+import { decodeAgentContextProfile, decodeSubagentContextProfile } from './profile.js'
+import { agentContextProfileRecordedEvent, agentContextAssemblyCommittedEvent, subagentContextProfileRecordedEvent, subagentContextAssemblyCommittedEvent } from './session-events.js'
 import { projectAgentSession } from '../agent/projection.js'
+import { subagentMessageDefinitions } from '../subagent/messages.js'
 import { describeToolForModel } from '../tool/model-bridge.js'
 import { decodeMessagePayload } from '../communication/message-catalog.js'
 import { captureContextFacts } from './capture.js'
@@ -50,7 +51,7 @@ import {
   contextMemoryRecordedEvent,
   contextMemoryRetractedEvent,
   contextProfileRecordedEvent,
-  contextSessionEventDefinitions,
+  legacyContextSessionEventDefinitions,
 } from './session-events.js'
 import { requireSourceIndex } from './sources.js'
 import { contextJson, digest, record, unitReferences } from './validation.js'
@@ -87,7 +88,7 @@ export class SessionContext {
       throw new ContextError('CONTEXT_INACTIVE', 'session-not-active')
     }
     if (typeof options.messageCatalog?.resolve !== 'function') invalidContext('message-catalog')
-    if (contextSessionEventDefinitions.some(definition => !options.session.supportsEventDefinition(definition))) {
+    if (legacyContextSessionEventDefinitions.some(definition => !options.session.supportsEventDefinition(definition))) {
       throw new ContextError('CONTEXT_STATE_INVALID', 'session-catalog-incompatible')
     }
     projectContextSession(options.session.snapshot())
@@ -111,8 +112,10 @@ export class SessionContext {
   recordProfile(value: ContextProfile, options: ContextOperationOptions = {}): Promise<CommittedSessionEvent<ContextProfile>> {
     return this.#start(options, async assertNotCancelled => {
       const copied = record(contextJson(value))
-      const definition = copied.rendererVersion === 'context-neutral/v2' ? agentContextProfileRecordedEvent : contextProfileRecordedEvent
-      const profile = definition === agentContextProfileRecordedEvent ? decodeAgentContextProfile(copied) : decodeContextProfile(copied)
+      const definition = copied.rendererVersion === 'context-neutral/v3' ? subagentContextProfileRecordedEvent
+        : copied.rendererVersion === 'context-neutral/v2' ? agentContextProfileRecordedEvent : contextProfileRecordedEvent
+      const profile = definition === subagentContextProfileRecordedEvent ? decodeSubagentContextProfile(copied)
+        : definition === agentContextProfileRecordedEvent ? decodeAgentContextProfile(copied) : decodeContextProfile(copied)
       const snapshot = this.#session.snapshot()
       const state = projectContextSession(snapshot)
       const current = state.profileHeads.find(item => item.profileKey === profile.profileKey)?.eventId ?? null
@@ -187,7 +190,8 @@ export class SessionContext {
         const item = registry.find(item => item.definition.name === name && item.status === 'active')
         return item === undefined ? [] : [{ definition: item.definition, provider: item.provider, model: describeToolForModel(item.definition) }]
       })
-      const messageSupport = state.spec.payload.messages.map(kind => {
+      const messageKinds = state.spec.payload.protocolVersion === 1 ? state.spec.payload.messages : [...state.spec.payload.messages, ...subagentMessageDefinitions]
+      const messageSupport = messageKinds.map(kind => {
         const definition = this.#messageCatalog.resolve(kind.type, kind.payloadVersion)
         if (definition !== undefined) for (const input of state.inputs) {
           if (input.status === 'claimed' && input.message?.type === kind.type && input.message.payloadVersion === kind.payloadVersion) decodeMessagePayload(definition, input.message.payload)
@@ -197,7 +201,7 @@ export class SessionContext {
       const built = assembleAgentContext(snapshot, consumer, { tools, messageSupport }, this.#session.maxRecordBytes)
       if (built.kind !== 'ready') return built
       assertNotCancelled()
-      const committed = await this.#append(snapshot.localPosition, agentContextAssemblyCommittedEvent, built.assembly, 'CONTEXT_SOURCE_CHANGED')
+      const committed = await this.#append(snapshot.localPosition, state.spec.payload.protocolVersion === 1 ? agentContextAssemblyCommittedEvent : subagentContextAssemblyCommittedEvent, built.assembly, 'CONTEXT_SOURCE_CHANGED')
       return { kind: 'ready', committed, request: built.request, inputPrecondition: snapshotInputPrecondition({ sessionId: snapshot.header.sessionId,
         expectedLocalPosition: committed.stored.sequence, expectedProviderDescriptor: built.assembly.selection.target.provider }),
         committedEnvelopeBytes: canonicalJsonBytes(committed.stored as unknown as JsonValue).byteLength }

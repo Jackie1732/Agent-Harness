@@ -6,7 +6,7 @@ import { invalidAgent } from './errors.js'
 
 export const rootOutcomes = ['completed', 'failed', 'cancelled', 'budget-exhausted', 'result-unknown', 'timed-out'] as const
 
-export function decodeControlRequest(value: unknown): AgentControlRequest {
+export function decodeControlRequest(value: unknown, version: 1 | 2 = 1): AgentControlRequest {
   const input = record(agentJson(value))
   const kind = choice(input.kind, ['cancel-work', 'expire-work', 'abandon-input', 'close-session', 'recovery'])
   switch (kind) {
@@ -18,7 +18,7 @@ export function decodeControlRequest(value: unknown): AgentControlRequest {
       if (String(input.observedAt) < String(input.deadline)) invalidAgent('deadline-not-observed')
       break
     case 'abandon-input':
-      exact(input, ['kind', 'input', 'reason']); inputReference(input.input); text(input.reason, 128); break
+      exact(input, ['kind', 'input', 'reason']); inputReference(input.input, version); text(input.reason, 128); break
     case 'close-session': exact(input, ['kind', 'reason']); text(input.reason, 128, true); break
     case 'recovery':
       exact(input, ['kind', 'targetRun', 'controls', 'through', 'predecessorStopped', 'supersedes', 'maxRecoveryWrites'])

@@ -1,7 +1,9 @@
+import { bindParentSubagents } from './parent-subagents.js'
+import { projectAgentSession } from '../agent/projection.js'
 import { AsyncLocalStorage } from 'node:async_hooks'
 import type { Clock } from '../foundation/clock.js'
 import { systemClock } from '../foundation/clock.js'
-import type { SessionEventId } from '../session/ids.js'
+import type { SessionEventId, SessionAddress } from '../session/ids.js'
 import type { AgentActionReference, AgentSendCommand } from '../agent/contract.js'
 import type { OutboxMessageSnapshot } from '../communication/types.js'
 import type { CommunicationError } from '../communication/errors.js'
@@ -63,12 +65,29 @@ class HostRuntime {
     this.#spec = spec; this.#clock = clock; this.#timer = timer; this.#assembly = assembly
     this.#fingerprint = exportHostConfig(spec).fingerprint
     this.#byKey = new Map(assembly.slots.map(slot => [slot.member.agentKey, slot]))
+    for (const key of assembly.subagents?.suspendedParents ?? []) this.#paused.add(key)
     for (const member of spec.members.filter(isLocalHostMember)) if (!member.enabled) {
       this.#offline.add(member.agentKey); this.#paused.add(member.agentKey)
     }
   }
   get status(): HostStatus { return this.#status }
   get instanceId(): string { return this.#assembly.lock.record.instanceId }
+
+  /** Bind explicit Host control to an existing configured parent root. */
+  bindParent(parentAddress: SessionAddress, parentRoot: SessionEventId) {
+    this.#assertReady()
+    const parent = this.#assembly.slots.find(slot => slot.session.header.address === parentAddress && this.#assembly.local.some(item => item.session === slot.session))
+    const domain = this.#assembly.subagents
+    if (parent === undefined || domain === undefined || !domain.options.config.parents.some(item => item.agentKey === parent.member.agentKey)
+      || !projectAgentSession(parent.session.snapshot()).roots.some(root => root.id === parentRoot)) throw new HostError('HOST_NOT_READY', 'parent-control-not-authorized')
+    return bindParentSubagents({ domain, parent, root: parentRoot, timer: this.#timer, scanIntervalMs: this.#spec.scheduling.scanIntervalMs,
+      assertReady: () => this.#assertReady(), assertExternalWait: () => {
+        if ([...hostTasks.getStore() ?? []].some(token => this.#tokens.has(token))) throw new HostError('HOST_REENTRANT_WAIT', 'parent-cannot-wait-on-own-business-lane')
+      }, track: task => this.#track(task), wake: () => this.#assembly.wakeup.notify() })
+  }
+  delegationReport() {
+    return this.#assembly.subagents?.report(this.#spec.scheduling.maxReportEntries) ?? { count: 0, unresolved: 0, blocked: 0, failed: 0, active: 0, nextDeadline: null, delegations: [], truncated: false }
+  }
 
   /** Persist a user task without implicitly starting inference. */
   submitTask(agentKey: string, text: string, originLabel = 'host-user'): Promise<HostInputReceipt> {
@@ -93,9 +112,13 @@ class HostRuntime {
     const slot = this.#slot(agentKey); this.#paused.add(agentKey); slot.agent.pause()
   }
   /** Explicit resumption also rechecks a slot stopped for lack of domain progress. */
-  resume(agentKey: string): void {
-    this.#slot(agentKey); this.#paused.delete(agentKey); this.#scheduler.stalled.delete(agentKey)
+  resume(agentKey: string) {
+    this.#slot(agentKey)
+    const resumed = this.#assembly.subagents?.resume(agentKey) ?? []
+    if (resumed.every(item => item.status === 'resumed')) this.#paused.delete(agentKey)
+    this.#scheduler.stalled.delete(agentKey)
     this.#assembly.wakeup.notify()
+    return resumed
   }
   /** Change outbound admission independently of business execution. */
   pauseRouting(agentKey: string): void { this.#slot(agentKey); this.#routingPaused.add(agentKey) }
@@ -108,7 +131,7 @@ class HostRuntime {
     if (!this.#assembly.local.some(entry => entry.member.agentKey === agentKey)) throw new HostError('HOST_NOT_READY', 'agent-slot-unavailable')
     if (this.#mailboxTransitions.has(agentKey)) throw new HostError('HOST_BUSY', 'mailbox-transition-active')
     if (online === !this.#offline.has(agentKey)) return Promise.resolve()
-    if (!online) { this.#offline.add(agentKey); this.#paused.add(agentKey); slot?.agent.pause() }
+    if (!online) { this.#offline.add(agentKey); this.#paused.add(agentKey); slot?.agent.pause(); this.#assembly.subagents?.stopParent(agentKey) }
     const task = this.#track(async () => {
       if (online) {
         const replacement = await this.#assembly.reopen(agentKey)
@@ -120,6 +143,7 @@ class HostRuntime {
         this.#scheduler.faults.delete(agentKey)
         this.#assembly.wakeup.notify()
       } else if (slot !== undefined) {
+        await this.#assembly.subagents?.releaseParent(agentKey)
         if (mode === 'drain') await slot.agent.wait()
         await slot.dispose()
       }
@@ -132,6 +156,7 @@ class HostRuntime {
   /** Notify an active root immediately, then join its durable cancellation. */
   cancel(agentKey: string, root: SessionEventId, reason = 'host-cancelled') {
     const slot = this.#slot(agentKey)
+    this.#assembly.subagents?.notifyParentStop(agentKey, root)
     return this.#track(() => slot.agent.cancel(root, reason))
   }
   /** Send commands share the single business lane with Host drivers. */
@@ -156,7 +181,7 @@ class HostRuntime {
       unfinishedOperations: this.#operations.size,
       shutdownOverdue: this.#status === 'stopping' && this.#stoppingAt !== undefined && this.#timer.now() - this.#stoppingAt >= this.#spec.shutdown.diagnosticAfterMs,
       blockedRoutes: Object.freeze([...this.#blockedRoutes]),
-      ...observeHostMembers(this.#assembly.slots, this.#paused, this.#scheduler.faults, this.#clock, this.#spec.scheduling.maxReportEntries, this.#scheduler.observations, this.#assembly, this.#routingPaused) })
+      ...observeHostMembers(this.#assembly.slots.filter(slot => this.#assembly.local.some(item => item.session === slot.session)), this.#paused, this.#scheduler.faults, this.#clock, this.#spec.scheduling.maxReportEntries, this.#scheduler.observations, this.#assembly, this.#routingPaused) })
   }
 
   /** Close admission synchronously; repeated calls join one task and drain can upgrade to cancel. */
@@ -164,6 +189,7 @@ class HostRuntime {
     const mode = options.mode ?? this.#spec.shutdown.mode
     if (this.#shutdownTask === undefined) {
       this.#status = 'stopping'; this.#shutdownMode = mode
+      this.#assembly.subagents?.closeAdmission()
       this.#stoppingAt = this.#timer.now()
       const closingToken = Symbol('Host release')
       this.#tokens.add(closingToken)

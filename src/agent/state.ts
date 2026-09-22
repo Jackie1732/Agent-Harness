@@ -1,4 +1,6 @@
 import type { MessageEnvelope } from '../communication/types.js'
+import type { SubagentState } from '../subagent/state.js'
+import type { SubagentMessageKind } from '../subagent/messages.js'
 import type { SessionEventId } from '../session/ids.js'
 import type { CommittedSessionEvent } from '../session/types.js'
 import type { AgentActionReference, AgentBudget, AgentInput, AgentInputReference, AgentInputStatus, AgentRootOutcome, AgentSpec } from './contract.js'
@@ -7,6 +9,7 @@ import type { AgentActionSettled, AgentCommandAccepted, AgentControlRequest, Age
   AgentStepDecided, AgentStepOpened, AgentTurnSettled, AgentTurnStarted, AgentWaitSettled } from './event-contract.js'
 
 export type AgentInputState = {
+  readonly protocol?: { readonly delegation: SessionEventId; readonly kind: SubagentMessageKind | 'failure'; readonly inbox: SessionEventId }
   readonly reference: AgentInputReference
   readonly input: AgentInput | null
   readonly message: MessageEnvelope | null
@@ -45,6 +48,7 @@ export type AgentControlState = {
   readonly supersededBy: SessionEventId | null
 }
 export type AgentSessionSnapshot = {
+  readonly subagents: SubagentState
   readonly spec: CommittedSessionEvent<AgentSpec> | null
   readonly runs: readonly AgentRunState[]
   readonly turns: readonly AgentTurnState[]

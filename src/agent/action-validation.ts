@@ -1,33 +1,28 @@
-import { modelSettledEvent } from '../model/session-events.js'
+import { originalAgentActionArguments } from './model-source.js'
 import type { CommittedSessionEvent } from '../session/types.js'
 import type { AgentActionIntent, AgentActionSettled } from './event-contract.js'
 import type { AgentProjectionState } from './projection-state.js'
-import { requireEntry, requireSpec, source } from './projection-state.js'
+import { requireEntry, requireSpec } from './projection-state.js'
 import { decodeAgentCommand, inputKey } from './input-codec.js'
-import { agentJson, equal, exact, integer, record, text } from './validation.js'
+import { equal, exact, integer, record, text } from './validation.js'
 import { resolveAgentSend } from './command.js'
 import { invalidAgent } from './errors.js'
 import { rootPeerInputs } from './obligations.js'
-
-function originalArguments(state: AgentProjectionState, intent: AgentActionIntent) {
-  const settled = [...state.sources.values()].find(item => item.stored.type === modelSettledEvent.type && record(item.payload).invocationId === intent.source.invocationId)
-  if (settled === undefined) return invalidAgent('action-model-missing')
-  const cp2 = source(state, settled.stored.eventId, modelSettledEvent)
-  const block = cp2.payload.result.blocks.find(item => item.index === intent.source.outputBlockIndex)
-  if (block?.kind !== 'tool-call' || Buffer.byteLength(block.argumentsText) > requireSpec(state).payload.limits.maxActionBytes) return invalidAgent('action-model-arguments')
-  try { return record(agentJson(JSON.parse(block.argumentsText))) } catch { return invalidAgent('action-model-json') }
-}
+import { validateSubagentActionSource } from '../subagent/action-source.js'
 
 /** Durable success must prove the exact command and permitted task association. */
 export function validateAgentActionSource(state: AgentProjectionState, event: CommittedSessionEvent<AgentActionSettled>, intent: AgentActionIntent | null) {
   const result = event.payload.result
+  if (result.kind === 'protocol-accepted' || result.kind === 'wait' && (result.descriptor.kind === 'delegation' || result.descriptor.kind === 'parent-answer')) {
+    validateSubagentActionSource(state, event, intent); return
+  }
   if (result.kind !== 'outbox' && result.kind !== 'wait') return
   const spec = requireSpec(state).payload
   const step = [...state.steps.values()].find(item => item.decided?.stored.eventId === event.payload.action.eventId)
   const turn = step === undefined ? undefined : state.turns.get(step.opened.payload.turn)
   if (result.kind === 'outbox') {
     const command = intent === null ? requireEntry(state.commands, event.payload.action.eventId, 'command-source').payload.command
-      : decodeAgentCommand({ ...originalArguments(state, intent), kind: intent.route })
+      : decodeAgentCommand({ ...originalAgentActionArguments(state, intent), kind: intent.route })
     if (command.kind === 'reply' && intent !== null) {
       if (turn === undefined || !rootPeerInputs(turn.root, [...state.turns.values()], [...state.inputs.values()]).some(input => input.message!.messageId === command.messageId)) invalidAgent('reply-not-root-claim')
     }
@@ -38,7 +33,8 @@ export function validateAgentActionSource(state: AgentProjectionState, event: Co
   }
   if (intent === null || turn === undefined) return invalidAgent('wait-source-missing')
   const descriptor = result.descriptor
-  const args = originalArguments(state, intent)
+  if (descriptor.kind !== 'user' && descriptor.kind !== 'reply') return invalidAgent('unsupported-wait-kind')
+  const args = originalAgentActionArguments(state, intent)
   exact(args, descriptor.kind === 'user' ? ['question', 'timeoutMs'] : ['messageId', 'timeoutMs'])
   const timeout = integer(args.timeoutMs, 1, spec.limits.maxWaitMs)
   const root = requireEntry(state.roots, turn.root, 'wait-root')

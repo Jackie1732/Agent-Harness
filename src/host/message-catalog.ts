@@ -25,7 +25,7 @@ function decoder(message: HostMessageConfig, validate: ValidateFunction): (value
 }
 
 /** Compile the saved inline message schemas without remote references or code loading. */
-export function compileHostMessageCatalog(messages: readonly HostMessageConfig[]): MessageCatalog {
+export function compileHostMessageCatalog(messages: readonly HostMessageConfig[], additional: readonly MessageDefinition[] = []): MessageCatalog {
   const ajv = new Ajv2020({ allErrors: false, strict: true, validateSchema: true })
   const definitions: MessageDefinition[] = messages.map(message => {
     let validate: ValidateFunction
@@ -42,5 +42,5 @@ export function compileHostMessageCatalog(messages: readonly HostMessageConfig[]
       decode: decoder(message, validate),
     })
   })
-  return createMessageCatalog(definitions)
+  return createMessageCatalog([...definitions, ...additional])
 }

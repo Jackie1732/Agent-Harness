@@ -7,8 +7,8 @@ export function actionReference(value: unknown): AgentActionReference {
   const input = record(value); exact(input, ['eventId', 'index']); eventId(input.eventId); integer(input.index, 0, 63)
   return input as AgentActionReference
 }
-export function inputReference(value: unknown): AgentInputReference {
-  const input = record(agentJson(value)); exact(input, ['kind', 'eventId']); choice(input.kind, ['user', 'peer']); eventId(input.eventId)
+export function inputReference(value: unknown, version: 1 | 2 = 1): AgentInputReference {
+  const input = record(agentJson(value)); exact(input, ['kind', 'eventId']); choice(input.kind, version === 1 ? ['user', 'peer'] : ['user', 'peer', 'subagent']); eventId(input.eventId)
   return input as AgentInputReference
 }
 export function referenceKey(reference: AgentActionReference): string { return `${reference.eventId}#${reference.index}` }
@@ -35,13 +35,16 @@ export function decodeAgentCommand(value: unknown): AgentSendCommand {
   return input as AgentSendCommand
 }
 
-export function decodeWaitDescriptor(value: unknown): AgentWaitDescriptor {
+export function decodeWaitDescriptor(value: unknown, version: 1 | 2 = 1): AgentWaitDescriptor {
   const input = record(value)
-  const kind = choice(input.kind, ['user', 'reply'])
-  exact(input, ['kind', 'root', 'deadline', 'observedAt', 'protectedTurns', ...(kind === 'user' ? ['question'] : ['messageId', 'outboxEventId'])])
+  const kind = choice(input.kind, version === 1 ? ['user', 'reply'] : ['user', 'reply', 'delegation', 'parent-answer'])
+  const fields = kind === 'user' ? ['question'] : kind === 'reply' ? ['messageId', 'outboxEventId']
+    : kind === 'delegation' ? ['delegation'] : ['delegation', 'question']
+  exact(input, ['kind', 'root', 'deadline', 'observedAt', 'protectedTurns', ...fields])
   timestamp(input.observedAt)
   eventId(input.root); timestamp(input.deadline); unique(array(input.protectedTurns).map(eventId))
   if (kind === 'user') text(input.question, 1024 * 1024)
-  else { parseMessageId(text(input.messageId)); eventId(input.outboxEventId) }
+  else if (kind === 'reply') { parseMessageId(text(input.messageId)); eventId(input.outboxEventId) }
+  else { eventId(input.delegation); if (kind === 'parent-answer') eventId(input.question) }
   return input as AgentWaitDescriptor
 }

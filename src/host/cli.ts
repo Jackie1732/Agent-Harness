@@ -82,7 +82,7 @@ export async function runHostCli(args: readonly string[], io: HostCliIo): Promis
   if (command === 'help' || command === '--help' || command === '-h') { io.stdout.write(help); return 0 }
   if (command === 'version' || command === '--version' || command === '-v') { io.stdout.write(`${HARNESS_VERSION}\n`); return 0 }
   const booleanFlags = new Set(['--resume', '--predecessor-stopped'])
-  const valueFlags = new Set(['--config', '--expected-token', '--max-recovery-writes', '--max-journal-conflicts', '--supersedes', '--agent-key', '--expected-header'])
+  const valueFlags = new Set(['--config', '--expected-token', '--max-recovery-writes', '--max-journal-conflicts', '--supersedes', '--agent-key', '--expected-header', '--protocol-version'])
   const seen = new Set<string>()
   for (let index = 1; index < args.length; index++) {
     const key = args[index]!
@@ -90,6 +90,9 @@ export async function runHostCli(args: readonly string[], io: HostCliIo): Promis
     seen.add(key)
     if (valueFlags.has(key)) { option(args, key); index++ }
   }
+  const version = option(args, '--protocol-version') ?? '1'
+  if (version !== '1' && version !== '2') throw new HostError('HOST_CONFIG_INVALID', 'protocol-version')
+  const protocolVersion = Number(version) as 1 | 2
   const write = async (value: unknown) => {
     const writer = createJsonLineWriter(io.stdout, 3 * 1024 * 1024)
     try { await writer(value) } finally { await writer.dispose() }
@@ -102,7 +105,7 @@ export async function runHostCli(args: readonly string[], io: HostCliIo): Promis
     if (expectedToken === undefined) throw new HostError('HOST_CONFIG_INVALID', 'unlock-token-required')
     const config = await loadConfig(configPath)
     await unlockHostStorage(config.storage.root, { predecessorStopped: true, expectedToken })
-    await write({ protocolVersion: 1, kind: 'unlocked', hostKey: config.hostKey })
+    await write({ protocolVersion, kind: 'unlocked', hostKey: config.hostKey })
     return 0
   }
   const config = await loadConfig(configPath)
@@ -113,24 +116,24 @@ export async function runHostCli(args: readonly string[], io: HostCliIo): Promis
   const spec = resolveHostConfig(config)
   switch (command) {
     case 'check':
-      await write({ protocolVersion: 1, kind: 'checked', hostKey: spec.hostKey, ...exportHostConfig(spec) })
+      await write({ protocolVersion, kind: 'checked', hostKey: spec.hostKey, ...exportHostConfig(spec) })
       return 0
     case 'init':
-      await write({ protocolVersion: 1, kind: 'initialized', results: await initializeHost(spec, { resume: flag(args, '--resume') }) })
+      await write({ protocolVersion, kind: 'initialized', results: await initializeHost(spec, { resume: flag(args, '--resume') }) })
       return 0
     case 'adopt':
       if (spec.members.filter(isLocalHostMember).some(member => member.mode !== 'adopt')) throw new HostError('HOST_CONFIG_INVALID', 'adopt-mode-required')
-      await write({ protocolVersion: 1, kind: 'adopted', results: await initializeHost(spec) })
+      await write({ protocolVersion, kind: 'adopted', results: await initializeHost(spec) })
       return 0
     case 'adopt-empty': {
       const agentKey = option(args, '--agent-key'); const header = option(args, '--expected-header')
       if (!flag(args, '--predecessor-stopped') || agentKey === undefined || header === undefined || Buffer.byteLength(header) > 16384) throw new HostError('HOST_CONFIG_INVALID', 'adopt-empty-arguments')
-      await write({ protocolVersion: 1, kind: 'adopted-empty', result: await adoptEmptyHostMember(spec, agentKey,
+      await write({ protocolVersion, kind: 'adopted-empty', result: await adoptEmptyHostMember(spec, agentKey,
         { predecessorStopped: true, expectedHeader: decodeSessionHeader(Buffer.from(header)) }) })
       return 0
     }
     case 'inspect':
-      await write({ protocolVersion: 1, kind: 'inspection', members: await inspectHost(spec) })
+      await write({ protocolVersion, kind: 'inspection', ...(protocolVersion === 1 ? { members: await inspectHost(spec) } : await inspectHost(spec, { protocolVersion: 2 })) })
       return 0
     case 'recover': {
       if (!flag(args, '--predecessor-stopped')) throw new HostError('HOST_CONFIG_INVALID', 'recovery-confirmation-required')
@@ -140,19 +143,21 @@ export async function runHostCli(args: readonly string[], io: HostCliIo): Promis
         const parsed = parseBoundedJson(raw, { maxBytes: 65536, maxDepth: 2, maxNodes: 1024 })
         if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) throw new HostError('HOST_CONFIG_INVALID', 'supersedes-object')
         for (const [key, value] of Object.entries(parsed)) {
-          if (!spec.members.some(member => member.kind === 'local' && member.agentKey === key) || value !== null && typeof value !== 'string') throw new HostError('HOST_CONFIG_INVALID', 'supersedes-entry')
+          if ((protocolVersion === 1 ? !spec.members.some(member => member.kind === 'local' && member.agentKey === key) : !/^[0-9a-f-]{36}:(agent|subagent:ah-event:[0-9a-f-]{36}:\d+)$/.test(key))
+            || value !== null && typeof value !== 'string') throw new HostError('HOST_CONFIG_INVALID', 'supersedes-entry')
           if (value !== null) parseSessionEventId(value as string)
           supersedes[key] = value as SessionEventId | null
         }
       }
-      await write({ protocolVersion: 1, kind: 'recovery', members: await recoverHost(spec, { predecessorStopped: true, supersedes,
+      await write({ protocolVersion, kind: 'recovery', members: await recoverHost(spec, { predecessorStopped: true,
+        ...(protocolVersion === 1 ? { supersedes } : { domainSupersedes: supersedes }),
         maxRecoveryWrites: integerOption(args, '--max-recovery-writes'),
         maxJournalConflicts: integerOption(args, '--max-journal-conflicts') }) })
       return 0
     }
     case 'run':
     case 'serve':
-      return await interactive(spec, command, io, [dirname(resolve(configPath))])
+      return await interactive(spec, command, io, [dirname(resolve(configPath))], protocolVersion)
     default:
       throw new HostError('HOST_CONFIG_INVALID', 'unknown-command')
   }

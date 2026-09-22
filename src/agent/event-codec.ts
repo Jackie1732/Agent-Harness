@@ -28,10 +28,11 @@ export function decodeMaintenanceRunSettled(value: unknown): AgentMaintenanceRun
   choice(input.stoppedBy, ['idle', 'run-budget', 'cancelled', 'faulted', 'interrupted']); text(input.reason, 128)
   return input as AgentMaintenanceRunSettled
 }
-export function decodeTurnStarted(value: unknown): AgentEventPayloads['turn-started'] {
-  const input = record(agentJson(value)); exact(input, ['run', 'input', 'lane', 'ordinal', 'root', 'predecessor', 'deadline', 'observedAt'])
+export function decodeTurnStarted(value: unknown, version: 1 | 2 = 1): AgentEventPayloads['turn-started'] {
+  const input = record(agentJson(value)); exact(input, ['run', 'input', 'lane', 'ordinal', 'root', 'predecessor', 'deadline', 'observedAt', ...(version === 2 ? ['protocolSource'] : [])])
+  if (version === 2) nullableId(input.protocolSource)
   timestamp(input.observedAt)
-  eventId(input.run); inputReference(input.input); text(input.lane, 256); integer(input.ordinal, 1); nullableId(input.root)
+  eventId(input.run); inputReference(input.input, version); text(input.lane, 256); integer(input.ordinal, 1); nullableId(input.root)
   if (input.predecessor !== null) actionReference(input.predecessor)
   if (input.deadline !== null) timestamp(input.deadline)
   return input as AgentEventPayloads['turn-started']
@@ -42,7 +43,7 @@ export function decodeStepOpened(value: unknown): AgentEventPayloads['step-opene
   eventId(input.turn); integer(input.ordinal, 1); integer(input.outputTokens, 1)
   return input as AgentEventPayloads['step-opened']
 }
-export function decodeStepDecided(value: unknown): AgentEventPayloads['step-decided'] {
+export function decodeStepDecided(value: unknown, version: 1 | 2 = 1): AgentEventPayloads['step-decided'] {
   const input = record(agentJson(value))
   exact(input, ['step', 'model', 'classification', 'reason', 'actions', 'admitted', 'reservation', 'reassemblies', 'observedAt'])
   timestamp(input.observedAt)
@@ -55,27 +56,28 @@ export function decodeStepDecided(value: unknown): AgentEventPayloads['step-deci
     const action = record(value); exact(action, ['source', 'route'])
     const source = record(action.source); exact(source, ['invocationId', 'outputBlockIndex'])
     parseModelInvocationId(text(source.invocationId)); integer(source.outputBlockIndex)
-    choice(action.route, ['tool', 'send', 'reply', 'wait', 'ask', 'invalid'])
+    choice(action.route, ['tool', 'send', 'reply', 'wait', 'ask', 'invalid', ...(version === 2 ? ['spawn', 'await-subagent', 'answer-subagent', 'ask-parent', 'progress'] : [])])
   })
   flag(input.admitted); decodeAgentBudget(input.reservation); integer(input.reassemblies)
   return input as AgentEventPayloads['step-decided']
 }
-function actionResult(value: unknown): AgentActionResult {
+function actionResult(value: unknown, version: 1 | 2): AgentActionResult {
   const input = record(value)
-  const kind = choice(input.kind, ['tool', 'outbox', 'wait', 'not-started', 'communication-not-accepted'])
+  const kind = choice(input.kind, ['tool', 'outbox', 'wait', 'not-started', 'communication-not-accepted', ...(version === 2 ? ['protocol-accepted'] : [])])
   switch (kind) {
     case 'tool': exact(input, ['kind', 'settled']); eventId(input.settled); break
     case 'outbox': exact(input, ['kind', 'accepted']); eventId(input.accepted); break
-    case 'wait': exact(input, ['kind', 'descriptor']); decodeWaitDescriptor(input.descriptor); break
+    case 'wait': exact(input, ['kind', 'descriptor']); decodeWaitDescriptor(input.descriptor, version); break
+    case 'protocol-accepted': exact(input, ['kind', 'protocol']); eventId(input.protocol); break
     case 'not-started': exact(input, ['kind', 'reason']); text(input.reason, 128); break
     case 'communication-not-accepted':
       exact(input, ['kind', 'reason', 'basis']); text(input.reason, 128); choice(input.basis, ['observed-rejection', 'recovered-absence']); break
   }
   return input as AgentActionResult
 }
-export function decodeActionSettled(value: unknown): AgentEventPayloads['action-settled'] {
+export function decodeActionSettled(value: unknown, version: 1 | 2 = 1): AgentEventPayloads['action-settled'] {
   const input = record(agentJson(value)); exact(input, ['action', 'result'])
-  return Object.freeze({ action: actionReference(input.action), result: actionResult(input.result) })
+  return Object.freeze({ action: actionReference(input.action), result: actionResult(input.result, version) })
 }
 export function decodeTurnSettled(value: unknown): AgentEventPayloads['turn-settled'] {
   const input = record(agentJson(value)); exact(input, ['turn', 'outcome', 'rootOutcome', 'reason', 'disposition', 'finalStep', 'budget'])
@@ -85,14 +87,14 @@ export function decodeTurnSettled(value: unknown): AgentEventPayloads['turn-sett
   nullableId(input.finalStep); decodeAgentBudget(input.budget)
   return input as AgentEventPayloads['turn-settled']
 }
-export function decodeWaitSettled(value: unknown): AgentEventPayloads['wait-settled'] {
+export function decodeWaitSettled(value: unknown, version: 1 | 2 = 1): AgentEventPayloads['wait-settled'] {
   const input = record(agentJson(value)); exact(input, ['wait', 'outcome', 'response', 'reason', 'observedAt', 'supportedMessages', 'outboxTerminal'])
   nullableId(input.outboxTerminal)
   array(input.supportedMessages, 256).forEach(value => {
     const kind = record(value); exact(kind, ['type', 'payloadVersion']); text(kind.type, 128); integer(kind.payloadVersion, 1)
   })
   actionReference(input.wait); choice(input.outcome, ['matched', 'timed-out', 'cancelled', 'unavailable'])
-  if (input.response !== null) inputReference(input.response)
+  if (input.response !== null) inputReference(input.response, version)
   text(input.reason, 128); timestamp(input.observedAt)
   return input as AgentEventPayloads['wait-settled']
 }

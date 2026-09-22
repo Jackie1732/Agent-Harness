@@ -10,14 +10,14 @@ import type { SessionHandle } from '../session/session-handle.js'
 import type { CommittedSessionEvent, SessionSnapshot } from '../session/types.js'
 import { AgentError } from './errors.js'
 import { projectAgentSession } from './projection.js'
-import { agentSessionEventDefinitions } from './session-events.js'
+import { legacyAgentSessionEventDefinitions } from './session-events.js'
 import type { AgentSessionSnapshot } from './state.js'
 
 /** Conditional local writes only; callbacks cannot invoke providers or policy. */
 export class AgentJournal {
   #faulted = false
   constructor(readonly session: SessionHandle, readonly conflicts: number, readonly clock: Clock) {
-    if (agentSessionEventDefinitions.some(definition => !session.supportsEventDefinition(definition))) {
+    if (legacyAgentSessionEventDefinitions.some(definition => !session.supportsEventDefinition(definition))) {
       throw new AgentError('AGENT_CATALOG_INCOMPATIBLE', 'agent-events-required')
     }
     if (!Number.isSafeInteger(conflicts) || conflicts < 0) throw new AgentError('AGENT_INPUT_INVALID', 'conflict-budget')

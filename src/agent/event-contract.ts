@@ -22,11 +22,12 @@ export type AgentTurnStarted = {
   readonly predecessor: AgentActionReference | null
   readonly deadline: string | null
   readonly observedAt: string
+  readonly protocolSource?: SessionEventId | null
 }
 export type AgentStepOpened = { readonly turn: SessionEventId; readonly ordinal: number; readonly outputTokens: number; readonly observedAt: string }
 export type AgentActionIntent = {
   readonly source: ModelIntentReference
-  readonly route: 'tool' | 'send' | 'reply' | 'wait' | 'ask' | 'invalid'
+  readonly route: 'tool' | 'send' | 'reply' | 'wait' | 'ask' | 'spawn' | 'await-subagent' | 'answer-subagent' | 'ask-parent' | 'progress' | 'invalid'
 }
 export type AgentStepDecided = {
   readonly step: SessionEventId
@@ -43,6 +44,7 @@ export type AgentActionResult =
   | { readonly kind: 'tool'; readonly settled: SessionEventId }
   | { readonly kind: 'outbox'; readonly accepted: SessionEventId }
   | { readonly kind: 'wait'; readonly descriptor: AgentWaitDescriptor }
+  | { readonly kind: 'protocol-accepted'; readonly protocol: SessionEventId }
   | { readonly kind: 'not-started'; readonly reason: string }
   | { readonly kind: 'communication-not-accepted'; readonly reason: string; readonly basis: 'observed-rejection' | 'recovered-absence' }
 export type AgentActionSettled = { readonly action: AgentActionReference; readonly result: AgentActionResult }

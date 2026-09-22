@@ -15,7 +15,7 @@ function list(value: JsonValue | undefined, label: string): readonly JsonValue[]
 }
 
 const inlineSchemaFields = new Set([
-  'type', 'description', 'properties', 'required', 'additionalProperties', 'enum', 'items',
+  'type', 'description', 'properties', 'required', 'additionalProperties', 'enum', 'items', 'oneOf',
 ])
 
 /** The exact inline subset inherited from Model; callers preflight untrusted JSON first. */
@@ -29,6 +29,15 @@ export function validateInlineSchema(schema: JsonObject, depth = 0, maximumDepth
     invalid('schema type has an unsupported value')
   }
   if (schema.description !== undefined && typeof schema.description !== 'string') invalid('schema description must be a bounded string')
+  if (schema.oneOf !== undefined) {
+    const alternatives = list(schema.oneOf, 'schema alternatives')
+    if (alternatives.length < 2 || alternatives.length > 8) invalid('schema alternatives must be finite')
+    for (const alternative of alternatives) {
+      const variant = object(alternative, 'schema alternative')
+      if (variant.type !== type) invalid('schema alternatives must retain the declared type')
+      validateInlineSchema(variant, depth + 1, maximumDepth)
+    }
+  }
   if (schema.enum !== undefined) {
     const values = list(schema.enum, 'schema enum')
     if (values.length === 0) invalid('schema enum must not be empty')

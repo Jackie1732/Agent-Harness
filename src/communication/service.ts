@@ -1,3 +1,6 @@
+import { DelegationChannels } from './delegation-channels.js'
+import type { DelegationChannelLease } from './delegation-channels.js'
+import type { MessageSendKey, MessageSendCommand } from './send-command.js'
 import { systemClock } from '../foundation/clock.js'
 import type { Clock } from '../foundation/clock.js'
 import { SerialGate } from '../foundation/serial-gate.js'
@@ -38,6 +41,7 @@ type ServiceStatus = 'active' | 'disposing' | 'disposed'
 
 /** Owns Session attachment, private receiver registration, and Dispatcher identity. */
 export class CommunicationService {
+  readonly delegationChannels: DelegationChannels
   readonly #directory: SessionDirectory
   readonly #transport: MessageTransport
   readonly #limits: MailboxLimits
@@ -55,6 +59,7 @@ export class CommunicationService {
     this.#directory = options.directory
     this.#transport = options.transport
     this.#limits = validateMailboxLimits(options.limits)
+    this.delegationChannels = new DelegationChannels(this.#limits)
     this.#clock = options.clock ?? systemClock
     this.#identitySource = options.identitySource ?? systemCommunicationIdentitySource
   }
@@ -118,6 +123,7 @@ export class CommunicationService {
       let receiverLease: EffectLease<unknown> | undefined
       const mailbox = new SessionMailboxImpl({
         handle,
+        channels: this.delegationChannels,
         catalog: options.catalog,
         policy,
         limits: this.#limits,
@@ -145,6 +151,15 @@ export class CommunicationService {
     return this.#track(task)
   }
 
+  /** Lease-based protocol sends retain normal keyed Outbox durability and idempotency. */
+  sendDelegationOnce(mailbox: SessionMailbox, lease: DelegationChannelLease, key: MessageSendKey, command: MessageSendCommand) {
+    this.#assertActive()
+    if (!(mailbox instanceof SessionMailboxImpl) || this.#mailboxes.get(mailbox.address) !== mailbox) {
+      throw new CommunicationError('MESSAGE_MAILBOX_FOREIGN', 'protocol sender is not attached to this Service')
+    }
+    return mailbox.sendDelegationOnce(lease, key, command)
+  }
+
   /** Return the sole Dispatcher associated with a Mailbox owned by this Service. */
   createDispatcher(mailbox: SessionMailbox): OutboxDispatcher {
     this.#assertActive()
@@ -163,8 +178,10 @@ export class CommunicationService {
   dispose(): Promise<void> {
     if (this.#disposeTask !== undefined) return this.#disposeTask
     this.#status = 'disposing'
+    this.delegationChannels.closeAdmission()
     const task = (async () => {
       await Promise.allSettled([...this.#operations])
+      await this.delegationChannels.drain()
       const mailboxResults = await Promise.allSettled([...this.#mailboxes.values()].map(mailbox => mailbox.dispose()))
       const declarationResults = await Promise.allSettled([...this.#ownedDeclarations.values()].map(lease => lease.dispose()))
       this.#ownedDeclarations.clear()

@@ -1,3 +1,4 @@
+import type { DelegationChannelLease, DelegationChannels } from './delegation-channels.js'
 import { systemClock } from '../foundation/clock.js'
 import type { Clock, JsonValue } from '../foundation/index.js'
 import type {
@@ -16,7 +17,7 @@ import type { MessageCatalog, MessageDefinition } from './message-catalog.js'
 import { decodeMessagePayload } from './message-catalog.js'
 import { OutboxAttemptCoordinator } from './outbox-attempts.js'
 import { OutboxAcceptance } from './outbox-acceptance.js'
-import type { MessageCommandContent, MessageSendKey } from './send-command.js'
+import type { MessageCommandContent, MessageSendKey, MessageSendCommand } from './send-command.js'
 import type { DeliveryAttemptLease, PrepareAttemptResult } from './outbox-attempts.js'
 import type {
   CommunicationPolicy,
@@ -70,6 +71,7 @@ export interface SessionMailbox {
 
 /** Dependencies supplied only by Communication Service attachment. */
 export interface SessionMailboxOptions {
+  readonly channels?: DelegationChannels
   readonly handle: SessionHandle
   readonly catalog: MessageCatalog
   readonly policy: CommunicationPolicy
@@ -115,6 +117,7 @@ export class SessionMailboxImpl implements SessionMailbox, DirectoryReceiver {
     const clock = options.clock ?? systemClock
     const identitySource = options.identitySource ?? systemCommunicationIdentitySource
     const journalOptions = {
+      ...(options.channels === undefined ? {} : { channels: options.channels }),
       handle: this.#handle,
       catalog: this.#catalog,
       policy: options.policy,
@@ -171,6 +174,12 @@ export class SessionMailboxImpl implements SessionMailbox, DirectoryReceiver {
   replyOnce(key: MessageSendKey, inboxMessageId: MessageId, content: MessageCommandContent): Promise<OutgoingMessageAccepted> {
     this.#assertAccepting()
     return this.#track(this.#outbox.sendOnce(key, { ...content, kind: 'reply', inboxMessageId }))
+  }
+
+  /** Service-only capability route; delegates to the same keyed Outbox commit algorithm. */
+  sendDelegationOnce(lease: DelegationChannelLease, key: MessageSendKey, command: MessageSendCommand): Promise<OutgoingMessageAccepted> {
+    this.#assertAccepting()
+    return this.#track(this.#outbox.sendOnce(key, command, lease))
   }
 
   markProcessed(messageId: MessageId): Promise<InboxMessageSnapshot> {

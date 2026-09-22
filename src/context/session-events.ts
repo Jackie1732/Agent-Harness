@@ -3,7 +3,7 @@ import { decodeContextAssembly } from './assembly-codec.js'
 import { decodeContextCompaction } from './compaction-codec.js'
 import { decodeContextInput } from './input.js'
 import { decodeContextMemory, decodeMemoryRetraction } from './memory.js'
-import { decodeContextProfile, decodeAgentContextProfile } from './profile.js'
+import { decodeContextProfile, decodeAgentContextProfile, decodeSubagentContextProfile } from './profile.js'
 import { decodeAgentContextAssembly } from './agent-codec.js'
 
 export const contextProfileRecordedEvent = createDurableEventDefinition({
@@ -28,13 +28,21 @@ export const contextAssemblyCommittedEvent = createDurableEventDefinition({
 export const agentContextProfileRecordedEvent = createDurableEventDefinition({
   type: 'context/profile-recorded', payloadVersion: 2, ignorable: false, decode: decodeAgentContextProfile,
 })
+export const subagentContextProfileRecordedEvent = createDurableEventDefinition({
+  type: 'context/profile-recorded', payloadVersion: 3, ignorable: false, decode: decodeSubagentContextProfile,
+})
 export const agentContextAssemblyCommittedEvent = createDurableEventDefinition({
   type: 'context/assembly-committed', payloadVersion: 2, ignorable: false, decode: decodeAgentContextAssembly,
 })
+export const subagentContextAssemblyCommittedEvent = createDurableEventDefinition({
+  type: 'context/assembly-committed', payloadVersion: 3, ignorable: false, decode: value => decodeAgentContextAssembly(value, 3),
+})
 
 /** Exact identities composed into the Session Catalog; none of these facts is ignorable. */
-export const contextSessionEventDefinitions = Object.freeze([
+export const legacyContextSessionEventDefinitions = Object.freeze([
   contextProfileRecordedEvent, contextInputRecordedEvent, contextMemoryRecordedEvent,
   contextMemoryRetractedEvent, contextCompactionCommittedEvent, contextAssemblyCommittedEvent,
   agentContextProfileRecordedEvent, agentContextAssemblyCommittedEvent,
 ])
+export const contextSessionEventDefinitions = Object.freeze([...legacyContextSessionEventDefinitions,
+  subagentContextProfileRecordedEvent, subagentContextAssemblyCommittedEvent])

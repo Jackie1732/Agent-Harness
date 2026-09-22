@@ -2,8 +2,9 @@ import { parseChannelId } from '../communication/ids.js'
 import { decodeProviderDescriptor } from '../model/submission.js'
 import { snapshotModelRequest } from '../model/request.js'
 import { parseSessionAddress } from '../session/ids.js'
-import type { AgentLimits, AgentSpec } from './contract.js'
-import { agentNativeActionNames } from './contract.js'
+import type { AgentLimits, AgentSpec, AgentSpecV1, AgentSpecV2, ChildAgentSpecTemplate } from './contract.js'
+import { agentNativeActionNames, subagentNativeActionNames } from './contract.js'
+import { decodeAgentSubagentRole } from '../subagent/role-codec.js'
 import { decodeAgentBudget } from './budget.js'
 import { AgentError } from './errors.js'
 import { agentJson, array, choice, eventId, exact, flag, integer, record, text, unique } from './validation.js'
@@ -30,14 +31,29 @@ function names(value: unknown): readonly string[] {
 }
 
 /** Parse a complete configuration without consulting a registry, clock or provider. */
-export function decodeAgentSpec(value: unknown): AgentSpec {
+export function decodeAgentSpec(value: unknown): AgentSpecV1 {
+  return decodeSpec(value, 1) as AgentSpecV1
+}
+
+/** New Sessions opt into v2 explicitly; old specs never gain delegation by reopening. */
+export function decodeSubagentAgentSpec(value: unknown): AgentSpecV2 {
+  return decodeSpec(value, 2) as AgentSpecV2
+}
+
+/** Installation-local references are bound only after their actual predecessor commits. */
+export function decodeChildAgentSpecTemplate(value: unknown): ChildAgentSpecTemplate {
+  return decodeSpec(value, 2, true) as ChildAgentSpecTemplate
+}
+
+function decodeSpec(value: unknown, version: 1 | 2, childTemplate = false): AgentSpec | ChildAgentSpecTemplate {
   try {
     const input = record(agentJson(value))
-    exact(input, ['protocolVersion', 'label', 'responsibility', 'nonGoals', 'profileEventId', 'target', 'toolNames',
+    exact(input, ['protocolVersion', 'label', 'responsibility', 'nonGoals', ...(!childTemplate ? ['profileEventId'] : []), 'target', 'toolNames',
       'nativeActions', 'peers', 'messages', 'context', 'budget', 'rootDurationMs', 'maxDirectSendCommandsPerSession',
-      'limits', 'errorFeedback', 'usagePolicy', 'businessRefusalHandled'])
-    integer(input.protocolVersion, 1, 1); text(input.label, 128); text(input.responsibility, 8192)
-    array(input.nonGoals, 64).forEach(item => text(item, 1024)); eventId(input.profileEventId)
+      'limits', 'errorFeedback', 'usagePolicy', 'businessRefusalHandled', ...(version === 2 && !childTemplate ? ['subagents'] : [])])
+    integer(input.protocolVersion, version, version); text(input.label, 128); text(input.responsibility, 8192)
+    array(input.nonGoals, 64).forEach(item => text(item, 1024))
+    if (!childTemplate) eventId(input.profileEventId)
     const target = record(input.target)
     const allowed = ['model', 'maxOutputTokens', 'provider', 'temperature', 'topP', 'profile']
     if (Object.keys(target).some(key => !allowed.includes(key))) throw new Error('target-fields')
@@ -45,9 +61,10 @@ export function decodeAgentSpec(value: unknown): AgentSpec {
     const { provider: _provider, ...controls } = target
     snapshotModelRequest({ ...controls, instructions: [], messages: [{ role: 'user', content: [{ kind: 'text', text: 'validate' }] }], tools: [] })
     const tools = names(input.toolNames)
-    if (tools.some(name => !/^[A-Za-z0-9_-]+$/.test(name) || (agentNativeActionNames as readonly string[]).includes(name))) throw new Error('tool-name')
+    const reservedNames: readonly string[] = [...agentNativeActionNames, ...subagentNativeActionNames]
+    if (tools.some(name => !/^[A-Za-z0-9_-]+$/.test(name) || (version === 1 ? agentNativeActionNames as readonly string[] : reservedNames).includes(name))) throw new Error('tool-name')
     const actions = names(input.nativeActions)
-    actions.forEach(name => choice(name, agentNativeActionNames))
+    actions.forEach(name => choice(name, version === 1 ? agentNativeActionNames : reservedNames))
     const peers = array(input.peers, 1000).map(item => {
       const peer = record(item); exact(peer, ['key', 'address', 'channelId'])
       text(peer.key, 128); parseSessionAddress(text(peer.address)); parseChannelId(text(peer.channelId))
@@ -80,6 +97,16 @@ export function decodeAgentSpec(value: unknown): AgentSpec {
     integer(input.rootDurationMs, 1, 31_536_000_000); integer(input.maxDirectSendCommandsPerSession)
     choice(input.errorFeedback, ['new-step', 'stop']); choice(input.usagePolicy, ['observe-only', 'stop-on-unknown'])
     flag(input.businessRefusalHandled)
+    if (childTemplate) {
+      if (peers.length !== 0 || actions.some(name => name !== 'agent_ask_parent' && name !== 'agent_report_progress')) throw new Error('child-template-authority')
+    } else if (version === 2) {
+      const role = decodeAgentSubagentRole(input.subagents)
+      const parentActions: readonly string[] = ['agent_spawn_subagent', 'agent_await_subagent', 'agent_answer_subagent']
+      const childActions: readonly string[] = ['agent_ask_parent', 'agent_report_progress']
+      if (actions.some(name => parentActions.includes(name) && role.role !== 'parent'
+        || childActions.includes(name) && role.role !== 'child')) throw new Error('role-action')
+      if (role.role === 'child' && (peers.length !== 0 || actions.some(name => agentNativeActionNames.includes(name as typeof agentNativeActionNames[number])))) throw new Error('child-direct-action')
+    }
     return input as AgentSpec
   } catch { throw new AgentError('AGENT_SPEC_INVALID', 'invalid-agent-spec') }
 }

@@ -44,7 +44,7 @@ export function projectContextSession(snapshot: SessionSnapshot): ContextSession
 export function readAssembly(snapshot: SessionSnapshot, id: SessionEventId): ContextAssemblyRead {
   const index = requireSourceIndex(snapshot)
   const stored = knownEvent(index, eventId(id), 'context/assembly-committed')
-  const committed = Object.freeze({ ...stored, payload: stored.stored.payloadVersion === 2 ? decodeAgentContextAssembly(stored.payload) : decodeContextAssembly(stored.payload) })
+  const committed = Object.freeze({ ...stored, payload: [2, 3].includes(stored.stored.payloadVersion) ? decodeAgentContextAssembly(stored.payload, stored.stored.payloadVersion === 2 ? 2 : 3) : decodeContextAssembly(stored.payload) })
   assertEventCut(index.snapshot, committed, committed.payload.coverage)
   return Object.freeze({ committed, adoption: contextModelAdoption(index.snapshot, committed) })
 }
@@ -52,9 +52,9 @@ export function readAssembly(snapshot: SessionSnapshot, id: SessionEventId): Con
 export function rebuildAssembly(snapshot: SessionSnapshot, id: SessionEventId): ContextRebuildResult {
   const read = readAssembly(snapshot, id)
   const original = read.committed.payload
-  if (read.committed.stored.payloadVersion === 2) {
-    const value = decodeAgentContextAssembly(original)
-    if (value.rendererVersion !== 'context-neutral/v2') return { kind: 'unsupported', version: value.rendererVersion }
+  if ([2, 3].includes(read.committed.stored.payloadVersion)) {
+    const value = decodeAgentContextAssembly(original, read.committed.stored.payloadVersion === 2 ? 2 : 3)
+    if (value.rendererVersion !== (read.committed.stored.payloadVersion === 2 ? 'context-neutral/v2' : 'context-neutral/v3')) return { kind: 'unsupported', version: value.rendererVersion }
     const result = assembleAgentContext(snapshotAtCut(snapshot, value.coverage), value.consumer, value.captured, value.budget.sessionMaxRecordBytes)
     if (result.kind !== 'ready' || !equalJson(result.assembly, value)) invalidState('agent-assembly-full-content-rebuild')
     return Object.freeze({ kind: 'rebuilt', request: result.request, assembly: result.assembly, adoption: read.adoption })

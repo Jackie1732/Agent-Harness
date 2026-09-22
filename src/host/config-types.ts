@@ -1,4 +1,5 @@
-import type { AgentSpec } from '../agent/contract.js'
+import type { HostSubagentConfig } from './subagent-config.js'
+import type { AgentSpec, AgentSpecV1, AgentSpecV2 } from '../agent/contract.js'
 import type { MailboxLimits } from '../communication/types.js'
 import type { ChannelId } from '../communication/ids.js'
 import type { ContextModelTarget, ContextProfile } from '../context/contract.js'
@@ -19,7 +20,7 @@ export interface HostPeerConfig {
   readonly channelKey: string
 }
 export interface HostAgentSpecTemplate {
-  readonly protocolVersion: 1
+  readonly protocolVersion: 1 | 2
   readonly label: string
   readonly responsibility: string
   readonly nonGoals: readonly string[]
@@ -37,7 +38,7 @@ export interface HostAgentSpecTemplate {
   readonly usagePolicy: AgentSpec['usagePolicy']
   readonly businessRefusalHandled: boolean
 }
-export interface HostScriptedModelConfig {
+export interface HostScriptedModelConfig extends JsonObject {
   readonly kind: 'scripted-fixed'
   readonly providerId: string
   readonly text: string
@@ -45,7 +46,7 @@ export interface HostScriptedModelConfig {
   readonly streamLimits: ModelStreamLimits
   readonly runnerLimits: ModelRunnerLimits
 }
-export interface HostHttpModelConfig {
+export interface HostHttpModelConfig extends JsonObject {
   readonly kind: 'deepseek' | 'anthropic'
   readonly providerId: string
   readonly endpoint: string
@@ -138,7 +139,7 @@ export interface HostCliConfig {
   readonly maxOutputBytes: number
   readonly outputDrainTimeoutMs: number
 }
-export interface HostConfig {
+export interface HostConfigV1 {
   readonly schemaVersion: 1
   readonly hostKey: string
   readonly storage: { readonly root: string; readonly maxRecordBytes: number; readonly maxLineageDepth: number }
@@ -154,10 +155,12 @@ export interface HostConfig {
 }
 export interface ResolvedHostLocalMember extends Omit<HostLocalMemberConfig, 'sessionId' | 'spec'> {
   readonly sessionId: string
-  readonly spec: Omit<AgentSpec, 'profileEventId'>
+  readonly spec: Omit<AgentSpecV1, 'profileEventId'> | Omit<AgentSpecV2, 'profileEventId'>
 }
 export type ResolvedHostMember = ResolvedHostLocalMember | HostRemoteMemberConfig
-export interface ResolvedHostSpec extends Omit<HostConfig, 'members' | 'channels' | 'routes'> {
+export type HostConfigV2 = Omit<HostConfigV1, 'schemaVersion'> & { readonly schemaVersion: 2; readonly subagents: HostSubagentConfig }
+export type HostConfig = HostConfigV1 | HostConfigV2
+export type ResolvedHostSpec = (Omit<HostConfigV1, 'members' | 'channels' | 'routes'> | Omit<HostConfigV2, 'members' | 'channels' | 'routes'>) & {
   readonly members: readonly ResolvedHostMember[]
   readonly channels: readonly { readonly channelKey: string; readonly channelId: string }[]
   readonly routes: readonly ResolvedHostRoute[]

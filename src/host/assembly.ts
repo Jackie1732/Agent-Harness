@@ -1,3 +1,5 @@
+import { discoverHostDelegations } from './delegation-discovery.js'
+import { WorkspaceAuthority } from '../subagent/workspace.js'
 import { readFile } from 'node:fs/promises'
 import { dirname } from 'node:path'
 import { EffectOwner } from '../effect/owner.js'
@@ -20,9 +22,11 @@ import { acquireHostStorageLock } from './storage-lock.js'
 import { compileHostMessageCatalog } from './message-catalog.js'
 import { createHostSlot } from './slot.js'
 import type { HostRuntimeBindings } from './slot.js'
-import type { HostSlot } from './runtime-types.js'
+import type { HostSlot, HostProtocolSlot } from './runtime-types.js'
 import { HostWakeup } from './wakeup.js'
 import { HostSlotOwner } from './slot-owner.js'
+import { HostSubagents } from './subagents.js'
+import { subagentMessageDefinitions } from '../subagent/messages.js'
 
 /** Acquire dependencies in order; failed releases retain storage ownership. */
 export async function assembleHost(spec: ResolvedHostSpec, clock: Clock,
@@ -53,6 +57,7 @@ export async function assembleHost(spec: ResolvedHostSpec, clock: Clock,
         validateHostMemberSession(session, spec.hostKey, member, { allowEnded: !member.enabled })
         local.push({ member, session })
       }
+      const discovered = await discoverHostDelegations(spec, repository)
       const directory = await effect.apply('directory', () => createSessionDirectory(), value => release(value, true))
       const remote = new Map<string, MessageTransport>()
       for (const route of spec.routes.filter(item => item.origin !== null)) {
@@ -63,8 +68,10 @@ export async function assembleHost(spec: ResolvedHostSpec, clock: Clock,
           tls: { ca: tls.ca, cert: tls.clientCert, key: tls.clientKey }, limits: https!.limits,
         }), value => release(value)))
       }
+      const childAddresses = new Set<string>()
       const routes = new Map(spec.routes.map(route => [formatSessionAddress(parseSessionId(route.sessionId)), route]))
       const transport = await effect.apply('router', () => createRoutedMessageTransport(directory, recipient => {
+        if (childAddresses.has(recipient)) return { kind: 'local' }
         const route = routes.get(recipient)
         if (route === undefined) return { kind: 'unavailable' }
         if (route.ownerHost === spec.hostKey && route.origin === null) return { kind: 'local' }
@@ -76,17 +83,26 @@ export async function assembleHost(spec: ResolvedHostSpec, clock: Clock,
         () => directory.declare(formatSessionAddress(parseSessionId(member.sessionId)), session.snapshot().lifecycle), value => release(value, true))
       const protectedRoots = [lock.root, ...(bindings.protectedRoots ?? []), ...(https !== undefined
         ? [dirname(https.serverKeyFile), dirname(https.clientKeyFile)] : [])]
-      const catalog = compileHostMessageCatalog(spec.messages)
+      const workspaces = spec.schemaVersion === 2 && spec.subagents.kind === 'enabled' ? await effect.apply('workspace authority',
+        () => WorkspaceAuthority.create(spec.subagents.kind === 'enabled' ? spec.subagents.workspaceResources : [], local.flatMap(({ member }) => member.tools.kind === 'none' ? [] : [member.tools.rootPath]), protectedRoots, clock), value => release(value)) : undefined
+      const catalog = compileHostMessageCatalog(spec.messages, spec.schemaVersion === 2 && spec.subagents.kind === 'enabled' ? subagentMessageDefinitions : [])
       const slots: HostSlot[] = []
+      const protocolSlots: HostProtocolSlot[] = []
+      const subagents = spec.schemaVersion === 2 && spec.subagents.kind === 'enabled' ? new HostSubagents({
+        config: spec.subagents, repository, communication: service, catalog, clock, credentials, protectedRoots, bindings, slots, localMembers: local, protocolSlots, childAddresses, workspaces: workspaces!,
+      }) : undefined
       const slotOwners = new Map<string, HostSlotOwner>()
       for (const { member, session } of local) {
         const lifetime = await effect.apply('member lifetime', () => new HostSlotOwner(member.agentKey, async () => {
           validateHostMemberSession(session, spec.hostKey, member)
-          return await createHostSlot(session, member, service, catalog, clock, credentials, protectedRoots, bindings)
+          return await createHostSlot(session, member, service, catalog, clock, credentials, protectedRoots, bindings, { ...(subagents === undefined ? {} : { subagentActions: subagents.actions(member.agentKey, session) }),
+            ...(member.tools.kind === 'none' || workspaces === undefined ? {} : { workspaceAccess: workspaces.staticAccess(member.tools.rootPath) }) })
         }), value => release(value))
         slotOwners.set(member.agentKey, lifetime)
-        if (member.enabled) slots.push(await lifetime.open())
       }
+      if (subagents !== undefined) await effect.apply('subagents', () => subagents, value => release(value))
+      if (subagents !== undefined) await subagents.restore(discovered, local)
+      for (const { member } of local) if (member.enabled) slots.push(await slotOwners.get(member.agentKey)!.open())
       const server = https !== undefined && tls !== undefined ? await effect.apply('HTTPS listener',
         () => createHttpsMessageServer({ directory, host: https.listen.host,
           port: https.listen.port,
@@ -94,7 +110,7 @@ export async function assembleHost(spec: ResolvedHostSpec, clock: Clock,
           peers: https.peers.map(peer => ({ hostKey: peer.hostKey,
             fingerprint256: peer.fingerprint256, senders: new Set(peer.sessionIds.map(id => formatSessionAddress(parseSessionId(id)))) })),
         }), value => release(value)) : undefined
-      return { lock, directory, server, slots, wakeup, local, catalog,
+      return { lock, directory, server, slots, protocolSlots, wakeup, local, catalog, subagents,
         reopen: async (agentKey: string) => {
           const lifetime = slotOwners.get(agentKey)
           if (lifetime === undefined) throw new HostError('HOST_NOT_READY', 'slot-unavailable')

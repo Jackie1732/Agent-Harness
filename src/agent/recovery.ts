@@ -1,3 +1,5 @@
+import { recoverSubagentAction } from '../subagent/recover-action.js'
+import { delegationClosure } from '../subagent/closure.js'
 import { agentRootUsageUnknown } from './root-policy.js'
 import { legacyAbandonLostClaim } from './input-ownership.js'
 import { inputKey } from './input-codec.js'
@@ -40,6 +42,7 @@ export async function recoverAgentSession(session: SessionHandle, options: Agent
   if (before.openRecovery !== options.supersedes) throw new AgentError('AGENT_RECOVERY_BUSY', 'recovery-predecessor-mismatch')
   const pendingControls = before.controls.filter(item => item.settled === null && item.supersededBy === null && item.requested.payload.kind !== 'recovery')
   if (before.openRun === null && pendingControls.length === 0 && before.openRecovery === null) return { kind: 'nothing-to-recover' as const, report: projectAgentReport(session.snapshot()) }
+  const executionEvents = events.agentExecutionEvents(before.spec!.payload.protocolVersion)
   const owner = await journal.append(events.agentControlRequestedEvent, (state, snapshot) => {
     if (state.openRecovery !== options.supersedes) throw new AgentError('AGENT_RECOVERY_BUSY', 'recovery-owner-changed')
     return { kind: 'recovery' as const, targetRun: state.openRun,
@@ -63,11 +66,11 @@ export async function recoverAgentSession(session: SessionHandle, options: Agent
     if (undecided !== undefined) {
       const candidate = models.invocations.find(item => item.prepared.stored.sequence > undecided.opened.stored.sequence)
       const assembly = candidate === undefined ? undefined : snapshot.history.at(-1)!.events[candidate.prepared.stored.sequence - 2]
-      const model = candidate?.state === 'settled' && assembly?.stored.type === 'context/assembly-committed' && assembly.stored.payloadVersion === 2
+      const model = candidate?.state === 'settled' && assembly?.stored.type === 'context/assembly-committed' && assembly.stored.payloadVersion === (state.spec!.payload.protocolVersion === 1 ? 2 : 3)
         ? { invocationId: candidate.invocationId, assembly: assembly.stored.eventId, settled: candidate.settled.stored.eventId } : null
       const classified = model !== null && candidate?.state === 'settled' ? classifyAgentModel(candidate.settled.payload, state.spec!.payload, candidate.prepared.payload.submission.request.tools.map(tool => tool.name))
         : { classification: 'not-issued' as const, reason: 'recovery-before-model', actions: [] }
-      await journal.append(events.agentStepDecidedEvent, () => ({ step: undecided.opened.stored.eventId, model, ...classified, admitted: false,
+      await journal.append(executionEvents.stepDecided, () => ({ step: undecided.opened.stored.eventId, model, ...classified, admitted: false,
         reservation: emptyAgentBudget, reassemblies: 0, observedAt: clockTimestamp(options.clock) })); writes++; continue
     }
     const pending = state.steps.flatMap(step => step.decided === null ? [] : step.decided.payload.actions.map((intent, index) => ({
@@ -81,7 +84,8 @@ export async function recoverAgentSession(session: SessionHandle, options: Agent
       const outbox = projectCommunicationFacts(snapshot).outbox.find(item => item.sendKey !== undefined && referenceKey(item.sendKey) === referenceKey(pending.action))
       if (tool?.state === 'settled') result = { kind: 'tool', settled: tool.settled.stored.eventId }
       else if (outbox !== undefined) result = { kind: 'outbox', accepted: outbox.acceptedEventId }
-      await journal.append(events.agentActionSettledEvent, () => ({ action: pending.action, result })); writes++; continue
+      else result = recoverSubagentAction(snapshot, state, pending.action, pending.intent) ?? result
+      await journal.append(executionEvents.actionSettled, () => ({ action: pending.action, result })); writes++; continue
     }
     const command = state.commands.find(item => !state.actions.some(action => action.payload.action.eventId === item.stored.eventId))
     if (command !== undefined) {
@@ -89,7 +93,7 @@ export async function recoverAgentSession(session: SessionHandle, options: Agent
       const outbox = projectCommunicationFacts(snapshot).outbox.find(item => item.sendKey !== undefined && referenceKey(item.sendKey) === referenceKey(action))
       const result: AgentActionResult = outbox === undefined ? { kind: 'communication-not-accepted', reason: 'recovery-no-acceptance', basis: 'recovered-absence' }
         : { kind: 'outbox', accepted: outbox.acceptedEventId }
-      await journal.append(events.agentActionSettledEvent, () => ({ action, result })); writes++; continue
+      await journal.append(executionEvents.actionSettled, () => ({ action, result })); writes++; continue
     }
     if (state.openTurn !== null) {
       const turn = state.turns.find(item => item.started.stored.eventId === state.openTurn)!
@@ -103,7 +107,11 @@ export async function recoverAgentSession(session: SessionHandle, options: Agent
       const complete = wait === undefined && !uncertain && root.stopControl === null && final?.decided?.payload.classification === 'final'
         && !hasUnfulfilledAgentReply(root.id, state, projectCommunicationFacts(snapshot))
         && !agentRootUsageUnknown(snapshot, state, root.id)
-      await journal.append(events.agentTurnSettledEvent, () => ({ turn: turn.started.stored.eventId,
+        && state.subagents.delegations.filter(item => item.payload.parentRoot === root.id).every(item => {
+          const closure = delegationClosure(state, item.stored.eventId, snapshot.history.at(-1)!.events.filter(item => item.kind === 'known'))
+          return closure.businessResolved && closure.executionReleased && closure.adopted
+        })
+      await journal.append(executionEvents.turnSettled, () => ({ turn: turn.started.stored.eventId,
         outcome: wait !== undefined ? 'waiting' as const : complete ? 'completed' as const : uncertain ? 'result-unknown' as const : 'interrupted' as const,
         rootOutcome: wait !== undefined ? null : complete ? 'completed' as const : uncertain ? 'result-unknown' as const : stop?.requested.payload.kind === 'cancel-work' ? 'cancelled' as const
           : stop?.requested.payload.kind === 'expire-work' ? 'timed-out' as const : 'failed' as const,
@@ -121,12 +129,12 @@ export async function recoverAgentSession(session: SessionHandle, options: Agent
     if (request.kind === 'cancel-work' || request.kind === 'expire-work') {
       const wait = state.waits.find(wait => wait.settled === null && wait.created.payload.result.kind === 'wait' && wait.created.payload.result.descriptor.root === request.root)
       if (wait !== undefined) {
-        await journal.append(events.agentWaitSettledEvent, () => ({ wait: wait.reference, outcome: 'cancelled' as const, response: null, reason: request.reason, observedAt: clockTimestamp(options.clock), supportedMessages: [], outboxTerminal: null })); writes++; continue
+        await journal.append(executionEvents.waitSettled, () => ({ wait: wait.reference, outcome: 'cancelled' as const, response: null, reason: request.reason, observedAt: clockTimestamp(options.clock), supportedMessages: [], outboxTerminal: null })); writes++; continue
       }
       const root = state.roots.find(root => root.id === request.root)!
       const response = state.inputs.find(input => input.reservedBy !== null && state.waits.some(wait => referenceKey(wait.reference) === referenceKey(input.reservedBy!) && wait.created.payload.result.kind === 'wait' && wait.created.payload.result.descriptor.root === root.id))
       await journal.append(events.agentControlSettledEvent, () => ({ control: control.requested.stored.eventId, outcome: 'completed' as const, reason: request.reason,
-        rootOutcome: root.outcome ?? (request.kind === 'expire-work' ? 'timed-out' as const : 'cancelled' as const), responseDisposition: response === undefined ? null : response.message === null ? 'not-adopted' as const : 'release-peer' as const }))
+        rootOutcome: root.outcome ?? (request.kind === 'expire-work' ? 'timed-out' as const : 'cancelled' as const), responseDisposition: response === undefined ? null : response.message === null || response.protocol !== undefined ? 'not-adopted' as const : 'release-peer' as const }))
     } else {
       const input = request.kind === 'abandon-input' ? state.inputs.find(input => inputKey(input.reference) === inputKey(request.input)) : undefined
       const lost = input !== undefined && legacyAbandonLostClaim(control, input, state.turns.find(turn => turn.started.stored.eventId === input.claimedBy)?.started.stored.sequence)

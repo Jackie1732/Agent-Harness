@@ -43,7 +43,7 @@ export function applyStepDecided(state: AgentProjectionState, event: CommittedSe
     if (cp0raw === undefined) invalidAgent('missing-model-prepared')
     const cp0 = source(state, cp0raw.stored.eventId, modelPreparedEvent)
     const assembly = requireEntry(state.sources, p.model.assembly, 'missing-assembly')
-    if (assembly.stored.type !== 'context/assembly-committed' || assembly.stored.payloadVersion !== 2
+    if (assembly.stored.type !== 'context/assembly-committed' || assembly.stored.payloadVersion !== (spec.protocolVersion === 1 ? 2 : 3)
       || assembly.stored.sequence + 1 !== cp0.stored.sequence || assembly.stored.sequence <= step.opened.stored.sequence
       || !equal(record(assembly.payload).request, cp0.payload.submission.request)
       || !equal(record(record(record(assembly.payload).selection).target).provider, cp0.payload.submission.binding)
@@ -102,11 +102,11 @@ export function applyActionSettled(state: AgentProjectionState, event: Committed
       break
     }
     case 'wait': {
-      if (turn === null || intent === null || !['wait', 'ask'].includes(intent.route)) invalidAgent('wait-route-mismatch')
+      if (turn === null || intent === null || !['wait', 'ask', 'spawn', 'await-subagent', 'answer-subagent', 'ask-parent'].includes(intent.route)) invalidAgent('wait-route-mismatch')
       const descriptor = result.descriptor
       const root = requireEntry(state.roots, turn.root, 'missing-root')
       if (descriptor.root !== turn.root || descriptor.deadline > root.deadline
-        || (descriptor.kind === 'user' ? intent.route !== 'ask' : intent.route !== 'wait')) invalidAgent('wait-root-mismatch')
+        || descriptor.kind === 'user' && intent.route !== 'ask' || descriptor.kind === 'reply' && intent.route !== 'wait') invalidAgent('wait-root-mismatch')
       if ([...state.waits.values()].filter(wait => wait.settled === null).length >= requireSpec(state).payload.limits.maxPendingWaits) invalidAgent('wait-capacity')
       if (descriptor.kind === 'reply') {
         const outgoing = requireEntry(state.sources, descriptor.outboxEventId, 'missing-watched-outbox')
@@ -120,10 +120,13 @@ export function applyActionSettled(state: AgentProjectionState, event: Committed
       break
     }
     case 'not-started':
+      if ([...state.subagents.delegations.values()].some(item => item.payload.source.kind === 'model' && equal(item.payload.source.action, event.payload.action))
+        || [...state.subagents.protocol.values()].some(item => item.payload.source.kind === 'action' && equal(item.payload.source.action, event.payload.action))) invalidAgent('not-started-has-delegation-intent')
       if (intent !== null && [...state.sources.values()].some(entry => entry.stored.type === toolRequestedEvent.type
         && record(record(entry.payload).source).kind === 'model'
         && equal(record(record(entry.payload).source).intent, intent.source))) invalidAgent('not-started-has-tool-request')
       break
+    case 'protocol-accepted': break
     case 'communication-not-accepted':
       if (intent !== null && !['send', 'reply'].includes(intent.route)) invalidAgent('communication-result-route')
       break

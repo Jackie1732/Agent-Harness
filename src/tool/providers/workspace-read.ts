@@ -1,8 +1,9 @@
+import type { WorkspaceAccess } from './workspace-access.js'
+import { directory, contains, checkTarget, sameIdentity, sameContentMetadata } from './workspace-target.js'
+import type { Root } from './workspace-target.js'
 import { constants } from 'node:fs'
-import type { BigIntStats } from 'node:fs'
 import type { FileHandle } from 'node:fs/promises'
 import { createHash } from 'node:crypto'
-import { isAbsolute, join, relative, sep } from 'node:path'
 import type { JsonValue } from '../../foundation/json.js'
 import type { PreparedToolCall, PreparedToolPlan, ToolDefinition, ToolExecution, ToolExecutionResult, ToolInvocationLimits, ToolProvider, ToolProviderDescriptor, ToolSchemaLimits } from '../contract.js'
 import { createToolDefinition } from '../definition.js'
@@ -25,6 +26,7 @@ export interface WorkspaceReadTextOptions {
   readonly maxArgumentsBytes: number
   readonly maxResultBytes: number
   readonly schemaLimits: ToolSchemaLimits
+  readonly access?: WorkspaceAccess
 }
 
 /** The exact advertised schema and description of the implemented native read-only operation. */
@@ -45,29 +47,6 @@ export function createReadTextDefinition(limits: ToolSchemaLimits): ToolDefiniti
  */
 export async function createWorkspaceReadTextProvider(options: WorkspaceReadTextOptions): Promise<ToolProvider> {
   return createWorkspaceReadTextProviderWithIO(options, nodeWorkspaceIO)
-}
-
-interface Root { readonly path: string; readonly identity: BigIntStats }
-function contains(parent: string, child: string): boolean {
-  const offset = relative(parent, child)
-  return offset === '' || !isAbsolute(offset) && offset !== '..' && !offset.startsWith(`..${sep}`)
-}
-function sameIdentity(first: BigIntStats, second: BigIntStats): boolean {
-  return first.dev === second.dev && first.ino === second.ino
-}
-function sameContentMetadata(first: BigIntStats, second: BigIntStats): boolean {
-  return sameIdentity(first, second) && first.size === second.size && first.mtimeNs === second.mtimeNs && first.ctimeNs === second.ctimeNs
-}
-async function directory(io: WorkspaceFileIO, path: string): Promise<Root> {
-  if (!isAbsolute(text(path, 32768))) throw new ToolError('TOOL_WORKSPACE_INVALID', 'workspace configuration requires absolute local roots')
-  const initial = await io.lstat(path)
-  if (initial.isSymbolicLink() || !initial.isDirectory()) throw new ToolError('TOOL_WORKSPACE_INVALID', 'configured root must be a non-linked directory')
-  const canonical = await io.realpath(path)
-  const identity = await io.lstat(canonical)
-  if (!identity.isDirectory() || identity.isSymbolicLink() || !sameIdentity(initial, identity)) {
-    throw new ToolError('TOOL_WORKSPACE_INVALID', 'root identity changed during configuration')
-  }
-  return { path: canonical, identity }
 }
 
 /** Internal entry for deterministic tests. It is deliberately absent from the public root. */
@@ -111,41 +90,24 @@ export async function createWorkspaceReadTextProviderWithIO(options: WorkspaceRe
       }
       const args = object(input); exact(args, ['path'])
       const path = workspaceRelativePath(args.path, maxPathBytes)
+      options.access?.assert(path, 'read')
       // Worst-case JSON escaping is six bytes per source byte; reserve all metadata too.
       const overhead = jsonBytes({ kind: 'success', value: { path, text: '', byteLength: Number.MAX_SAFE_INTEGER, sha256: '0'.repeat(64) } })
       const maxBytes = Math.min(maxReadBytes, Math.floor((limits.maxResultBytes - overhead) / 6))
       if (maxBytes < 1) throw new ToolError('TOOL_RECORD_BUDGET', 'result ceiling cannot hold a complete read_text result')
       const plan = createPreparedToolPlan({ definition, provider: descriptor, input: { path }, limits,
         target: { kind: 'workspace-file', rootId: descriptor.resourceId, path, maxBytes } })
-      return pool.prepare(plan, (committed, signal) => readExecution(io, root, committed, signal))
+      return pool.prepare(plan, (committed, signal) => readExecution(io, root, committed, signal, options.access))
     },
     dispose: () => pool.dispose(),
   })
 }
 
-async function checkTarget(io: WorkspaceFileIO, root: Root, path: string): Promise<{ readonly path: string; readonly stat: BigIntStats }> {
-  const rootNow = await io.lstat(root.path)
-  if (rootNow.isSymbolicLink() || !rootNow.isDirectory() || !sameIdentity(root.identity, rootNow)
-    || await io.realpath(root.path) !== root.path) throw new ToolError('TOOL_PATH_INVALID', 'configured root is no longer the authorized directory')
-  const parts = path.split('/')
-  let current = root.path
-  let last: BigIntStats | undefined
-  for (let index = 0; index < parts.length; index++) {
-    current = join(current, parts[index]!)
-    if (!contains(root.path, current)) throw new ToolError('TOOL_PATH_INVALID', 'target escapes its authorized root')
-    last = await io.lstat(current)
-    if (last.isSymbolicLink() || index < parts.length - 1 && !last.isDirectory()
-      || index === parts.length - 1 && !last.isFile()) {
-      throw new ToolError('TOOL_PATH_INVALID', 'target contains a link or a non-regular component')
-    }
-  }
-  if (last === undefined || await io.realpath(current) !== current) throw new ToolError('TOOL_PATH_INVALID', 'target no longer has its authorized relative path')
-  return { path: current, stat: last }
-}
 
-function readExecution(io: WorkspaceFileIO, root: Root, plan: PreparedToolPlan, signal: AbortSignal): ToolExecution {
+function readExecution(io: WorkspaceFileIO, root: Root, plan: PreparedToolPlan, signal: AbortSignal, access?: WorkspaceAccess): ToolExecution {
   if (plan.target.kind !== 'workspace-file') throw new ToolError('TOOL_BINDING_MISMATCH', 'read_text requires a workspace-file target')
   const target = plan.target
+  let borrow: Awaited<ReturnType<WorkspaceAccess['borrow']>> | undefined
   let handle: Pick<FileHandle, 'read' | 'stat' | 'close'> | undefined
   let work: Promise<ToolExecutionResult> | undefined
   let closing: Promise<void> | undefined
@@ -154,6 +116,7 @@ function readExecution(io: WorkspaceFileIO, root: Root, plan: PreparedToolPlan, 
   const read = async (): Promise<ToolExecutionResult> => {
     try {
       cancelled()
+      borrow = await access?.borrow(target.path, 'read'); cancelled()
       const initial = await checkTarget(io, root, target.path)
       cancelled()
       // O_NONBLOCK avoids hanging if a cooperative path check races a FIFO replacement.
@@ -185,8 +148,9 @@ function readExecution(io: WorkspaceFileIO, root: Root, plan: PreparedToolPlan, 
       let decoded: string
       try { decoded = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(bytes) }
       catch { return { kind: 'error', code: 'invalid-utf8' } }
-      const result: ToolExecutionResult = { kind: 'success', value: { path: target.path, text: decoded,
-        byteLength: bytes.byteLength, sha256: createHash('sha256').update(bytes).digest('hex') } }
+      const sha256 = createHash('sha256').update(bytes).digest('hex')
+      access?.verifyRead?.(target.path, bytes.byteLength, sha256)
+      const result: ToolExecutionResult = { kind: 'success', value: { path: target.path, text: decoded, byteLength: bytes.byteLength, sha256 } }
       if (jsonBytes(result) > plan.limits.maxResultBytes) return { kind: 'error', code: 'TOOL_RESULT_LIMIT' }
       return result
     } catch (reason) {
@@ -208,7 +172,8 @@ function readExecution(io: WorkspaceFileIO, root: Root, plan: PreparedToolPlan, 
       stop = true
       closing = Promise.resolve().then(async () => {
         if (work !== undefined) await work.catch(() => undefined)
-        if (handle !== undefined) await handle.close()
+        try { if (handle !== undefined) await handle.close() } catch (cause) { borrow?.release(false); throw cause }
+        borrow?.release(true)
       })
       void closing.catch(() => undefined)
       return closing

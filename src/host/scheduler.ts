@@ -1,6 +1,6 @@
 import type { Clock } from '../foundation/clock.js'
 import type { HostSchedulingConfig } from './config.js'
-import type { HostRunReport, HostSlot } from './runtime-types.js'
+import type { HostRunReport, HostSlot, HostProtocolSlot } from './runtime-types.js'
 import type { OutboxMessageSnapshot } from '../communication/types.js'
 import { CommunicationError } from '../communication/errors.js'
 import type { HostTimer } from './timer.js'
@@ -50,7 +50,7 @@ function domainPosition(slot: HostSlot): number {
   return 0
 }
 
-function retryReady(input: HostSchedulerInput, slot: HostSlot, message: OutboxMessageSnapshot): boolean {
+function retryReady(input: HostSchedulerInput, slot: HostProtocolSlot, message: OutboxMessageSnapshot): boolean {
   const retry = input.scheduling.retryIntervalMs
   if (message.lastFailure === undefined && message.attemptCount === 0) return true
   const events = slot.session.snapshot().history.at(-1)?.events ?? []
@@ -72,6 +72,7 @@ export async function runHostScheduler(input: HostSchedulerInput): Promise<HostR
   let maintenanceRuns = 0
   let deliveryAttempts = 0
   let scannedWithoutWork = 0
+  let protocolNext = true
   let stoppedBy: HostRunReport['stoppedBy'] = 'quiescent'
   let business: Promise<void> | undefined
   let maintenance: Promise<void> | undefined
@@ -79,7 +80,7 @@ export async function runHostScheduler(input: HostSchedulerInput): Promise<HostR
   const busy = new Set<HostSlot>()
   const expirations = new Map<string, Promise<void>>()
   const attempted = new Set<string>()
-  const failed = (slot: HostSlot): void => { state.faults.add(slot.member.agentKey) }
+  const failed = (slot: HostProtocolSlot): void => { state.faults.add(slot.member.agentKey) }
   const work = (slot: HostSlot, operation: () => Promise<unknown>): Promise<void> => {
     const before = domainPosition(slot)
     return Promise.resolve().then(operation).then(() => {
@@ -88,7 +89,7 @@ export async function runHostScheduler(input: HostSchedulerInput): Promise<HostR
       state.stalled.set(slot.member.agentKey, { position, count: position === before ? (previous?.count ?? 0) + 1 : 0 })
     }, () => failed(slot)).finally(() => busy.delete(slot))
   }
-  const pending = (slot: HostSlot) => input.routingPaused.has(slot.member.agentKey) ? [] : state.observations.read(slot, input.clock.now()).communication.outbox.filter(item =>
+  const pending = (slot: HostProtocolSlot) => input.routingPaused.has(slot.member.agentKey) ? [] : projectCommunicationFacts(slot.session.snapshot()).outbox.filter(item =>
     item.status === 'pending' && !attempted.has(item.messageId) && input.canAttempt(item) && retryReady(input, slot, item))
   try {
     while (slots.length > 0) {
@@ -107,6 +108,7 @@ export async function runHostScheduler(input: HostSchedulerInput): Promise<HostR
         if (!input.signal.aborted && slot.agent.status === 'accepting') {
           for (const root of state.observations.read(slot, input.clock.now()).roots) {
             if (root.outcome !== null || root.stopControl !== null || Date.parse(root.deadline) > input.clock.now() || expirations.has(root.id)) continue
+            input.assembly.subagents?.notifyParentStop(slot.member.agentKey, root.id)
             const task = accepted.run(() => slot.agent.expire(root.id).then(() => undefined, () => failed(slot)).finally(() => expirations.delete(root.id)))
             expirations.set(root.id, task)
           }
@@ -117,10 +119,22 @@ export async function runHostScheduler(input: HostSchedulerInput): Promise<HostR
       for (const lane of lanes) {
         if (stopping || batches >= scheduling.maxBatchesPerRun) break
         if (lane === 'delivery' && delivery !== undefined || lane === 'maintenance' && maintenance !== undefined || lane === 'business' && business !== undefined) continue
+        if (lane === 'maintenance' && protocolNext) {
+          const operation = input.assembly.subagents?.nextAction()
+          if (operation !== undefined) {
+            batches++; maintenanceRuns++; admitted = true; protocolNext = false
+            maintenance = accepted.run(() => Promise.resolve().then(operation).then(() => undefined).finally(() => { maintenance = undefined }))
+            state.laneOrder.splice(state.laneOrder.indexOf(lane), 1); state.laneOrder.push(lane)
+            continue
+          }
+        }
+        if (lane === 'maintenance') protocolNext = true
+        const deliverySlots: readonly HostProtocolSlot[] = [...slots, ...input.assembly.protocolSlots.filter(item => !slots.some(slot => slot.session === item.session))]
         const start = state.memberCursors[lane]
-        const candidates = Array.from({ length: count }, (_, offset) => slots[(start + offset) % slots.length]!)
-        state.memberCursors[lane] = (start + count) % slots.length
-        const eligible = candidates.filter(slot => !input.offline.has(slot.member.agentKey) && !state.faults.has(slot.member.agentKey))
+        const page = lane === 'delivery' ? deliverySlots : slots
+        const candidates = Array.from({ length: Math.min(scheduling.maxSlotsPerScan, page.length) }, (_, offset) => page[(start + offset) % page.length]!)
+        state.memberCursors[lane] = (start + candidates.length) % page.length
+        const eligible = candidates.filter(slot => !input.offline.has(slot.member.agentKey) && (lane === 'delivery' ? slot.mailbox.status === 'open' : !state.faults.has(slot.member.agentKey)))
         for (const slot of eligible) {
           if (lane === 'delivery') {
             const candidates = pending(slot)
@@ -142,25 +156,27 @@ export async function runHostScheduler(input: HostSchedulerInput): Promise<HostR
               }).finally(() => { delivery = undefined }))
             } else continue
           } else {
-            if (busy.has(slot)) continue
+            if (!('agent' in slot)) continue
+            const execution = slot as HostSlot
+            if (busy.has(execution) || execution.agent.status !== 'accepting') continue
             const stalled = state.stalled.get(slot.member.agentKey)
-            if (stalled !== undefined && stalled.position === domainPosition(slot) && stalled.count >= scheduling.maxNoProgressBatches) continue
-            const readiness = state.observations.read(slot, input.clock.now()).readiness
+            if (stalled !== undefined && stalled.position === domainPosition(execution) && stalled.count >= scheduling.maxNoProgressBatches) continue
+            const readiness = state.observations.read(execution, input.clock.now()).readiness
             if (lane === 'maintenance') {
               if (!readiness.canMaintain) continue
               batches++; maintenanceRuns++; admitted = true
-              maintenance = accepted.run(() => work(slot, () => slot.agent.maintain({ signal: accepted.signal })).finally(() => { maintenance = undefined }))
+              maintenance = accepted.run(() => work(execution, () => execution.agent.maintain({ signal: accepted.signal })).finally(() => { maintenance = undefined }))
             } else {
               if (input.paused.has(slot.member.agentKey) || !readiness.canRun) continue
               batches++; businessRuns++; admitted = true
-              business = accepted.run(() => work(slot, () => slot.agent.start({ signal: accepted.signal })).finally(() => { business = undefined }))
+              business = accepted.run(() => work(execution, () => execution.agent.start({ signal: accepted.signal })).finally(() => { business = undefined }))
             }
           }
-          state.memberCursors[lane] = (slots.indexOf(slot) + 1) % slots.length
+          state.memberCursors[lane] = (page.indexOf(slot) + 1) % page.length
           state.laneOrder.splice(state.laneOrder.indexOf(lane), 1)
           state.laneOrder.push(lane)
           // Reserve the member before another lane can admit work in this scan.
-          if (lane !== 'delivery') busy.add(slot)
+          if (lane !== 'delivery') busy.add(slot as HostSlot)
           break
         }
       }
@@ -168,7 +184,7 @@ export async function runHostScheduler(input: HostSchedulerInput): Promise<HostR
       if (tasks.length === 0) {
         if (stopping || batches >= scheduling.maxBatchesPerRun) break
         scannedWithoutWork = admitted ? 0 : scannedWithoutWork + count
-        if (scannedWithoutWork >= slots.length) break
+        if (scannedWithoutWork >= slots.length + input.assembly.protocolSlots.length && (input.assembly.subagents?.nextAction() === undefined)) break
         continue
       }
       scannedWithoutWork = 0
@@ -178,8 +194,8 @@ export async function runHostScheduler(input: HostSchedulerInput): Promise<HostR
       try { await Promise.race([...tasks, input.timer.wait(scheduling.scanIntervalMs, waitSignal)]) }
       finally { wake.abort() }
     }
-    const observed = observeHostMembers(slots, input.paused, state.faults, input.clock, scheduling.maxReportEntries, state.observations, input.assembly, input.routingPaused)
-    const remaining = new Set<string>(slots.flatMap(slot => state.observations.read(slot, input.clock.now()).communication.outbox.filter(item => item.status === 'pending').map(item => item.messageId)))
+    const observed = observeHostMembers(slots.filter(slot => input.assembly.local.some(item => item.session === slot.session)), input.paused, state.faults, input.clock, scheduling.maxReportEntries, state.observations, input.assembly, input.routingPaused)
+    const remaining = new Set<string>([...slots, ...input.assembly.protocolSlots].flatMap(slot => projectCommunicationFacts(slot.session.snapshot()).outbox.filter(item => item.status === 'pending').map(item => item.messageId)))
     for (const id of state.cooldowns.keys()) if (!remaining.has(id)) state.cooldowns.delete(id)
     if (stoppedBy === 'quiescent' && (observed.counts.pendingOutbox > 0 || state.faults.size > 0
       || [...state.stalled.values()].some(item => item.count >= scheduling.maxNoProgressBatches))) stoppedBy = 'no-progress'

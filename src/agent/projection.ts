@@ -1,3 +1,4 @@
+import { sessionDelegationsClosed } from '../subagent/closure.js'
 import { isSessionEndedRecord } from '../session/history.js'
 import { inboxAcceptedEvent, inboxAbandonedEvent, inboxProcessedEvent } from '../communication/session-events.js'
 import { projectCommunicationFacts } from '../communication/projection.js'
@@ -15,10 +16,12 @@ import { initialAgentState, requireEntry, requireOpenRun, requireSpec } from './
 import * as events from './session-events.js'
 import type { AgentSessionSnapshot } from './state.js'
 import { equal, record } from './validation.js'
+import { applySubagentEvent } from '../subagent/projection.js'
 
 function applyInput(state: AgentProjectionState, event: CommittedSessionEvent): void {
   const p = events.agentInputAcceptedEvent.decode(event.payload)
   const spec = requireSpec(state)
+  if (spec.payload.protocolVersion === 2 && spec.payload.subagents.role === 'child') invalidAgent('child-input-requires-protocol')
   if (p.spec !== spec.stored.eventId || state.openRecovery !== null || state.closing !== null) invalidAgent('input-not-admissible')
   if (Buffer.byteLength(p.input.text) > spec.payload.limits.maxInputBytes) invalidAgent('input-byte-limit')
   const pending = [...state.inputs.values()].filter(input => input.message === null && ['queued', 'reserved', 'claimed', 'review-required'].includes(input.status))
@@ -36,16 +39,25 @@ function applyInput(state: AgentProjectionState, event: CommittedSessionEvent): 
 }
 function applyAgentEvent(state: AgentProjectionState, event: CommittedSessionEvent): void {
   if (event.stored.payloadVersion !== 1 && !(event.stored.payloadVersion === 2
-    && ['agent/control-requested', 'agent/control-settled', 'agent/run-started', 'agent/run-settled'].includes(event.stored.type))
+    && ['agent/control-requested', 'agent/control-settled', 'agent/run-started', 'agent/run-settled', 'agent/spec-recorded', 'agent/turn-started', 'agent/turn-settled', 'agent/step-decided', 'agent/action-settled', 'agent/wait-settled'].includes(event.stored.type))
+    && !(event.stored.payloadVersion === 3 && event.stored.type === 'agent/control-requested')
     || event.stored.ignorable === true) invalidAgent('unsupported-agent-event')
   const decoded = <T,>(decode: (value: JsonValue) => T) => ({ ...event, payload: decode(event.payload) })
+  if (['agent/turn-started', 'agent/turn-settled', 'agent/step-decided', 'agent/action-settled', 'agent/wait-settled'].includes(event.stored.type)
+    && event.stored.payloadVersion !== requireSpec(state).payload.protocolVersion) invalidAgent('agent-event-spec-version')
   switch (event.stored.type) {
     case 'agent/spec-recorded': {
       if (state.spec !== null) invalidAgent('spec-already-installed')
-      const spec = events.agentSpecRecordedEvent.decode(event.payload)
+      const spec = event.stored.payloadVersion === 2 ? events.subagentAgentSpecRecordedEvent.decode(event.payload) : events.agentSpecRecordedEvent.decode(event.payload)
       const profile = requireEntry(state.sources, spec.profileEventId, 'missing-spec-profile')
-      if (profile.stored.type !== 'context/profile-recorded' || profile.stored.payloadVersion !== 2
+      if (profile.stored.type !== 'context/profile-recorded' || profile.stored.payloadVersion !== (spec.protocolVersion === 1 ? 2 : 3)
         || record(profile.payload).purpose !== 'generation' || !equal(record(profile.payload).toolNames, spec.toolNames)) invalidAgent('spec-profile-mismatch')
+      if (spec.protocolVersion === 2 && spec.subagents.role === 'child') {
+        const bound = state.subagents.bound
+        if (bound?.stored.eventId !== spec.subagents.bound || !equal(spec.budget, bound.payload.requested.grant)
+          || spec.subagents.deadline !== bound.payload.requested.deadline
+          || !equal(spec.subagents.protocolReserve, bound.payload.requested.childProtocolReserve)) invalidAgent('child-spec-source')
+      } else if (state.subagents.bound !== null) invalidAgent('bound-session-requires-child-spec')
       state.spec = { ...event, payload: spec }; break
     }
     case 'agent/input-accepted': applyInput(state, event); break
@@ -57,13 +69,15 @@ function applyAgentEvent(state: AgentProjectionState, event: CommittedSessionEve
       if (event.stored.payloadVersion === 2) applyMaintenanceRunSettled(state, decoded(events.agentMaintenanceRunSettledEvent.decode))
       else applyRunSettled(state, decoded(events.agentRunSettledEvent.decode))
       break
-    case 'agent/turn-started': applyTurnStarted(state, decoded(events.agentTurnStartedEvent.decode)); break
+    case 'agent/turn-started': applyTurnStarted(state, decoded(event.stored.payloadVersion === 1 ? events.agentTurnStartedEvent.decode : events.subagentTurnStartedEvent.decode)); break
     case 'agent/turn-settled': applyTurnSettled(state, decoded(events.agentTurnSettledEvent.decode)); break
     case 'agent/step-opened': applyStepOpened(state, decoded(events.agentStepOpenedEvent.decode)); break
-    case 'agent/step-decided': applyStepDecided(state, decoded(events.agentStepDecidedEvent.decode)); break
-    case 'agent/action-settled': applyActionSettled(state, decoded(events.agentActionSettledEvent.decode)); break
-    case 'agent/wait-settled': applyWaitSettled(state, decoded(events.agentWaitSettledEvent.decode)); break
-    case 'agent/control-requested': applyControlRequested(state, decoded(events.agentControlRequestedEvent.decode)); break
+    case 'agent/step-decided': applyStepDecided(state, decoded(event.stored.payloadVersion === 1 ? events.agentStepDecidedEvent.decode : events.subagentStepDecidedEvent.decode)); break
+    case 'agent/action-settled': applyActionSettled(state, decoded(event.stored.payloadVersion === 1 ? events.agentActionSettledEvent.decode : events.subagentActionSettledEvent.decode)); break
+    case 'agent/wait-settled': applyWaitSettled(state, decoded(event.stored.payloadVersion === 1 ? events.agentWaitSettledEvent.decode : events.subagentWaitSettledEvent.decode)); break
+    case 'agent/control-requested':
+      if (event.stored.payloadVersion === 3 && requireSpec(state).payload.protocolVersion !== 2) invalidAgent('agent-event-spec-version')
+      applyControlRequested(state, decoded(event.stored.payloadVersion === 3 ? events.subagentInputAbandonRequestedEvent.decode : events.agentControlRequestedEvent.decode)); break
     case 'agent/control-settled': applyControlSettled(state, decoded(events.agentControlSettledEvent.decode)); break
     case 'agent/command-accepted': {
       const command = decoded(events.agentCommandAcceptedEvent.decode)
@@ -80,11 +94,20 @@ function applyCommunicationInput(state: AgentProjectionState, event: CommittedSe
   if (event.stored.type === inboxAcceptedEvent.type) {
     const payload = inboxAcceptedEvent.decode(event.payload)
     const message = payload.envelope
+    if (state.spec?.payload.protocolVersion === 2 && message.type.startsWith('subagent/')) return
     const reference = { kind: 'peer' as const, eventId: event.stored.eventId }
     state.inputs.set(inputKey(reference), { reference, input: null, message, acceptedAt: event.stored.recordedAt, sequence: event.stored.sequence,
       lane: `peer:${message.sender}:${message.channelId}`, status: 'queued', claimedBy: null, reservedBy: null, everMatched: false, reason: null })
   } else if (event.stored.type === inboxProcessedEvent.type || event.stored.type === inboxAbandonedEvent.type) {
     const messageId = record(event.payload).messageId
+    if (state.spec?.payload.protocolVersion === 2) {
+      const inbox = [...state.sources.values()].find(item => item.stored.type === inboxAcceptedEvent.type
+        && record(record(item.payload).envelope).messageId === messageId)
+      if (inbox !== undefined && String(record(record(inbox.payload).envelope).type).startsWith('subagent/')) {
+        if (![...state.subagents.classifications.values()].some(item => item.payload.inbox === inbox.stored.eventId)) invalidAgent('protocol-receipt-before-classification')
+        return
+      }
+    }
     const input = [...state.inputs.values()].find(input => input.message?.messageId === messageId)
     if (input === undefined) invalidAgent('missing-confirmed-inbox')
     const expected = event.stored.type === inboxProcessedEvent.type ? 'handled' : 'abandoned'
@@ -95,14 +118,14 @@ function applyCommunicationInput(state: AgentProjectionState, event: CommittedSe
 }
 
 /** Replay local ownership only; ancestor history never becomes a queue or budget. */
-export function projectAgentSession(snapshot: SessionSnapshot): AgentSessionSnapshot {
+export function foldAgentSession(snapshot: SessionSnapshot): AgentProjectionState {
   projectCommunicationFacts(snapshot); projectModelSession(snapshot); projectToolSession(snapshot)
   const state = initialAgentState()
   const local = snapshot.history.find(segment => segment.header.sessionId === snapshot.header.sessionId)
   if (local === undefined) invalidAgent('missing-local-segment')
   for (const event of local.events) {
     if (event.kind === 'opaque') {
-      if (event.stored.type.startsWith('agent/')) invalidAgent('opaque-agent-event')
+      if (event.stored.type.startsWith('agent/') || event.stored.type.startsWith('subagent/')) invalidAgent('opaque-agent-event')
       continue
     }
     if (event.stored.type.startsWith('agent/')) {
@@ -110,9 +133,11 @@ export function projectAgentSession(snapshot: SessionSnapshot): AgentSessionSnap
       if (definition === undefined || !equal(definition.decode(event.payload), event.payload) || !equal(event.payload, event.stored.payload)) invalidAgent('noncanonical-agent-event')
       applyAgentEvent(state, event)
     }
+    else if (event.stored.type.startsWith('subagent/')) applySubagentEvent(state, event)
     else if (event.stored.type.startsWith('communication/')) applyCommunicationInput(state, event)
     else if (isSessionEndedRecord(event.stored)) {
       if (state.openRun !== null || state.openTurn !== null || state.openRecovery !== null
+        || !sessionDelegationsClosed(state, [...state.sources.values()])
         || [...state.roots.values()].some(root => root.outcome === null)
         || [...state.inputs.values()].some(input => !['handled', 'abandoned', 'not-adopted'].includes(input.status))
         || [...state.controls.values()].some(control => control.settled === null && control.supersededBy === null && control.requested.payload.kind !== 'close-session')) invalidAgent('ended-with-stranded-agent-work')
@@ -120,8 +145,18 @@ export function projectAgentSession(snapshot: SessionSnapshot): AgentSessionSnap
     }
     state.sources.set(event.stored.eventId, event)
   }
+  return state
+}
+
+/** Freeze the public observation independently of the mutable, call-local replay accumulators. */
+export function projectAgentSession(snapshot: SessionSnapshot): AgentSessionSnapshot {
+  const state = foldAgentSession(snapshot)
   const frozen = <T extends object>(values: Iterable<T>) => Object.freeze([...values].map(value => Object.freeze({ ...value })))
-  return Object.freeze({ spec: state.spec, runs: frozen(state.runs.values()), turns: frozen(state.turns.values()), steps: frozen(state.steps.values()),
+  return Object.freeze({ spec: state.spec, subagents: Object.freeze({ baselines: frozen(state.subagents.baselines.values()), provisions: frozen(state.subagents.provisions.values()), failures: frozen(state.subagents.failures.values()),
+    observations: frozen(state.subagents.observations.values()), controls: frozen(state.subagents.controls.values()), recoveries: frozen(state.subagents.recoveries.values()), delegations: frozen(state.subagents.delegations.values()),
+    protocol: frozen(state.subagents.protocol.values()), classifications: frozen(state.subagents.classifications.values()),
+    bound: state.subagents.bound, ready: state.subagents.ready, resources: frozen(state.subagents.resources.values()) }),
+    runs: frozen(state.runs.values()), turns: frozen(state.turns.values()), steps: frozen(state.steps.values()),
     actions: frozen(state.actions.values()), waits: frozen(state.waits.values()), controls: frozen(state.controls.values()),
     commands: frozen(state.commands.values()), inputs: frozen(state.inputs.values()), roots: frozen(state.roots.values()),
     laneOrdinals: frozen([...state.lanes].map(([lane, ordinal]) => ({ lane, ordinal }))), openRun: state.openRun,

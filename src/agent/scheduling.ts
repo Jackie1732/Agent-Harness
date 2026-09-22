@@ -10,9 +10,10 @@ export function runnableAgentInputs(state: AgentSessionSnapshot, catalog: Messag
   if (spec === undefined) throw new AgentError('AGENT_STATE_INVALID', 'missing-spec')
   return state.inputs.filter(input => {
     if (hasPendingAgentAbandon(state.controls, input)) return false
+    if (input.protocol?.kind === 'task' && (state.subagents.controls.length > 0 || state.roots.length > 0)) return false
     if (input.message !== null && (catalog.resolve(input.message.type, input.message.payloadVersion) === undefined
-      || !spec.messages.some(message => message.type === input.message!.type && message.payloadVersion === input.message!.payloadVersion))) return false
-    if (input.status === 'queued') return input.input?.kind !== 'answer'
+      || input.protocol === undefined && !spec.messages.some(message => message.type === input.message!.type && message.payloadVersion === input.message!.payloadVersion))) return false
+    if (input.status === 'queued') return input.protocol === undefined ? input.input?.kind !== 'answer' : input.protocol.kind === 'task'
     if (input.status !== 'reserved' || input.reservedBy === null) return false
     const wait = state.waits.find(wait => referenceKey(wait.reference) === referenceKey(input.reservedBy!))
     const result = wait?.created.payload.result

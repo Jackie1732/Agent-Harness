@@ -3,6 +3,7 @@ import { ToolError } from './errors.js'
 /** Portable, unambiguous relative path syntax; containment is additionally checked by native I/O. */
 export function workspaceRelativePath(value: unknown, maxBytes: number): string {
   if (typeof value !== 'string' || value.length === 0 || Buffer.byteLength(value) > maxBytes
+    || Buffer.from(value, 'utf8').toString('utf8') !== value
     || /[\\\x00-\x1f\x7f<>:"|?*]/.test(value)) invalid()
   for (const segment of value.split('/')) {
     if (segment.length === 0 || segment === '.' || segment === '..' || /[. ]$/.test(segment)

@@ -1,8 +1,9 @@
+import { delegationClosure } from '../subagent/closure.js'
 import { hasPendingAgentAbandon } from './input-ownership.js'
 import type { CommittedSessionEvent } from '../session/types.js'
 import type { AgentEventPayloads } from './event-contract.js'
 import type { AgentMaintenanceRunSettled, AgentMaintenanceRunStarted } from './event-contract.js'
-import { emptyAgentBudget } from './budget.js'
+import { emptyAgentBudget, reserveAgentBudget } from './budget.js'
 import { invalidAgent } from './errors.js'
 import { inputKey, referenceKey } from './input-codec.js'
 import type { AgentProjectionState } from './projection-state.js'
@@ -54,14 +55,24 @@ export function applyTurnStarted(state: AgentProjectionState, event: CommittedSe
   if (state.openTurn !== null || state.openRecovery !== null || state.closing !== null) invalidAgent('turn-not-admissible')
   const spec = requireSpec(state).payload
   const input = requireEntry(state.inputs, inputKey(payload.input), 'missing-turn-input')
+  if (spec.protocolVersion === 2 && payload.protocolSource !== (input.protocol?.inbox ?? null)) invalidAgent('turn-protocol-source')
   if (hasPendingAgentAbandon(state.controls.values(), input, 2)) invalidAgent('input-disposition-owned')
   if (input.lane !== payload.lane || payload.ordinal !== state.turns.size + 1) invalidAgent('turn-order')
   if ([...state.turns.values()].filter(turn => turn.started.payload.run === payload.run).length >= spec.limits.maxTurnsPerRun) invalidAgent('run-turn-budget')
   if (payload.root === null) {
     if (payload.predecessor !== null || input.status !== 'queued' || input.input?.kind === 'answer') invalidAgent('root-input-not-queued')
-    if (payload.deadline !== null) invalidAgent('root-deadline-must-derive-from-acceptance')
-    const deadline = new Date(Date.parse(event.stored.recordedAt) + spec.rootDurationMs).toISOString()
-    state.roots.set(event.stored.eventId, { id: event.stored.eventId, deadline, budget: emptyAgentBudget,
+    const child = spec.protocolVersion === 2 && spec.subagents.role === 'child' ? spec.subagents : undefined
+    if (child === undefined && (payload.deadline !== null || input.protocol !== undefined)) invalidAgent('root-deadline-must-derive-from-acceptance')
+    if (child !== undefined && state.subagents.bound?.payload.requested.effectivePlan.workspace.kind !== 'none') {
+      const execution = [...state.subagents.resources.values()].filter(item => item.opened.payload.component === 'execution').at(-1)
+      if (execution === undefined || execution.released !== null || !state.subagents.baselines.has(execution.opened.stored.eventId)) invalidAgent('child-workspace-not-ready')
+    }
+    if (child !== undefined && (input.protocol?.kind !== 'task' || state.subagents.ready === null || state.subagents.controls.size > 0 || state.roots.size !== 0
+      || payload.deadline !== child.deadline || payload.observedAt >= child.deadline)) invalidAgent('child-root-claim')
+    const deadline = child?.deadline ?? new Date(Date.parse(event.stored.recordedAt) + spec.rootDurationMs).toISOString()
+    const budget = child === undefined ? emptyAgentBudget : reserveAgentBudget(emptyAgentBudget, child.protocolReserve, spec.budget)
+    if (budget === null) invalidAgent('child-protocol-budget')
+    state.roots.set(event.stored.eventId, { id: event.stored.eventId, deadline, budget,
       outcome: null, reason: null, stopControl: null })
   } else {
     const root = requireEntry(state.roots, payload.root, 'missing-root')
@@ -92,6 +103,10 @@ export function applyTurnSettled(state: AgentProjectionState, event: CommittedSe
       && !(p.outcome === 'failed' && p.reason === 'business-refusal' && requireSpec(state).payload.businessRefusalHandled && p.disposition === 'handled')) invalidAgent('terminal-input-disposition')
     if (p.reason === 'business-refusal' && steps.at(-1)?.decided?.payload.reason !== 'business-refusal') invalidAgent('refusal-source')
     if (p.outcome === 'completed') {
+      if ([...state.subagents.delegations.values()].filter(item => item.payload.parentRoot === root.id).some(item => {
+        const closure = delegationClosure(state, item.stored.eventId, state.sources.values())
+        return !closure.businessResolved || !closure.executionReleased || !closure.adopted
+      })) invalidAgent('unresolved-delegation')
       const final = steps.at(-1)?.decided
       if (final?.payload.classification !== 'final' || p.finalStep !== final.payload.step) invalidAgent('final-source')
       for (const input of rootPeerInputs(turn.root, [...state.turns.values()], [...state.inputs.values()])) {

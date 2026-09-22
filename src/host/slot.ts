@@ -1,3 +1,9 @@
+import type { WorkspaceAccess } from '../tool/providers/workspace-access.js'
+import type { WorkspaceLease } from '../subagent/workspace.js'
+import type { ChildToolConfig } from '../subagent/template.js'
+import { EffectOwner } from '../effect/owner.js'
+import type { SessionMailbox } from '../communication/mailbox.js'
+import type { SubagentActionExecutor } from '../subagent/action-port.js'
 import { CapabilityRegistry } from '../capability/registry.js'
 import { createCapabilityKey } from '../capability/key.js'
 import { SessionAgent } from '../agent/session-agent.js'
@@ -23,12 +29,39 @@ export interface HostRuntimeBindings {
   readonly protectedRoots?: readonly string[]
 }
 
-/** Publish a slot only after its Provider and Agent activation Scopes are accepting. */
+export interface HostExecutionExtensions {
+  readonly subagentActions?: SubagentActionExecutor
+  readonly workspaceAccess?: WorkspaceAccess
+  readonly childTools?: ChildToolConfig
+  readonly workspaceLease?: WorkspaceLease
+}
+
+/** Static slots own a protocol lifetime enclosing their independently releasable execution lifetime. */
 export async function createHostSlot(
   session: SessionHandle, member: ResolvedHostLocalMember, service: CommunicationService,
   messageCatalog: MessageCatalog, clock: Clock, credentials: Readonly<Record<string, string>>,
-  protectedRoots: readonly string[], bindings: HostRuntimeBindings = {},
+  protectedRoots: readonly string[], bindings: HostRuntimeBindings = {}, extensions: HostExecutionExtensions = {},
 ): Promise<HostSlot> {
+  const owner = new EffectOwner('host-member:' + member.agentKey)
+  try {
+    const lease = await owner.run('member', async effect => {
+      const mailbox = await effect.apply('protocol', () => service.attach(session, { catalog: messageCatalog, policy: createHostCommunicationPolicy(member) }), value => value.dispose())
+      return effect.apply('execution', () => createHostExecution(session, member, service, messageCatalog, clock, credentials, protectedRoots, bindings, mailbox, extensions), value => value.dispose())
+    })
+    return Object.freeze({ ...lease.value, dispose: () => owner.dispose() })
+  } catch (cause) {
+    try { await owner.dispose() } catch (cleanup) { throw new HostError('HOST_CLEANUP_FAILED', 'member-acquisition-cleanup-failed', {}, { cause: new AggregateError([cause, cleanup]) }) }
+    throw cause
+  }
+}
+
+/** Publish execution only after Provider and Agent Scopes are accepting; the Mailbox is borrowed. */
+export async function createHostExecution(
+  session: SessionHandle, member: ResolvedHostLocalMember, service: CommunicationService,
+  messageCatalog: MessageCatalog, clock: Clock, credentials: Readonly<Record<string, string>>,
+  protectedRoots: readonly string[], bindings: HostRuntimeBindings, mailbox: SessionMailbox, extensions: HostExecutionExtensions = {},
+): Promise<HostSlot> {
+  const { subagentActions, workspaceLease } = extensions
   const registry = new CapabilityRegistry()
   const resourcesKey = createCapabilityKey<SessionAgentOptions>('host.slot.resources')
   const agentKey = createCapabilityKey<SessionAgent>('host.slot.agent')
@@ -38,6 +71,7 @@ export async function createHostSlot(
   let resources: Omit<HostSlot, 'agent' | 'dispose'> | undefined
   try {
     const providers = registry.mount({ label: `providers:${member.agentKey}`, requires: [], provides: [resourcesKey], setup: async effect => {
+      if (workspaceLease !== undefined) await effect.apply('workspace lease', () => workspaceLease, value => value.dispose())
       const provider = await effect.apply('model provider', () => bindings.createModelProvider?.(member)
         ?? createHostModelProvider(member.model, credentials), value => {
         if (modelReleaseFailed) throw new HostError('HOST_CLEANUP_FAILED', 'model-provider-retained')
@@ -46,7 +80,7 @@ export async function createHostSlot(
       if (!Buffer.from(canonicalJsonBytes(provider.descriptor)).equals(Buffer.from(canonicalJsonBytes(member.spec.target.provider)))) {
         throw new HostError('HOST_BINDING_CONFLICT', 'provider-descriptor-mismatch', { agentKey: member.agentKey })
       }
-      const tools = await effect.apply('tool providers', () => createHostTools(session, member, protectedRoots, effect.scope), async value => {
+      const tools = await effect.apply('tool providers', () => createHostTools(session, member, protectedRoots, effect.scope, extensions), async value => {
         if (value === undefined) return
         if (!transferred) await value.runner.dispose()
         await value.dispose()
@@ -58,11 +92,10 @@ export async function createHostSlot(
           if (transferred) return
           try { await value.dispose() } catch (cause) { modelReleaseFailed = true; throw cause }
         })
-      const mailbox = await effect.apply('mailbox', () => service.attach(session, { catalog: messageCatalog,
-        policy: createHostCommunicationPolicy(member) }), value => value.dispose())
       const dispatcher = service.createDispatcher(mailbox)
       resources = { member, session, mailbox, dispatcher, provider, ...(tools === undefined ? {} : { tools }) }
       effect.provide(resourcesKey, { session, model, context, mailbox, messageCatalog, clock,
+        ...(subagentActions === undefined ? {} : { subagentActions }),
         ...(tools === undefined ? {} : { tools: tools.runner }) })
     } })
     const consumer = registry.mount({ label: `agent:${member.agentKey}`, requires: [resourcesKey], provides: [agentKey], setup: async effect => {

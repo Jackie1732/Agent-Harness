@@ -37,11 +37,12 @@ export function validateHostMemberSession(
   }
   const profile = localEvent<ContextProfile>(session, binding.ready.payload.profile)
   const installed = localEvent<AgentSpec>(session, binding.ready.payload.spec)
-  if (profile?.stored.type !== 'context/profile-recorded' || profile.stored.payloadVersion !== 2
-    || installed?.stored.type !== 'agent/spec-recorded' || installed.stored.payloadVersion !== 1) {
+  if (profile?.stored.type !== 'context/profile-recorded' || profile.stored.payloadVersion !== (member.spec.protocolVersion === 1 ? 2 : 3)
+    || installed?.stored.type !== 'agent/spec-recorded' || installed.stored.payloadVersion !== member.spec.protocolVersion) {
     throw new HostError('HOST_BINDING_CONFLICT', 'host-binding-source-invalid')
   }
-  const expected: AgentSpec = Object.freeze({ ...member.spec, profileEventId: profile.stored.eventId })
+  const expected: AgentSpec = Object.freeze({ ...member.spec, profileEventId: profile.stored.eventId,
+    ...(member.spec.protocolVersion === 2 && installed.payload.protocolVersion === 2 ? { subagents: installed.payload.subagents } : {}) })
   const context = projectContextSession(snapshot)
   const agent = projectAgentSession(snapshot)
   if (!same(profile.payload, member.profile) || !same(installed.payload, expected)
