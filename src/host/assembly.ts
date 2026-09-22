@@ -22,6 +22,7 @@ import { createHostSlot } from './slot.js'
 import type { HostRuntimeBindings } from './slot.js'
 import type { HostSlot } from './runtime-types.js'
 import { HostWakeup } from './wakeup.js'
+import { HostSlotOwner } from './slot-owner.js'
 
 /** Acquire dependencies in order; failed releases retain storage ownership. */
 export async function assembleHost(spec: ResolvedHostSpec, clock: Clock,
@@ -77,18 +78,14 @@ export async function assembleHost(spec: ResolvedHostSpec, clock: Clock,
         ? [dirname(https.serverKeyFile), dirname(https.clientKeyFile)] : [])]
       const catalog = compileHostMessageCatalog(spec.messages)
       const slots: HostSlot[] = []
-      const acquireSlot = async (member: typeof local[number]['member'], session: typeof local[number]['session']) => {
-        const acquired = await owner.run('slot lifetime', context => context.apply('Agent slot', async () => {
-          try { return await createHostSlot(session, member, service, catalog, clock, credentials, protectedRoots, bindings) }
-          catch (cause) { if (cause instanceof HostError && cause.code === 'HOST_CLEANUP_FAILED') unsafe = true; throw cause }
-        }, value => release(value)))
-        return Object.freeze({ ...acquired.value, dispose: () => acquired.dispose() })
-      }
-      for (const { member, session } of local.filter(item => item.member.enabled)) {
-        slots.push(await effect.apply('Agent slot', async () => {
-          try { return await createHostSlot(session, member, service, catalog, clock, credentials, protectedRoots, bindings) }
-          catch (cause) { if (cause instanceof HostError && cause.code === 'HOST_CLEANUP_FAILED') unsafe = true; throw cause }
-        }, value => release(value)))
+      const slotOwners = new Map<string, HostSlotOwner>()
+      for (const { member, session } of local) {
+        const lifetime = await effect.apply('member lifetime', () => new HostSlotOwner(member.agentKey, async () => {
+          validateHostMemberSession(session, spec.hostKey, member)
+          return await createHostSlot(session, member, service, catalog, clock, credentials, protectedRoots, bindings)
+        }), value => release(value))
+        slotOwners.set(member.agentKey, lifetime)
+        if (member.enabled) slots.push(await lifetime.open())
       }
       const server = https !== undefined && tls !== undefined ? await effect.apply('HTTPS listener',
         () => createHttpsMessageServer({ directory, host: https.listen.host,
@@ -99,10 +96,9 @@ export async function assembleHost(spec: ResolvedHostSpec, clock: Clock,
         }), value => release(value)) : undefined
       return { lock, directory, server, slots, wakeup, local, catalog,
         reopen: async (agentKey: string) => {
-          const entry = local.find(item => item.member.agentKey === agentKey)
-          if (entry === undefined) throw new HostError('HOST_NOT_READY', 'slot-unavailable')
-          validateHostMemberSession(entry.session, spec.hostKey, entry.member)
-          return await acquireSlot(entry.member, entry.session)
+          const lifetime = slotOwners.get(agentKey)
+          if (lifetime === undefined) throw new HostError('HOST_NOT_READY', 'slot-unavailable')
+          return await lifetime.open()
         },
         remoteRecipients: new Set(spec.routes.filter(route => route.origin !== null).map(route => formatSessionAddress(parseSessionId(route.sessionId)))) }
     })

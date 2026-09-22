@@ -13,7 +13,7 @@ it('handles asynchronous EPIPE without an unhandled stream error', async () => {
   const output = new Writable({ write(_chunk, _encoding, callback) { queueMicrotask(() => callback(Object.assign(new Error('private path'), { code: 'EPIPE' }))) } })
   const write = createJsonLineWriter(output, 128)
   try { await expect(write({ accepted: 'already committed' })).rejects.toMatchObject({ code: 'HOST_OUTPUT_FAILED' }) }
-  finally { await write.dispose() }
+  finally { await expect(write.dispose()).rejects.toMatchObject({ code: 'HOST_OUTPUT_FAILED' }) }
 })
 
 it('rejects malformed UTF-8 and deep JSON while continuing at the next line', async () => {

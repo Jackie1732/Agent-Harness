@@ -38,15 +38,34 @@ export async function* boundedJsonLines(input: Readable, maximumLineBytes: numbe
   else if (length > 0) yield result(decode(Buffer.concat(parts, length)))
 }
 
-/** Bound queued bytes, serialize writes and wait for actual stream callbacks. */
+/**
+ * Bound queued bytes and serialize writes on a borrowed stream. Disposal closes
+ * admission and joins accepted writes; it rejects on output failure without ending
+ * the stream. After a timeout, residual callbacks retain the error listener until
+ * their callback or stream close, even after the disposal promise has rejected.
+ */
 export function createJsonLineWriter(output: Writable, maximumBytes: number, drainTimeoutMs = 30_000) {
   if (!Number.isSafeInteger(drainTimeoutMs) || drainTimeoutMs < 1) throw new RangeError('drainTimeoutMs must be positive')
   let queued = 0
   let tail: Promise<void> = Promise.resolve()
   let failure: Error | undefined
+  let disposal: Promise<void> | undefined
+  let accepting = true
+  let drained = false
+  let callbacks = 0
+  let closed = false
+  let detached = false
+  const detach = (): void => {
+    if (!drained || callbacks > 0 && !closed || detached) return
+    detached = true
+    output.off('error', failed); output.off('close', streamClosed)
+  }
   const failed = (error: Error): void => { failure ??= error }
+  const streamClosed = (): void => { closed = true; if (drained) setImmediate(detach) }
   output.on('error', failed)
+  output.on('close', streamClosed)
   const write = (value: unknown): Promise<void> => {
+    if (!accepting) return Promise.reject(new HostError('HOST_OUTPUT_FAILED', 'cli-writer-disposed'))
     const line = `${JSON.stringify(value)}\n`
     const bytes = Buffer.byteLength(line)
     if (queued + bytes > maximumBytes) return Promise.reject(new HostError('HOST_OUTPUT_FAILED', 'cli-output-budget'))
@@ -62,17 +81,33 @@ export function createJsonLineWriter(output: Writable, maximumBytes: number, dra
       }
       const closed = (): void => finish(new Error('closed'))
       const errored = (error: Error): void => finish(error)
-      const timer = setTimeout(() => finish(new Error('timeout')), Math.min(drainTimeoutMs, 2_147_483_647))
+      const timer = setTimeout(() => { failed(new Error('timeout')); finish(failure) }, Math.min(drainTimeoutMs, 2_147_483_647))
       output.once('close', closed); output.once('error', errored)
-      try { output.write(line, finish) } catch (error) { finish(error instanceof Error ? error : new Error('write')) }
+      callbacks++
+      let returned = false
+      const callback = (error?: Error | null): void => {
+        if (returned) return
+        returned = true; callbacks--
+        if (error) failed(error)
+        finish(error)
+        // A late failed callback emits its stream error on the next Node tick.
+        if (drained) setImmediate(detach)
+      }
+      try { output.write(line, callback) } catch (error) { callback(error instanceof Error ? error : new Error('write')) }
     })).finally(() => { queued -= bytes })
     tail = task
     void task.catch(() => undefined)
     return task
   }
-  return Object.assign(write, { async dispose() {
-    // Stream destruction queues error emission after the write callback's rejection.
-    await new Promise<void>(resolve => setImmediate(resolve))
-    output.off('error', failed)
+  return Object.assign(write, { dispose(): Promise<void> {
+    accepting = false
+    disposal ??= tail.finally(async () => {
+      drained = true
+      // All accepted work has settled; callbacks still pending after failure retain ownership.
+      await new Promise<void>(resolve => setImmediate(resolve))
+      detach()
+    })
+    void disposal.catch(() => undefined)
+    return disposal
   } })
 }

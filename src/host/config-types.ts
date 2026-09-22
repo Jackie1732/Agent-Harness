@@ -124,6 +124,7 @@ export type HostHttpsConfig =
   }
 export interface HostSchedulingConfig {
   readonly scanIntervalMs: number
+  /** Maximum members examined per lane page and per independent deadline page. */
   readonly maxSlotsPerScan: number
   readonly maxBatchesPerRun: number
   readonly maxNoProgressBatches: number

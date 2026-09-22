@@ -128,12 +128,14 @@ const failureConfig = { ...rawA, storage: { ...rawA.storage, root: join(base, 'c
 await initializeHost(resolveHostConfig(decodeHostConfig(failureConfig, base)))
 const failurePath = join(base, 'failure.json')
 await writeFile(failurePath, JSON.stringify(failureConfig))
-const failureChild = fork(join(here, 'fixtures', 'host-cleanup-failure-child.mjs'), [failurePath], { stdio: ['ignore', 'inherit', 'inherit', 'ipc'] })
-const failureExit = new Promise(resolve => failureChild.once('exit', resolve))
-assert.equal((await waitMessage(failureChild, 'cleanup-failure')).retainedLock, true)
-assert.equal(await failureExit, 0)
-const residue = JSON.parse(await readFile(join(failureConfig.storage.root, '.atomic-harness.lock'), 'utf8'))
-await unlockHostStorage(failureConfig.storage.root, { predecessorStopped: true, expectedToken: residue.token })
+for (const mode of ['release', 'rollback']) {
+  const failureChild = fork(join(here, 'fixtures', 'host-cleanup-failure-child.mjs'), [failurePath, mode], { stdio: ['ignore', 'inherit', 'inherit', 'ipc'] })
+  const failureExit = new Promise(resolve => failureChild.once('exit', resolve))
+  assert.equal((await waitMessage(failureChild, 'cleanup-failure')).retainedLock, true)
+  assert.equal(await failureExit, 0)
+  const residue = JSON.parse(await readFile(join(failureConfig.storage.root, '.atomic-harness.lock'), 'utf8'))
+  await unlockHostStorage(failureConfig.storage.root, { predecessorStopped: true, expectedToken: residue.token })
+}
 for (const [signal, exitCode] of [['SIGINT', 130], ['SIGTERM', 143]]) {
   const cli = fork(join(here, 'fixtures', 'host-cli-signal-child.mjs'), [pathA], { stdio: ['pipe', 'pipe', 'inherit', 'ipc'] })
   try {

@@ -1,4 +1,4 @@
-import { mkdtemp } from 'node:fs/promises'
+import { mkdtemp, writeFile, readFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
@@ -19,5 +19,17 @@ describe('Host storage ownership', () => {
     const lock = await acquireHostStorageLock(root, 'owner')
     await expect(unlockHostStorage(root, { predecessorStopped: true, expectedToken: 'wrong' })).rejects.toMatchObject({ code: 'HOST_LOCKED' })
     await lock.dispose()
+  })
+
+  it('bounds both new and residual records without removing unreadable ownership', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'atomic-host-lock-budget-'))
+    await expect(acquireHostStorageLock(root, 'x'.repeat(8192))).rejects.toMatchObject({ code: 'HOST_CONFIG_INVALID' })
+    const lease = await acquireHostStorageLock(root, 'bounded')
+    await lease.dispose()
+    const path = join(root, '.atomic-harness.lock')
+    await writeFile(path, 'x'.repeat(8193))
+    await expect(unlockHostStorage(root, { predecessorStopped: true, expectedToken: 'token' })).rejects.toMatchObject({ code: 'HOST_LOCKED' })
+    await expect(acquireHostStorageLock(root, 'next')).rejects.toMatchObject({ code: 'HOST_LOCKED' })
+    expect((await readFile(path)).length).toBe(8193)
   })
 })

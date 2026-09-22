@@ -54,13 +54,13 @@ it('reports exhausted roots under truncation and gives their unresolved review t
   } finally { await host.shutdown() }
 })
 
-it('rotates business admission even when each scan includes all members and the report is truncated', async () => {
+it.each([1, 2])('rotates business admission with scan size %i and a truncated report', async maxSlotsPerScan => {
   const root = await mkdtemp(join(tmpdir(), 'host-fairness-'))
   const config = twoMemberHostConfig(root)
   const members = (config.members as readonly Record<string, unknown>[]).map(member => ({ ...member,
     spec: { ...(member.spec as object), limits: { ...((member.spec as Record<string, object>).limits), maxTurnsPerRun: 1 } } }))
   const spec = resolveHostConfig(decodeHostConfig({ ...config, members,
-    scheduling: { ...(config.scheduling as object), maxSlotsPerScan: 2, maxBatchesPerRun: 1, maxReportEntries: 1 } }, root))
+    scheduling: { ...(config.scheduling as object), maxSlotsPerScan, maxBatchesPerRun: 1, maxReportEntries: 1 } }, root))
   await initializeHost(spec)
   const host = await openHost(spec)
   try {

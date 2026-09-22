@@ -48,7 +48,10 @@ class HostRuntime {
   readonly #wake = new AbortController()
   readonly #tokens = new Set<symbol>()
   readonly #operations = new Set<Promise<unknown>>()
-  readonly #scheduler: HostSchedulerState = { cursor: 0, businessCursor: 0, faults: new Set(), stalled: new Map(), cooldowns: new Map(), observations: new HostObservations() }
+  readonly #scheduler: HostSchedulerState = {
+    cursor: 0, laneOrder: ['delivery', 'maintenance', 'business'], memberCursors: { delivery: 0, maintenance: 0, business: 0 },
+    faults: new Set(), stalled: new Map(), cooldowns: new Map(), observations: new HostObservations(),
+  }
   #status: HostStatus = 'ready'
   #activity: Promise<HostRunReport> | undefined
   #command: Promise<unknown> | undefined

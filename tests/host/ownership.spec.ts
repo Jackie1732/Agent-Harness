@@ -64,6 +64,31 @@ it('routing pause leaves persisted emission untouched while independent business
   } finally { await host.shutdown() }
 })
 
+it('retries a replacement after acquired resources roll back completely', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'host-retry-rollback-'))
+  const spec = resolveHostConfig(decodeHostConfig(twoMemberHostConfig(root), root))
+  await initializeHost(spec)
+  let mismatch = false
+  let released = 0
+  const host = await openHost(spec, { bindings: { createModelProvider(member) {
+    const provider = createHostModelProvider(member.model, {})
+    return { descriptor: mismatch && member.agentKey === 'reviewer' ? { ...provider.descriptor, providerId: 'mismatch' } : provider.descriptor,
+      prepare: request => provider.prepare(request), async dispose() { released++; await provider.dispose() } }
+  } } })
+  try {
+    await host.setMailboxOnline('reviewer', false)
+    mismatch = true
+    await expect(host.setMailboxOnline('reviewer', true)).rejects.toThrow()
+    expect(released).toBe(2)
+    expect(host.report().counts.blockedMembers).toBe(1)
+    mismatch = false
+    await host.setMailboxOnline('reviewer', true)
+    expect(host.report().counts.blockedMembers).toBe(0)
+    host.resume('reviewer'); await host.submitTask('reviewer', 'retry after clean rollback')
+    expect((await host.run()).businessRuns).toBe(1)
+  } finally { await host.shutdown() }
+})
+
 it('reports disabled members and preserves their pending work until explicit fresh attachment', async () => {
   const root = await mkdtemp(join(tmpdir(), 'host-disabled-'))
   const config = twoMemberHostConfig(root)
