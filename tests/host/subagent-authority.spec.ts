@@ -1,12 +1,13 @@
 import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { expect, it } from 'vitest'
+import { expect, it, vi } from 'vitest'
 import { decodeHostConfig, resolveHostConfig, initializeHost, openHost } from '../../src/index.js'
 import type { AtomicHost, JsonObject } from '../../src/index.js'
 import { ScriptedModelProvider } from '../../src/model/providers/scripted.js'
 import type { ModelFrame } from '../../src/model/contract.js'
 import { subagentHostConfig } from './subagent-fixture.js'
+import { SubagentAdmission } from '../../src/subagent/admission.js'
 
 it.each(['template', 'disabled', 'capability', 'grant'] as const)('rechecks %s changes before resuming an accepted obligation', async change => {
   const root = await mkdtemp(join(tmpdir(), 'subagent-authority-'))
@@ -51,6 +52,11 @@ it.each(['template', 'disabled', 'capability', 'grant'] as const)('rechecks %s c
       host = await openHost(next, { clock, bindings })
       expect(acquired).toBe(1)
       expect(host.resume('writer')).toMatchObject([{ status: 'blocked' }])
+      if (change === 'capability') {
+        const fault = vi.spyOn(SubagentAdmission.prototype, 'authorizeResume').mockImplementationOnce(() => { throw new Error('resume-internal-fault') })
+        try { expect(() => host!.resume('writer')).toThrow('resume-internal-fault') }
+        finally { fault.mockRestore() }
+      }
       await host.run(); expect(acquired).toBe(1)
       await host.cancel('writer', relation.parentRoot)
       expect(host.resume('writer')).toMatchObject([{ status: 'resumed' }])

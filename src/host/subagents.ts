@@ -99,7 +99,10 @@ export class HostSubagents {
         this.#suspended.delete(accepted.event.stored.eventId)
         this.#restored.set(accepted.event.stored.eventId, session)
         result.push({ delegationId: accepted.event.stored.eventId, status: 'resumed', reasonCode: 'explicit-resume' })
-      } catch { result.push({ delegationId: accepted.event.stored.eventId, status: 'blocked', reasonCode: 'current-authority-or-capacity' }) }
+      } catch (cause) {
+        if (!(cause instanceof SubagentError)) throw cause
+        result.push({ delegationId: accepted.event.stored.eventId, status: 'blocked', reasonCode: 'current-authority-or-capacity' })
+      }
     }
     return result
   }
