@@ -217,6 +217,17 @@ function node(value: JsonValue, limitsValue: WorkflowLimits): WorkflowNode {
   unique(inputs.map(item => item.name), 'input.name')
   const attempts = list(input.attempts, 'attempts', limitsValue.maxAttemptsPerNode).map(item => attempt(item, limitsValue))
   if (!attempts.length) invalidDefinition('attempts-empty')
+  for (let index = 0; index < attempts.length; index++) {
+    const current = attempts[index]!.workspace
+    if (current.kind === 'none') continue
+    for (const previous of attempts.slice(0, index).map(item => item.workspace)) {
+      if (previous.kind === 'none' || previous.resourceId !== current.resourceId) continue
+      if (previous.writePrefixes.some(left => current.writePrefixes.some(right => {
+        const a = left.toLowerCase(), b = right.toLowerCase()
+        return a === b || a.startsWith(b + '/') || b.startsWith(a + '/')
+      }))) invalidDefinition('attempt-output-overlap')
+    }
+  }
   return { nodeKey: key(input.nodeKey, 'nodeKey'), executor: key(input.executor, 'executor'),
     task: text(input.task, 'task', limitsValue.maxTextBytes), dependencies, inputs,
     inputSchema: schema(input.inputSchema, limitsValue), guard: guard(input.guard!), output: output(input.output!, limitsValue),

@@ -8,20 +8,14 @@ import type { ContextProfile } from '../context/contract.js'
 import { decodeSubagentContextProfile } from '../context/profile.js'
 import type { HostModelConfig } from '../host/config-types.js'
 import type { ModelRunnerLimits, ModelStreamLimits } from '../model/contract.js'
-import type { ToolInvocationLimits, ToolSchemaLimits } from '../tool/contract.js'
-import { readLimits, readSchemaLimits } from '../tool/validation.js'
 import type { DelegationCapabilities, SubagentLimits } from './contract.js'
 import { decodeDelegationCapabilities } from './role-codec.js'
 import { decodeSubagentLimits } from './request.js'
 import { SubagentError } from './errors.js'
 
-/** Tool options name logical roots. Only Host resource configuration contains native paths. */
-export type ChildToolConfig =
-  | { readonly kind: 'none' }
-  | { readonly kind: 'workspace-text'; readonly read: boolean; readonly write: boolean;
-    readonly maxReadBytes: number; readonly maxWriteBytes: number; readonly maxBaselineFiles: number; readonly maxBaselineBytes: number; readonly maxPathBytes: number;
-    readonly maxArgumentsBytes: number; readonly maxResultBytes: number;
-    readonly schemaLimits: ToolSchemaLimits; readonly invocationLimits: ToolInvocationLimits }
+export type { WorkspaceToolConfig as ChildToolConfig } from '../tool/workspace-config.js'
+import type { WorkspaceToolConfig as ChildToolConfig } from '../tool/workspace-config.js'
+import { decodeWorkspaceToolConfig } from '../tool/workspace-config.js'
 
 /** Full non-secret recipe; equal key/version requires equal content when reopening. */
 export type ChildTemplate = {
@@ -56,20 +50,6 @@ function modelConfig(value: unknown): HostModelConfig {
   return { kind, ...common, endpoint, credentialRef: text(input.credentialRef, 128) }
 }
 
-function toolConfig(value: unknown): ChildToolConfig {
-  const input = record(value)
-  if (input.kind === 'none') { exact(input, ['kind']); return { kind: 'none' } }
-  choice(input.kind, ['workspace-text'])
-  exact(input, ['kind', 'read', 'write', 'maxReadBytes', 'maxWriteBytes', 'maxBaselineFiles', 'maxBaselineBytes', 'maxPathBytes', 'maxArgumentsBytes', 'maxResultBytes', 'schemaLimits', 'invocationLimits'])
-  if (typeof input.read !== 'boolean' || typeof input.write !== 'boolean' || !input.read && !input.write) throw new Error('tool-selection')
-  for (const key of ['maxReadBytes', 'maxWriteBytes', 'maxPathBytes', 'maxArgumentsBytes', 'maxResultBytes']) integer(input[key], 1)
-  integer(input.maxBaselineFiles, 0, 10000); integer(input.maxBaselineBytes)
-  const schema = readSchemaLimits(record(input.schemaLimits)); const limits = readLimits(record(input.invocationLimits))
-  if (limits.maxArgumentsBytes > Number(input.maxArgumentsBytes) || limits.maxResultBytes > Number(input.maxResultBytes)
-    || schema.maxSchemaBytes !== limits.maxSchemaBytes || schema.maxSchemaDepth !== limits.maxSchemaDepth || schema.maxSchemaNodes !== limits.maxSchemaNodes) throw new Error('tool-limits')
-  return input as ChildToolConfig
-}
-
 /** Validate a complete child recipe before recording it as a durable accepted obligation. */
 export function decodeChildTemplate(value: unknown): ChildTemplate {
   try {
@@ -79,7 +59,7 @@ export function decodeChildTemplate(value: unknown): ChildTemplate {
     const profile = decodeSubagentContextProfile(input.profile)
     const spec = decodeChildAgentSpecTemplate(input.spec)
     if (spec.limits.maxPendingInputs === 0) throw new Error('child-task-capacity')
-    const model = modelConfig(input.model); const tools = toolConfig(input.tools)
+    const model = modelConfig(input.model); const tools = decodeWorkspaceToolConfig(input.tools)
     const descriptor = model.kind === 'scripted-fixed' ? scriptedModelDescriptor(model) : model.kind === 'deepseek' ? deepSeekModelDescriptor(model) : anthropicModelDescriptor(model)
     const names = tools.kind === 'none' ? [] : [...(tools.read ? ['read_text'] : []), ...(tools.write ? ['write_text'] : [])]
     if (!equal(profile.toolNames, names) || !equal(spec.toolNames, names) || profile.previousEventId !== null

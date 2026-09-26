@@ -131,7 +131,7 @@ export interface WorkflowAssignment {
   readonly toolNames: readonly string[]
   readonly nativeActions: readonly string[]
   readonly workspace: WorkflowWorkspace
-  readonly workspaceBaseline: JsonObject | null
+  readonly workspaceBaseline: import('../subagent/workspace.js').WorkspaceBaseline | null
   readonly protocolLimits: { readonly maxMessageBytes: number; readonly maxRecordBytes: number }
   readonly protocolReserve: { readonly coordinator: MailboxReservation; readonly member: MailboxReservation }
   readonly deadline: string

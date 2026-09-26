@@ -58,7 +58,7 @@ export class ChildInstance {
       const template = options.accepted.event.payload.effectivePlan.template
       const member = this.#member()
       return createHostExecution(session, member, options.communication, options.catalog, options.clock, options.credentials,
-        options.protectedRoots, options.bindings, this.#mailbox!, { subagentActions: new SessionSubagentActions(session, member.agentKey, options.admission, options.clock), childTools: template.tools,
+        options.protectedRoots, options.bindings, this.#mailbox!, { subagentActions: new SessionSubagentActions(session, member.agentKey, options.admission, options.clock), workspaceTools: template.tools,
           ...(options.accepted.workspaceLease === undefined ? {} : { workspaceAccess: options.accepted.workspaceLease, workspaceLease: options.accepted.workspaceLease }) })
     })
   }

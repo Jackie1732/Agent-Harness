@@ -24,6 +24,8 @@ import type { HostSlot, HostProtocolSlot } from './runtime-types.js'
 import { nextWorkflowInbox } from './workflow-inbox.js'
 import { assignmentMember, assertWorkflowMember, workflowMemberIdle } from './workflow-authority.js'
 import { workflowReport } from './workflow-report.js'
+import { prepareWorkWorkspace, workExecutionTools } from './workflow-workspace.js'
+import type { WorkspaceAuthority, WorkspaceLease } from '../subagent/workspace.js'
 
 interface WorkflowEntry { readonly slot: HostProtocolSlot; readonly journal: WorkflowJournal; readonly admission: WorkflowAdmission }
 
@@ -33,10 +35,11 @@ export class HostWorkflows {
   readonly #entries = new Map<string, WorkflowEntry>()
   readonly #active = new Set<string>()
   readonly #retired = new Set<string>()
+  readonly #workspaces = new Map<string, WorkspaceLease>()
   #cursor = 0
   #closed = false
   constructor(readonly slots: HostSlot[], coordinators: readonly HostProtocolSlot[], readonly communication: CommunicationService,
-    readonly clock: Clock, readonly owner: string) {
+    readonly clock: Clock, readonly owner: string, readonly workspaceAuthority: WorkspaceAuthority) {
     for (const slot of coordinators) {
       const definition = projectWorkflowSession(slot.session.snapshot()).definition!
       this.#entries.set(definition.payload.workflowKey, { slot, journal: new WorkflowJournal(slot.session, clock),
@@ -127,7 +130,9 @@ export class HostWorkflows {
       const root = agent.roots.find(root => root.source.kind === 'workflow' && root.source.assignment.eventId === work.stored.eventId)
       if (root?.outcome == null) {
         if (state.desired === 'running' && member.selection?.kind !== 'workflow') return async () => {
-          const replacement = await member.executions!.replace({ kind: 'workflow', assignment: accepted.work!.assignment }, { toolConfig: { kind: 'none' } })
+          const lease = this.#workspaces.get(work.stored.eventId) ?? await prepareWorkWorkspace(member.member, work.payload, this.workspaceAuthority, work.payload.workspaceBaseline)
+          if (lease !== undefined) this.#workspaces.set(work.stored.eventId, lease)
+          const replacement = await member.executions!.replace({ kind: 'workflow', assignment: accepted.work!.assignment }, workExecutionTools(member.member, work.payload, lease))
           this.slots[this.slots.indexOf(member)] = replacement
         }
         continue
@@ -160,6 +165,7 @@ export class HostWorkflows {
       if (workflowAssignmentClosed(coordinator.session, member.session, work.stored.eventId)) return async () => {
         entry.admission.retire(work.stored.eventId, member.session)
         this.#retired.add(work.stored.eventId)
+        this.#workspaces.delete(work.stored.eventId)
         const replacement = await member.executions!.replace({ kind: 'ordinary' }, {})
         this.slots[this.slots.indexOf(member)] = replacement
       }
@@ -176,12 +182,16 @@ export class HostWorkflows {
       return async () => {
         assertWorkflowMember(definition.payload, member, node.nodeKey)
         await member.executions!.release()
+        let lease: WorkspaceLease | undefined
         try {
+          lease = await prepareWorkWorkspace(member.member, node.attempts[0]!, this.workspaceAuthority)
           const assignment = await entry.admission.admitRoot(node.nodeKey, member.session, parseChannelId(randomUUID()),
-            () => assertWorkflowMember(definition.payload, member, node.nodeKey))
+            () => assertWorkflowMember(definition.payload, member, node.nodeKey), await lease?.baseline() ?? null)
+          if (lease !== undefined) this.#workspaces.set(assignment.stored.eventId, lease)
           this.communication.workflowChannels.bind(coordinator.session, assignment.stored.eventId, member.session)
         } catch (cause) {
           if (coordinator.session.status === 'open' && !(cause instanceof WorkflowError && cause.code === 'WORKFLOW_COMMIT_UNKNOWN')) {
+            await lease?.dispose()
             this.slots[this.slots.indexOf(member)] = await member.executions!.replace({ kind: 'ordinary' }, {})
           }
           throw cause

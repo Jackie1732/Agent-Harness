@@ -1,4 +1,5 @@
 import { workflowControlRequestedEvent, workflowControlSettledEvent } from './control-events.js'
+import { validateWorkBaseline } from './workspace.js'
 import type { WorkflowControlRequested, WorkflowControlSettled } from './control-events.js'
 import { validateWorkflowProtocol, workflowProtocolRecordedEvent } from './protocol.js'
 import { inboxAcceptedEvent } from '../communication/session-events.js'
@@ -90,9 +91,10 @@ export function projectWorkflowSession(snapshot: SessionSnapshot): WorkflowSnaps
         || !same(payload.effectiveAllowance, attempt.workerGrant)
         || !same(payload.reviewerReservations, attempt.reviewerGrants)
         || !same(payload.toolNames, attempt.toolNames) || !same(payload.nativeActions, attempt.nativeActions)
-        || !same(payload.workspace, attempt.workspace) || payload.workspace.kind !== 'none' || payload.workspaceBaseline !== null
+        || !same(payload.workspace, attempt.workspace)
         || !same(payload.protocolReserve, demand) || !same(payload.acceptance, node.acceptance)) invalidHistory('assignment-recipe-mismatch')
       const until = Math.min(Date.parse(recipe.deadline), Date.parse(record.stored.recordedAt) + attempt.durationMs)
+      validateWorkBaseline(payload)
       if (Date.parse(payload.deadline) > until) invalidHistory('assignment-deadline')
       let next: AgentBudget | null = reserveAgentBudget(reservedBudget, attempt.workerGrant, recipe.budget)
       for (const reviewer of attempt.reviewerGrants) {

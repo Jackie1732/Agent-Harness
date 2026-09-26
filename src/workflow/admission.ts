@@ -79,7 +79,7 @@ export class WorkflowAdmission {
 
   /** Commit one initially ready production assignment after the caller's Host admission gate checks current policy. */
   async admitRoot(nodeKey: string, member: SessionHandle, channelId: ChannelId,
-    authorize: () => void): Promise<CommittedSessionEvent<WorkflowAssignment & JsonObject>> {
+    authorize: () => void, baseline: WorkflowAssignment['workspaceBaseline'] = null): Promise<CommittedSessionEvent<WorkflowAssignment & JsonObject>> {
     authorize()
     return this.capacity.run(async () => {
       for (let conflict = 0; ; conflict++) {
@@ -91,7 +91,7 @@ export class WorkflowAdmission {
         const node = definition.payload.nodes.find(item => item.nodeKey === nodeKey)
         if (node === undefined || !state.ready.includes(nodeKey)) throw new WorkflowError('WORKFLOW_ADMISSION_BLOCKED', 'node-not-ready')
         const attempt = node.attempts[0]!
-        if (attempt.workspace.kind !== 'none') blocked('workspace-lease-required')
+        if (attempt.workspace.kind !== 'none' && baseline === null) blocked('workspace-lease-required')
         const memberRecord = definition.payload.roster.find(item => item.memberKey === node.executor)
         if (memberRecord?.address !== member.header.address) blocked('member-not-bound')
         const selected = resolveWorkflowNode(node, new Map(state.upstream.map(item => [item.nodeKey, item.state])),  definition.payload)
@@ -106,7 +106,7 @@ export class WorkflowAdmission {
             && state.assignments.find(assignment => assignment.stored.eventId === item.payload.assignment.eventId)?.payload.nodeKey === input.source.nodeKey))
             .map(item => ({ address: definition.payload.coordinator, eventId: item.stored.eventId })), effectiveAllowance: attempt.workerGrant,
           reviewerReservations: attempt.reviewerGrants, toolNames: attempt.toolNames,
-          nativeActions: attempt.nativeActions, workspace: attempt.workspace, workspaceBaseline: null,
+          nativeActions: attempt.nativeActions, workspace: attempt.workspace, workspaceBaseline: baseline,
           protocolLimits: { maxMessageBytes: this.capacity.limits.maxMessageBytes, maxRecordBytes: Math.min(this.coordinator.maxRecordBytes, member.maxRecordBytes) },
           protocolReserve: workflowAssignmentMailboxDemand(definition.payload, 'production'),
           deadline: new Date(deadlineMs).toISOString(), acceptance: node.acceptance,

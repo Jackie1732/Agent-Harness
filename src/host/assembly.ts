@@ -137,7 +137,7 @@ export async function assembleHost(spec: ResolvedHostSpec, clock: Clock,
       if (subagents !== undefined) await subagents.restore(discovered, local)
       for (const { member } of local) if (member.enabled) slots.push(await slotOwners.get(member.agentKey)!.open())
       const workflowDomain = workflows.length === 0 ? undefined : await effect.apply('workflows',
-        () => new HostWorkflows(slots, protocolSlots.filter(slot => slot.member.agentKey.startsWith('workflow:')), service, clock, lock.record.instanceId), value => release(value))
+        () => new HostWorkflows(slots, protocolSlots.filter(slot => slot.member.agentKey.startsWith('workflow:')), service, clock, lock.record.instanceId, workspaces!), value => release(value))
       await workflowDomain?.restore()
       const server = https !== undefined && tls !== undefined ? await effect.apply('HTTPS listener',
         () => createHttpsMessageServer({ directory, host: https.listen.host,

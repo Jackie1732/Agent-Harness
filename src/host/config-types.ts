@@ -89,6 +89,7 @@ export interface HostLocalMemberConfig {
   readonly spec: HostAgentSpecTemplate
   readonly model: HostModelConfig
   readonly tools: HostToolConfig
+  readonly workflowTools?: import('./workflow-tools.js').HostWorkflowTools
 }
 export interface HostRemoteMemberConfig {
   readonly kind: 'remote'

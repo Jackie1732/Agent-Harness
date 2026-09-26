@@ -1,4 +1,5 @@
 import { decodeAgentBudget, emptyAgentBudget, reserveAgentBudget } from '../agent/budget.js'
+import { validateWorkBaseline } from './workspace.js'
 import { eventId, exact, record } from '../agent/validation.js'
 import { snapshotJson } from '../foundation/json.js'
 import type { JsonObject, JsonValue } from '../foundation/json.js'
@@ -39,6 +40,7 @@ export function decodeWorkAssignmentMessage(value: unknown): WorkAssignmentMessa
   const assignment = workflowReference(input.assignment)
   const recipe = decodeWorkflowDefinition(input.recipe)
   const work = decodeWorkflowAssignment(input.value!)
+  validateWorkBaseline(work)
   const node = recipe.nodes.find(item => item.nodeKey === work.nodeKey)
   const attempt = node?.attempts[work.attempt - 1]
   const member = recipe.roster.find(item => item.memberKey === work.memberKey)

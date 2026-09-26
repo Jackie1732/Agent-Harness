@@ -30,7 +30,7 @@ function config(root: string): JsonObject {
     { nodeKey: 'read', recipients: ['coordinator', 'reviewer'] },
     { nodeKey: 'write', recipients: ['coordinator'] },
   ] } }
-  return { ...host, schemaVersion: 3, subagents: { kind: 'disabled' }, workspaceResources: [],
+  return { ...host, members: (host.members as readonly JsonObject[]).map(member => ({ ...member, workflowTools: { kind: 'none' } })), schemaVersion: 3, subagents: { kind: 'disabled' }, workspaceResources: [],
     workflows: { kind: 'enabled', definitions: [{ sessionId: null, definition }],
       maxBusinessConcurrency: 1 } }
 }
@@ -40,7 +40,7 @@ describe('Host v3 workflow planning', () => {
     const root = await mkdtemp(join(tmpdir(), 'host-v3-agent-'))
     try {
       const base = twoMemberHostConfig(root)
-      const members = (base.members as readonly JsonObject[]).map(member => ({ ...member,
+      const members = (base.members as readonly JsonObject[]).map(member => ({ ...member, workflowTools: { kind: 'none' },
         profile: { ...(member.profile as JsonObject), rendererVersion: 'context-neutral/v4' },
         spec: { ...(member.spec as JsonObject), protocolVersion: 3, workflow: { kind: 'disabled' } },
       }))

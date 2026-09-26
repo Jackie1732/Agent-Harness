@@ -10,7 +10,8 @@ import { hostRuntimeEventCatalog, initializeHost } from '../../src/host/initiali
 import { hostConfig, hostSessionId } from '../host/fixtures.js'
 
 function v3(root: string) {
-  return resolveHostConfig(decodeHostConfig({ ...hostConfig(root), schemaVersion: 3,
+  const base = hostConfig(root)
+  return resolveHostConfig(decodeHostConfig({ ...base, members: (base.members as readonly import('../../src/foundation/json.js').JsonObject[]).map(member => ({ ...member, workflowTools: { kind: 'none' } })), schemaVersion: 3,
     subagents: { kind: 'disabled' }, workspaceResources: [], workflows: { kind: 'disabled' } }, root))
 }
 

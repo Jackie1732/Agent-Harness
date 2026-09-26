@@ -7,6 +7,7 @@ import type { WorkflowAssignment, WorkflowDefinition } from '../workflow/types.j
 import type { ResolvedHostLocalMember } from './config.js'
 import type { HostSlot } from './runtime-types.js'
 import { HostError } from './errors.js'
+import { assertWorkTools } from './workflow-workspace.js'
 
 /** Roster hashes cover resolved Spec fields without its local profile EventId, and the complete Context profile. */
 export function workflowMemberFingerprints(member: ResolvedHostLocalMember) {
@@ -25,6 +26,7 @@ export function assertWorkflowMember(definition: WorkflowDefinition, slot: HostS
     || reserveAgentBudget(emptyAgentBudget, roster.budgetCeiling, spec.budget) === null) throw new HostError('HOST_BINDING_CONFLICT', 'workflow-member-authority')
   const authority = spec.workflow
   const attempt = node.attempts[0]!
+  assertWorkTools(slot.member, attempt)
   if (attempt.toolNames.some(name => !authority.toolNames.includes(name))
     || attempt.nativeActions.some(name => !(authority.nativeActions as readonly string[]).includes(name))
     || attempt.workspace.kind !== 'none' && !spec.workflow.resourceIds.includes(attempt.workspace.resourceId)) throw new HostError('HOST_BINDING_CONFLICT', 'workflow-attempt-authority')

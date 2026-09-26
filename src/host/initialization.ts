@@ -1,4 +1,5 @@
 import { subagentSessionEventDefinitions } from '../subagent/session-events.js'
+import { validateWorkflowWorkspaces } from './workflow-workspace.js'
 import { workflowSessionEventDefinitions } from '../workflow/session-events.js'
 import { preflightWorkflowInitialization, initializeWorkflowCoordinator } from './workflow-initialization.js'
 import type { HostWorkflowInitializationResult } from './workflow-initialization.js'
@@ -120,6 +121,7 @@ export async function initializeHost(
     maxLineageDepth: spec.storage.maxLineageDepth, clock: options.clock ?? systemClock })
   const results: (HostInitializationResult | HostWorkflowInitializationResult)[] = []
   try {
+    await validateWorkflowWorkspaces(spec, options.clock ?? systemClock)
     for (const member of spec.members.filter(isLocalHostMember)) {
       const result = member.mode === 'create'
         ? await initializeMember(repository, spec.hostKey, member, options.clock ?? systemClock, options.resume === true, spec.schemaVersion)

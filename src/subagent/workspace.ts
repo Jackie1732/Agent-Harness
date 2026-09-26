@@ -137,6 +137,10 @@ export class WorkspaceLease implements WorkspaceAccess {
     this.#baseline = { kind: 'checked-files', resourceId: this.request.resourceId, rootIdentity: { device: String(this.root.identity.dev), inode: String(this.root.identity.ino) }, observedAt: clockTimestamp(this.clock), entries }
     return this.#baseline
   }
+  /** Workflow output directories are prepared by the caller before admission. */
+  async checkWriteDirectories(): Promise<void> {
+    for (const path of this.request.writePrefixes) await checkTarget(nodeWorkspaceIO, this.root, path, 'directory')
+  }
   dispose(): Promise<void> {
     this.#closing = true
     this.#close ??= Promise.all([...this.#borrows].map(item => item.done)).then(() => {

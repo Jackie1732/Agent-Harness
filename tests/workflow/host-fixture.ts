@@ -6,7 +6,7 @@ import { workflowFixture } from './fixtures.js'
 
 export function runnableWorkflowHost(root: string, firstText = '{"text":"accepted upstream"}') {
   const base = twoMemberHostConfig(root)
-  const members = (base.members as readonly JsonObject[]).map(member => ({ ...member,
+  const members = (base.members as readonly JsonObject[]).map(member => ({ ...member, workflowTools: { kind: 'none' },
     profile: { ...(member.profile as JsonObject), rendererVersion: 'context-neutral/v4' },
     spec: { ...(member.spec as JsonObject), protocolVersion: 3, workflow: { kind: 'participant', toolNames: [], nativeActions: [], resourceIds: [] } },
     model: { ...(member.model as JsonObject), text: member.agentKey === 'writer' ? firstText : 'final report' },

@@ -1,4 +1,5 @@
 import { integer } from '../agent/validation.js'
+import { decodeWorkspaceBaseline } from '../subagent/workspace-events.js'
 import { decodeAgentBudget } from '../agent/budget.js'
 import { AgentError } from '../agent/errors.js'
 import type { JsonObject, JsonValue } from '../foundation/json.js'
@@ -64,7 +65,7 @@ function decodeAssignment(value: JsonValue): WorkflowAssignment & JsonObject {
   const reserve = object(input.protocolReserve!, 'protocolReserve'); exact(reserve, ['coordinator', 'member'], 'protocolReserve')
   const deadline = text(input.deadline, 'deadline')
   if (!Number.isFinite(Date.parse(deadline)) || new Date(deadline).toISOString() !== deadline) invalidHistory('assignment-deadline')
-  const workspaceBaseline = input.workspaceBaseline === null ? null : object(input.workspaceBaseline!, 'workspaceBaseline')
+  const workspaceBaseline = input.workspaceBaseline === null ? null : decodeWorkspaceBaseline(input.workspaceBaseline)
   const definition = parseSessionEventId(text(input.definition, 'definition'))
   return {
     definition: formatSessionEventId(definition.sessionId, definition.sequence),

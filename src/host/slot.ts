@@ -1,6 +1,6 @@
 import type { WorkspaceAccess } from '../tool/providers/workspace-access.js'
 import type { WorkspaceLease } from '../subagent/workspace.js'
-import type { ChildToolConfig } from '../subagent/template.js'
+import type { WorkspaceToolConfig } from '../tool/workspace-config.js'
 import { EffectOwner } from '../effect/owner.js'
 import type { SessionMailbox } from '../communication/mailbox.js'
 import type { SubagentActionExecutor } from '../subagent/action-port.js'
@@ -36,7 +36,8 @@ export interface HostExecutionExtensions {
   readonly subagentActions?: SubagentActionExecutor
   readonly workspaceAccess?: WorkspaceAccess
   readonly toolConfig?: import('./config.js').HostToolConfig
-  readonly childTools?: ChildToolConfig
+  readonly workspaceTools?: WorkspaceToolConfig
+  readonly workspacePolicy?: Extract<import('./config.js').HostToolConfig, { kind: 'workspace-read-text' }>['policy']
   readonly workspaceLease?: WorkspaceLease
 }
 

@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto'
 import { isAbsolute, resolve } from 'node:path'
 import { decodeHostSubagents, decodeHostWorkspaceResources, parentSubagentRole } from './subagent-config.js'
 import { decodeHostWorkflows } from './workflow-config.js'
+import { decodeHostWorkflowTools } from './workflow-tools.js'
 import { decodeAgentSpec, decodeSubagentAgentSpec, decodeWorkflowAgentSpec } from '../agent/spec-codec.js'
 import type { MailboxLimits } from '../communication/types.js'
 import { parseChannelId } from '../communication/ids.js'
@@ -91,6 +92,8 @@ function decodeConfig(value: unknown, baseDirectory: string, limits: JsonValidat
   const rootInput = text(storage.root, 'storage.root', 4096)
   const root = isAbsolute(rootInput) ? resolve(rootInput) : resolve(baseDirectory, rootInput)
   const members = array(input.members, 'members').map((item, index) => decodeMember(item, index, baseDirectory, input.schemaVersion as 1 | 2 | 3))
+  for (const member of members) if (member.kind === 'local' && member.workflowTools?.kind === 'workspace'
+    && member.workflowTools.resourceIds.some(id => !workspaceResources?.some(resource => resource.resourceId === id))) invalid('workflow-tools-resource-reference')
   const messages = array(input.messages, 'messages').map(item => {
     const message = record(item, 'message'); keys(message, ['type', 'payloadVersion', 'schema'], 'message')
     const schema = record(message.schema, 'message.schema') as JsonObject; validateInlineSchema(schema)
@@ -221,7 +224,7 @@ function decodeMember(value: JsonValue, index: number, baseDirectory: string, ve
       sessionId: parseSessionId(text(member.sessionId, 'member.sessionId')), ownerHost: identifier(member.ownerHost, 'member.ownerHost') })
   }
   if (member.kind !== 'local') invalid('member-kind')
-  keys(member, ['kind', 'agentKey', 'sessionId', 'mode', 'enabled', 'profile', 'spec', 'model', 'tools'], 'member')
+  keys(member, ['kind', 'agentKey', 'sessionId', 'mode', 'enabled', 'profile', 'spec', 'model', 'tools', ...(version === 3 ? ['workflowTools'] : [])], 'member')
   const mode = member.mode
   if (mode !== 'create' && mode !== 'adopt') invalid('member-mode')
   if (typeof member.enabled !== 'boolean') invalid('member-enabled')
@@ -270,7 +273,7 @@ function decodeMember(value: JsonValue, index: number, baseDirectory: string, ve
     || JSON.stringify(spec.toolNames) !== JSON.stringify(expectedToolNames)) invalid('tool-names-binding')
   return Object.freeze({ kind: 'local', agentKey: identifier(member.agentKey, 'agentKey'), sessionId, mode, enabled: member.enabled,
     profile, spec: snapshotJson(spec) as unknown as HostAgentSpecTemplate,
-    model: modelConfig, tools })
+    model: modelConfig, tools, ...(version === 3 ? { workflowTools: decodeHostWorkflowTools(member.workflowTools) } : {}) })
 }
 
 function decodeTools(value: JsonValue | undefined, baseDirectory: string): HostToolConfig {

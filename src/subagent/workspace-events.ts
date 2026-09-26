@@ -11,16 +11,22 @@ export const workspaceBaselineRecordedEvent = createDurableEventDefinition({ typ
   decode(value): WorkspaceBaselineRecorded {
     const p = record(value); exact(p, ['delegation', 'parentAddress', 'childAddress', 'execution', 'baseline'])
     eventId(p.delegation); eventId(p.execution); parseSessionAddress(text(p.parentAddress)); parseSessionAddress(text(p.childAddress))
-    const baseline = record(p.baseline); exact(baseline, ['kind', 'resourceId', 'rootIdentity', 'observedAt', 'entries'])
-    if (baseline.kind !== 'checked-files') throw new TypeError('baseline kind')
-    text(baseline.resourceId, 128); timestamp(baseline.observedAt)
-    const identity = record(baseline.rootIdentity); exact(identity, ['device', 'inode'])
-    for (const value of Object.values(identity)) if (!/^[0-9]+$/.test(text(value, 64))) throw new TypeError('root identity')
-    unique(array(baseline.entries, 10000).map(value => {
-      const entry = record(value); exact(entry, ['path', 'byteLength', 'sha256']); integer(entry.byteLength)
-      if (!/^[a-f0-9]{64}$/.test(text(entry.sha256, 64))) throw new TypeError('baseline hash')
-      return workspaceRelativePath(entry.path, 4096).toLowerCase()
-    }))
+    decodeWorkspaceBaseline(p.baseline)
     return p as WorkspaceBaselineRecorded
   },
 })
+
+/** Validate persisted file identities shared by child and Workflow assignments. */
+export function decodeWorkspaceBaseline(value: unknown): WorkspaceBaseline {
+  const baseline = record(value); exact(baseline, ['kind', 'resourceId', 'rootIdentity', 'observedAt', 'entries'])
+  if (baseline.kind !== 'checked-files') throw new TypeError('baseline kind')
+  text(baseline.resourceId, 128); timestamp(baseline.observedAt)
+  const identity = record(baseline.rootIdentity); exact(identity, ['device', 'inode'])
+  for (const value of Object.values(identity)) if (!/^[0-9]+$/.test(text(value, 64))) throw new TypeError('root identity')
+  unique(array(baseline.entries, 10000).map(value => {
+    const entry = record(value); exact(entry, ['path', 'byteLength', 'sha256']); integer(entry.byteLength)
+    if (!/^[a-f0-9]{64}$/.test(text(entry.sha256, 64))) throw new TypeError('baseline hash')
+    return workspaceRelativePath(entry.path, 4096).toLowerCase()
+  }))
+  return baseline as WorkspaceBaseline
+}
