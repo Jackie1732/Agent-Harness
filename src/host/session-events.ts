@@ -67,4 +67,47 @@ export const hostSessionPlannedEvent = createDurableEventDefinition({
 export const hostSessionReadyEvent = createDurableEventDefinition({
   type: 'host/session-ready', payloadVersion: 1, ignorable: false, decode: decodeReady,
 })
-export const hostSessionEventDefinitions = Object.freeze([hostSessionPlannedEvent, hostSessionReadyEvent])
+
+/** A coordinator has a complete fixed recipe and no AgentSpec or Model Provider. */
+export interface HostWorkflowPlanned extends JsonObject {
+  readonly hostKey: string
+  readonly kind: 'workflow'
+  readonly workflowKey: string
+  readonly recipe: JsonObject
+  readonly fingerprint: string
+}
+export interface HostWorkflowReady extends JsonObject {
+  readonly hostKey: string
+  readonly kind: 'workflow'
+  readonly workflowKey: string
+  readonly mode: 'initialized'
+  readonly planned: SessionEventId
+  readonly definition: SessionEventId
+  readonly through: SessionLogPosition
+}
+function decodeWorkflowPlanned(value: JsonValue): HostWorkflowPlanned {
+  const input = object(value); exact(input, ['hostKey', 'kind', 'workflowKey', 'recipe', 'fingerprint'])
+  if (input.kind !== 'workflow') invalid('planned-workflow-kind')
+  const recipe = object(input.recipe!)
+  const fingerprint = shortText(input.fingerprint!, 'planned-workflow-fingerprint')
+  if (!/^[0-9a-f]{64}$/.test(fingerprint) || fingerprintHostRecipe(recipe) !== fingerprint) invalid('planned-workflow-fingerprint')
+  return Object.freeze({ hostKey: shortText(input.hostKey!, 'planned-host'), kind: 'workflow',
+    workflowKey: shortText(input.workflowKey!, 'planned-workflow'), recipe, fingerprint })
+}
+function decodeWorkflowReady(value: JsonValue): HostWorkflowReady {
+  const input = object(value); exact(input, ['hostKey', 'kind', 'workflowKey', 'mode', 'planned', 'definition', 'through'])
+  if (input.kind !== 'workflow' || input.mode !== 'initialized') invalid('ready-workflow-kind')
+  return Object.freeze({ hostKey: shortText(input.hostKey!, 'ready-host'), kind: 'workflow',
+    workflowKey: shortText(input.workflowKey!, 'ready-workflow'), mode: 'initialized',
+    planned: eventId(input.planned!, 'ready-planned'), definition: eventId(input.definition!, 'ready-definition'),
+    through: sessionLogPosition(input.through as number) })
+}
+export const hostWorkflowPlannedEvent = createDurableEventDefinition<HostWorkflowPlanned>({
+  type: 'host/session-planned', payloadVersion: 2, ignorable: false, decode: decodeWorkflowPlanned,
+})
+export const hostWorkflowReadyEvent = createDurableEventDefinition<HostWorkflowReady>({
+  type: 'host/session-ready', payloadVersion: 2, ignorable: false, decode: decodeWorkflowReady,
+})
+export const hostSessionEventDefinitions = Object.freeze([
+  hostSessionPlannedEvent, hostSessionReadyEvent, hostWorkflowPlannedEvent, hostWorkflowReadyEvent,
+])

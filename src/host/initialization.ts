@@ -1,4 +1,8 @@
 import { subagentSessionEventDefinitions } from '../subagent/session-events.js'
+import { workflowSessionEventDefinitions } from '../workflow/session-events.js'
+import type { WorkflowDefinition } from '../workflow/types.js'
+import { preflightWorkflowInitialization, initializeWorkflowCoordinator } from './workflow-initialization.js'
+import type { HostWorkflowInitializationResult } from './workflow-initialization.js'
 import { canonicalJsonBytes } from '../foundation/canonical-json.js'
 import type { Clock } from '../foundation/clock.js'
 import { systemClock } from '../foundation/clock.js'
@@ -40,9 +44,11 @@ import { acquireHostStorageLock } from './storage-lock.js'
 export const hostRuntimeEventCatalog = createDurableEventCatalog([
   ...subagentSessionEventDefinitions, ...hostSessionEventDefinitions, ...contextSessionEventDefinitions, ...modelSessionEventDefinitions,
   ...toolSessionEventDefinitions, ...communicationSessionEventDefinitions, ...agentSessionEventDefinitions,
+  ...workflowSessionEventDefinitions,
 ])
 
 export interface HostInitializationResult {
+  readonly kind?: 'agent'
   readonly agentKey: string
   readonly sessionId: string
   readonly mode: 'initialized' | 'adopted' | 'existing'
@@ -96,21 +102,33 @@ function profileEvent(session: SessionHandle, eventId: SessionEventId): Committe
 export async function initializeHost(
   spec: ResolvedHostSpec,
   options: { readonly clock?: Clock; readonly resume?: boolean } = {},
-): Promise<readonly HostInitializationResult[]> {
+): Promise<readonly (HostInitializationResult | HostWorkflowInitializationResult)[]> {
   for (const member of spec.members.filter(isLocalHostMember)) {
     if (member.mode === 'create') preflightInitialization(spec.hostKey, member, spec.storage.maxRecordBytes)
+  }
+  if (spec.schemaVersion === 3 && spec.workflows.kind === 'enabled') {
+    for (const entry of spec.workflows.definitions) {
+      if (entry.sessionId === null) throw new HostError('HOST_CONFIG_INVALID', 'unplanned-workflow-identity')
+      preflightWorkflowInitialization(spec.hostKey, entry.definition as unknown as WorkflowDefinition, spec.storage.maxRecordBytes)
+    }
   }
   const storageLock = await acquireHostStorageLock(spec.storage.root, spec.hostKey)
   const backend = new FileSessionBackend({ root: storageLock.root, maxRecordBytes: spec.storage.maxRecordBytes })
   const repository = new SessionRepository({ backend, catalog: hostRuntimeEventCatalog,
     maxLineageDepth: spec.storage.maxLineageDepth, clock: options.clock ?? systemClock })
-  const results: HostInitializationResult[] = []
+  const results: (HostInitializationResult | HostWorkflowInitializationResult)[] = []
   try {
     for (const member of spec.members.filter(isLocalHostMember)) {
       const result = member.mode === 'create'
         ? await initializeMember(repository, spec.hostKey, member, options.clock ?? systemClock, options.resume === true)
         : await adoptMember(repository, spec.hostKey, member)
-      results.push(result)
+      results.push(spec.schemaVersion === 3 ? { ...result, kind: 'agent' } : result)
+    }
+    if (spec.schemaVersion === 3 && spec.workflows.kind === 'enabled') {
+      for (const entry of spec.workflows.definitions) {
+        results.push(await initializeWorkflowCoordinator(repository, spec.hostKey,
+          entry.definition as unknown as WorkflowDefinition, spec.storage.maxRecordBytes, options.resume === true))
+      }
     }
     return Object.freeze(results)
   } finally {

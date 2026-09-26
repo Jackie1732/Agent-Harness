@@ -14,6 +14,8 @@ import type { ResolvedHostSpec } from './config.js'
 import { validateHostMemberSession } from './binding.js'
 import { hostRuntimeEventCatalog } from './initialization.js'
 import { acquireHostStorageLock } from './storage-lock.js'
+import { scanHostInventory } from './inventory.js'
+import { discoverHostWorkflows } from './workflow-discovery.js'
 
 export interface RecoverHostOptions {
   readonly predecessorStopped: true
@@ -27,14 +29,15 @@ export interface RecoverHostOptions {
 /** Reconcile interrupted local facts without loading Providers, tools, mailboxes or network listeners. */
 export async function recoverHost(spec: ResolvedHostSpec, options: RecoverHostOptions) {
   if (spec.schemaVersion === 1 && Object.keys(options.domainSupersedes ?? {}).length > 0) throw new HostError('HOST_CONFIG_INVALID', 'domain-recovery-requires-host-v2')
-  if (spec.schemaVersion === 2 && Object.keys(options.supersedes ?? {}).length > 0) throw new HostError('HOST_CONFIG_INVALID', 'host-v2-requires-domain-supersedes')
+  if (spec.schemaVersion !== 1 && Object.keys(options.supersedes ?? {}).length > 0) throw new HostError('HOST_CONFIG_INVALID', 'host-v2-requires-domain-supersedes')
   const clock = options.clock ?? systemClock
   const lock = await acquireHostStorageLock(spec.storage.root, spec.hostKey)
   const backend = new FileSessionBackend({ root: lock.root, maxRecordBytes: spec.storage.maxRecordBytes })
   const repository = new SessionRepository({ backend, catalog: hostRuntimeEventCatalog,
     maxLineageDepth: spec.storage.maxLineageDepth, clock })
   try {
-    if (spec.schemaVersion === 2) return await recoverHostDelegations(spec, repository, options, clock)
+    if (spec.schemaVersion === 3) discoverHostWorkflows(spec, await scanHostInventory(spec, repository))
+    if (spec.schemaVersion !== 1) return await recoverHostDelegations(spec, repository, options, clock)
     await discoverHostDelegations(spec, repository)
     const results = []
     for (const member of spec.members.filter(isLocalHostMember)) {

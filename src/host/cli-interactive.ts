@@ -20,7 +20,7 @@ export function hostExitCode(report: HostRunReport): number {
 /** Own CLI streams, bounded command admission and signal subscriptions around one Host. */
 export async function interactive(spec: ResolvedHostSpec, mode: 'run' | 'serve', io: HostCliIo, protectedRoots: readonly string[], protocolVersion: 1 | 2 = 1): Promise<number> {
   const refs = new Set(spec.members.filter(isLocalHostMember).flatMap(member => member.model.kind === 'scripted-fixed' ? [] : [member.model.credentialRef]))
-  if (spec.schemaVersion === 2 && spec.subagents.kind === 'enabled') for (const template of spec.subagents.templates) if (template.model.kind !== 'scripted-fixed') refs.add(template.model.credentialRef)
+  if (spec.schemaVersion !== 1 && spec.subagents.kind === 'enabled') for (const template of spec.subagents.templates) if (template.model.kind !== 'scripted-fixed') refs.add(template.model.credentialRef)
   const credentials = Object.fromEntries([...refs].flatMap(reference => process.env[reference] === undefined ? [] : [[reference, process.env[reference]!]]))
   const host = await openHost(spec, { credentials, bindings: { protectedRoots } })
   const write = createJsonLineWriter(io.stdout, spec.cli.maxOutputBytes, spec.cli.outputDrainTimeoutMs)

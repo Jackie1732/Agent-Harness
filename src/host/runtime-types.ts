@@ -8,7 +8,8 @@ import type { SessionHandle } from '../session/session-handle.js'
 import type { ResolvedHostLocalMember } from './config.js'
 import type { HostToolResources } from './tool-factory.js'
 
-export type HostProtocolSlot = Pick<HostSlot, 'member' | 'session' | 'mailbox' | 'dispatcher'>
+export type HostProtocolSlot = Omit<Pick<HostSlot, 'member' | 'session' | 'mailbox' | 'dispatcher'>, 'member'>
+  & { readonly member: { readonly agentKey: string } }
 
 export interface HostSlot {
   readonly member: ResolvedHostLocalMember

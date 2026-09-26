@@ -1,4 +1,5 @@
-import type { HostSubagentConfig } from './subagent-config.js'
+import type { HostSubagentConfig, HostSubagentConfigV3, HostWorkspaceResource } from './subagent-config.js'
+import type { HostWorkflowConfig } from './workflow-config.js'
 import type { AgentSpec, AgentSpecV1, AgentSpecV2 } from '../agent/contract.js'
 import type { MailboxLimits } from '../communication/types.js'
 import type { ChannelId } from '../communication/ids.js'
@@ -159,8 +160,16 @@ export interface ResolvedHostLocalMember extends Omit<HostLocalMemberConfig, 'se
 }
 export type ResolvedHostMember = ResolvedHostLocalMember | HostRemoteMemberConfig
 export type HostConfigV2 = Omit<HostConfigV1, 'schemaVersion'> & { readonly schemaVersion: 2; readonly subagents: HostSubagentConfig }
-export type HostConfig = HostConfigV1 | HostConfigV2
-export type ResolvedHostSpec = (Omit<HostConfigV1, 'members' | 'channels' | 'routes'> | Omit<HostConfigV2, 'members' | 'channels' | 'routes'>) & {
+export type HostConfigV3 = Omit<HostConfigV1, 'schemaVersion'> & {
+  readonly schemaVersion: 3
+  readonly subagents: HostSubagentConfigV3
+  readonly workspaceResources: readonly HostWorkspaceResource[]
+  readonly workflows: HostWorkflowConfig
+}
+export type HostConfig = HostConfigV1 | HostConfigV2 | HostConfigV3
+export type ResolvedHostSpec = (Omit<HostConfigV1, 'members' | 'channels' | 'routes'>
+  | Omit<HostConfigV2, 'members' | 'channels' | 'routes'>
+  | Omit<HostConfigV3, 'members' | 'channels' | 'routes'>) & {
   readonly members: readonly ResolvedHostMember[]
   readonly channels: readonly { readonly channelKey: string; readonly channelId: string }[]
   readonly routes: readonly ResolvedHostRoute[]

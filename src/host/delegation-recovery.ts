@@ -24,7 +24,7 @@ import { HostError } from './errors.js'
 export async function recoverHostDelegations(spec: ResolvedHostSpec, repository: SessionRepository, options: RecoverHostOptions, clock: Clock) {
   if (options.predecessorStopped !== true || !Number.isSafeInteger(options.maxRecoveryWrites) || options.maxRecoveryWrites < 0) throw new HostError('HOST_CONFIG_INVALID', 'delegation-recovery-options')
   const discovered = await discoverHostDelegations(spec, repository)
-  const maximum = spec.schemaVersion === 2 && spec.subagents.kind === 'enabled' ? Math.min(options.maxRecoveryWrites, spec.subagents.limits.maxRecoveryWrites) : options.maxRecoveryWrites
+  const maximum = spec.schemaVersion !== 1 && spec.subagents.kind === 'enabled' ? Math.min(options.maxRecoveryWrites, spec.subagents.limits.maxRecoveryWrites) : options.maxRecoveryWrites
   const opened = new Map<string, SessionHandle>()
   const through = new Map<string, number>()
   const open = async (id: string) => {

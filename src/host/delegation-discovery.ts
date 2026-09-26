@@ -1,17 +1,16 @@
-import { opendir } from 'node:fs/promises'
-import { join } from 'node:path'
 import type { SessionRepository } from '../session/repository.js'
-import { parseSessionId } from '../session/ids.js'
 import type { SessionSnapshot, CommittedSessionEvent } from '../session/types.js'
 import { SessionError } from '../session/errors.js'
 import { projectAgentSession } from '../agent/projection.js'
 import { projectHostSession } from './session-projection.js'
+import { projectHostWorkflowSession } from './workflow-binding.js'
 import type { ResolvedHostSpec } from './config.js'
 import { equal } from '../agent/validation.js'
 import type { DelegationRequested } from '../subagent/event-contract.js'
 import { delegationClosure } from '../subagent/closure.js'
 import { HostError } from './errors.js'
 import { validateDelegationCausality } from '../subagent/causality.js'
+import { scanHostInventory } from './inventory.js'
 
 export interface DiscoveredDelegation {
   readonly parentKey: string
@@ -22,22 +21,22 @@ export interface DiscoveredDelegation {
 }
 
 /** Bounded one-level inventory detects removed managed parents; children are followed only through committed CP-D references. */
-export async function discoverHostDelegations(spec: ResolvedHostSpec, repository: SessionRepository): Promise<readonly DiscoveredDelegation[]> {
-  const domain = spec.schemaVersion === 2 ? spec.subagents : { kind: 'disabled' as const }
+export async function discoverHostDelegations(spec: ResolvedHostSpec, repository: SessionRepository,
+  inventory?: readonly SessionSnapshot[]): Promise<readonly DiscoveredDelegation[]> {
+  const domain = spec.schemaVersion === 1 ? { kind: 'disabled' as const }
+    : spec.schemaVersion === 2 ? spec.subagents
+      : spec.subagents.kind === 'enabled' ? { ...spec.subagents, workspaceResources: spec.workspaceResources } : spec.subagents
   const maximum = domain.kind === 'enabled' ? domain.limits.maxDiscoveryEntries : 10000
-  const snapshots: SessionSnapshot[] = []
-  const directory = await opendir(join(spec.storage.root, 'sessions'))
-  let entries = 0
-  for await (const entry of directory) {
-    if (++entries > maximum) throw new HostError('HOST_RECOVERY_REQUIRED', 'delegation-discovery-limit')
-    if (!/^[0-9a-f]{8}-[0-9a-f-]{27}$/.test(entry.name)) continue
-    if (!entry.isDirectory() || entry.isSymbolicLink()) throw new HostError('HOST_BINDING_CONFLICT', 'session-discovery-entry')
-    snapshots.push(await repository.read(parseSessionId(entry.name)))
-  }
+  const snapshots = inventory ?? await scanHostInventory(spec, repository)
   const found: DiscoveredDelegation[] = []
   const ownedChildren = new Set<string>()
   for (const parent of snapshots) {
     if (parent.header.parent !== undefined) continue
+    if (parent.history.at(-1)?.events.some(record => record.stored.type === 'host/session-planned'
+      && record.stored.payloadVersion === 2)) {
+      projectHostWorkflowSession(parent)
+      continue
+    }
     const binding = projectHostSession(parent).ready
     if (binding?.payload.hostKey !== spec.hostKey) continue
     const state = projectAgentSession(parent)

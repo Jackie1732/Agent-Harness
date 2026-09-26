@@ -27,6 +27,15 @@ import { HostWakeup } from './wakeup.js'
 import { HostSlotOwner } from './slot-owner.js'
 import { HostSubagents } from './subagents.js'
 import { subagentMessageDefinitions } from '../subagent/messages.js'
+import { projectHostWorkflowSession } from './workflow-binding.js'
+import { scanHostInventory } from './inventory.js'
+import { discoverHostWorkflows } from './workflow-discovery.js'
+import type { CommunicationPolicy } from '../communication/types.js'
+
+const workflowProtocolPolicy: CommunicationPolicy = Object.freeze({
+  canSend: () => ({ kind: 'deny' as const, reasonCode: 'workflow-protocol-not-installed' }),
+  canReceive: () => ({ kind: 'deny' as const, reasonCode: 'workflow-protocol-not-installed' }),
+})
 
 /** Acquire dependencies in order; failed releases retain storage ownership. */
 export async function assembleHost(spec: ResolvedHostSpec, clock: Clock,
@@ -57,7 +66,9 @@ export async function assembleHost(spec: ResolvedHostSpec, clock: Clock,
         validateHostMemberSession(session, spec.hostKey, member, { allowEnded: !member.enabled })
         local.push({ member, session })
       }
-      const discovered = await discoverHostDelegations(spec, repository)
+      const inventory = await scanHostInventory(spec, repository)
+      discoverHostWorkflows(spec, inventory)
+      const discovered = await discoverHostDelegations(spec, repository, inventory)
       const directory = await effect.apply('directory', () => createSessionDirectory(), value => release(value, true))
       const remote = new Map<string, MessageTransport>()
       for (const route of spec.routes.filter(item => item.origin !== null)) {
@@ -69,6 +80,8 @@ export async function assembleHost(spec: ResolvedHostSpec, clock: Clock,
         }), value => release(value)))
       }
       const childAddresses = new Set<string>()
+      const workflows = spec.schemaVersion === 3 && spec.workflows.kind === 'enabled' ? spec.workflows.definitions : []
+      for (const entry of workflows) childAddresses.add(formatSessionAddress(parseSessionId(entry.sessionId!)))
       const routes = new Map(spec.routes.map(route => [formatSessionAddress(parseSessionId(route.sessionId)), route]))
       const transport = await effect.apply('router', () => createRoutedMessageTransport(directory, recipient => {
         if (childAddresses.has(recipient)) return { kind: 'local' }
@@ -83,14 +96,30 @@ export async function assembleHost(spec: ResolvedHostSpec, clock: Clock,
         () => directory.declare(formatSessionAddress(parseSessionId(member.sessionId)), session.snapshot().lifecycle), value => release(value, true))
       const protectedRoots = [lock.root, ...(bindings.protectedRoots ?? []), ...(https !== undefined
         ? [dirname(https.serverKeyFile), dirname(https.clientKeyFile)] : [])]
-      const workspaces = spec.schemaVersion === 2 && spec.subagents.kind === 'enabled' ? await effect.apply('workspace authority',
-        () => WorkspaceAuthority.create(spec.subagents.kind === 'enabled' ? spec.subagents.workspaceResources : [], local.flatMap(({ member }) => member.tools.kind === 'none' ? [] : [member.tools.rootPath]), protectedRoots, clock), value => release(value)) : undefined
-      const catalog = compileHostMessageCatalog(spec.messages, spec.schemaVersion === 2 && spec.subagents.kind === 'enabled' ? subagentMessageDefinitions : [])
+      const workspaceResources = spec.schemaVersion === 3 ? spec.workspaceResources
+        : spec.schemaVersion === 2 && spec.subagents.kind === 'enabled' ? spec.subagents.workspaceResources : []
+      const workspaces = spec.schemaVersion === 3 || spec.schemaVersion === 2 && spec.subagents.kind === 'enabled'
+        ? await effect.apply('workspace authority',
+          () => WorkspaceAuthority.create(workspaceResources, local.flatMap(({ member }) => member.tools.kind === 'none' ? [] : [member.tools.rootPath]), protectedRoots, clock), value => release(value)) : undefined
+      const catalog = compileHostMessageCatalog(spec.messages, spec.schemaVersion !== 1 && spec.subagents.kind === 'enabled' ? subagentMessageDefinitions : [])
       const slots: HostSlot[] = []
       const protocolSlots: HostProtocolSlot[] = []
-      const subagents = spec.schemaVersion === 2 && spec.subagents.kind === 'enabled' ? new HostSubagents({
-        config: spec.subagents, repository, communication: service, catalog, clock, credentials, protectedRoots, bindings, slots, localMembers: local, protocolSlots, childAddresses, workspaces: workspaces!,
+      const subagents = spec.schemaVersion !== 1 && spec.subagents.kind === 'enabled' ? new HostSubagents({
+        config: spec.schemaVersion === 3 ? { ...spec.subagents, workspaceResources: spec.workspaceResources } : spec.subagents,
+        repository, communication: service, catalog, clock, credentials, protectedRoots, bindings, slots, localMembers: local, protocolSlots, childAddresses, workspaces: workspaces!,
       }) : undefined
+      for (const entry of workflows) {
+        const session = await effect.apply('workflow session',
+          () => repository.open(parseSessionId(entry.sessionId!)), value => release(value, true))
+        const binding = projectHostWorkflowSession(session.snapshot())
+        if (binding.ready === null || binding.definition === null
+          || binding.planned?.payload.hostKey !== spec.hostKey) throw new HostError('HOST_NOT_READY', 'workflow-binding-missing')
+        await effect.apply('workflow declaration', () => directory.declare(session.header.address, session.snapshot().lifecycle), value => release(value, true))
+        const mailbox = await effect.apply('workflow mailbox',
+          () => service.attach(session, { catalog, policy: workflowProtocolPolicy }), value => release(value, true))
+        protocolSlots.push({ member: { agentKey: `workflow:${binding.definition.payload.workflowKey}` }, session, mailbox,
+          dispatcher: service.createDispatcher(mailbox) })
+      }
       const slotOwners = new Map<string, HostSlotOwner>()
       for (const { member, session } of local) {
         const lifetime = await effect.apply('member lifetime', () => new HostSlotOwner(member.agentKey, async () => {

@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto'
 import { isAbsolute, resolve } from 'node:path'
-import { decodeHostSubagents, parentSubagentRole } from './subagent-config.js'
+import { decodeHostSubagents, decodeHostWorkspaceResources, parentSubagentRole } from './subagent-config.js'
+import { decodeHostWorkflows } from './workflow-config.js'
 import { decodeAgentSpec, decodeSubagentAgentSpec } from '../agent/spec-codec.js'
 import type { MailboxLimits } from '../communication/types.js'
 import { parseChannelId } from '../communication/ids.js'
@@ -73,14 +74,21 @@ function decodeConfig(value: unknown, baseDirectory: string, limits: JsonValidat
   let data: JsonValue
   try { data = boundedJson(value, limits) } catch { invalid('config-json-limits') }
   const input = record(data, 'host')
-  keys(input, ['schemaVersion', 'hostKey', 'storage', 'members', 'messages', 'channels', 'routes', 'https', 'communication', 'scheduling', 'cli', 'shutdown', ...(input.schemaVersion === 2 ? ['subagents'] : [])], 'host')
-  if (input.schemaVersion !== 1 && input.schemaVersion !== 2) invalid('schema-version')
-  const subagents = input.schemaVersion === 2 ? decodeHostSubagents(input.subagents) : undefined
+  keys(input, ['schemaVersion', 'hostKey', 'storage', 'members', 'messages', 'channels', 'routes', 'https', 'communication', 'scheduling', 'cli', 'shutdown',
+    ...(input.schemaVersion === 2 ? ['subagents'] : []),
+    ...(input.schemaVersion === 3 ? ['subagents', 'workspaceResources', 'workflows'] : [])], 'host')
+  if (input.schemaVersion !== 1 && input.schemaVersion !== 2 && input.schemaVersion !== 3) invalid('schema-version')
+  const workspaceResources = input.schemaVersion === 3 ? decodeHostWorkspaceResources(input.workspaceResources) : undefined
+  const decodedSubagents = input.schemaVersion === 2 ? decodeHostSubagents(input.subagents)
+    : input.schemaVersion === 3 ? decodeHostSubagents(input.subagents, workspaceResources) : undefined
+  const subagents = input.schemaVersion === 3 && decodedSubagents?.kind === 'enabled'
+    ? (({ workspaceResources: _resources, ...rest }) => rest)(decodedSubagents) : decodedSubagents
+  const workflows = input.schemaVersion === 3 ? decodeHostWorkflows(input.workflows) : undefined
   const hostKey = identifier(input.hostKey, 'hostKey')
   const storage = record(input.storage, 'storage'); keys(storage, ['root', 'maxRecordBytes', 'maxLineageDepth'], 'storage')
   const rootInput = text(storage.root, 'storage.root', 4096)
   const root = isAbsolute(rootInput) ? resolve(rootInput) : resolve(baseDirectory, rootInput)
-  const members = array(input.members, 'members').map((item, index) => decodeMember(item, index, baseDirectory, input.schemaVersion as 1 | 2))
+  const members = array(input.members, 'members').map((item, index) => decodeMember(item, index, baseDirectory, input.schemaVersion as 1 | 2 | 3))
   const messages = array(input.messages, 'messages').map(item => {
     const message = record(item, 'message'); keys(message, ['type', 'payloadVersion', 'schema'], 'message')
     const schema = record(message.schema, 'message.schema') as JsonObject; validateInlineSchema(schema)
@@ -129,8 +137,21 @@ function decodeConfig(value: unknown, baseDirectory: string, limits: JsonValidat
   })) invalid('route-ownership')
   if (https.kind === 'disabled' && routes.some(route => route.origin !== null)) invalid('https-disabled-with-remote-route')
   if (subagents?.kind === 'enabled' && subagents.parents.some(parent => !members.some(member => member.kind === 'local' && member.agentKey === parent.agentKey && member.spec.protocolVersion === 2))) invalid('subagent-parent-reference')
-  if (messages.some(message => message.type.startsWith('subagent/'))) invalid('reserved-message-type')
-  return snapshotJson({ schemaVersion: input.schemaVersion, ...(subagents === undefined ? {} : { subagents }), hostKey, storage: { root, maxRecordBytes: integer(storage.maxRecordBytes, 'maxRecordBytes', 4096),
+  if (workflows?.kind === 'enabled') {
+    const allIds = [...memberIds, ...workflows.definitions.flatMap(item => item.sessionId === null ? [] : [item.sessionId])]
+    unique(allIds, 'sessionId')
+    for (const entry of workflows.definitions) {
+      const definition = entry.definition
+      const roster = definition.roster as unknown as readonly { memberKey: string; address: string }[]
+      for (const peer of roster) if (!members.some(member => member.kind === 'local' && member.agentKey === peer.memberKey
+        && member.sessionId !== null && formatSessionAddress(parseSessionId(member.sessionId)) === peer.address)) invalid('workflow-roster-member')
+    }
+    if (workflows.maxInventorySessions < members.filter(member => member.kind === 'local').length + workflows.definitions.length) invalid('workflow-inventory-limit')
+  }
+  if (messages.some(message => message.type.startsWith('subagent/') || message.type.startsWith('workflow/'))) invalid('reserved-message-type')
+  return snapshotJson({ schemaVersion: input.schemaVersion, ...(subagents === undefined ? {} : { subagents }),
+    ...(workspaceResources === undefined ? {} : { workspaceResources }), ...(workflows === undefined ? {} : { workflows }),
+    hostKey, storage: { root, maxRecordBytes: integer(storage.maxRecordBytes, 'maxRecordBytes', 4096),
     maxLineageDepth: integer(storage.maxLineageDepth, 'maxLineageDepth', 0) }, members, messages, channels, routes,
     https, communication, scheduling, cli, shutdown }) as unknown as HostConfig
 }
@@ -176,7 +197,7 @@ function decodeIntegerRecord(
   return Object.freeze(Object.fromEntries(fields.map(field => [field, integer(input[field], `${label}.${field}`, zeroFields.has(field) ? 0 : 1)])))
 }
 
-function decodeMember(value: JsonValue, index: number, baseDirectory: string, version: 1 | 2): HostMemberConfig {
+function decodeMember(value: JsonValue, index: number, baseDirectory: string, version: 1 | 2 | 3): HostMemberConfig {
   const member = record(value, `members[${index}]`)
   if (member.kind === 'remote') {
     keys(member, ['kind', 'agentKey', 'sessionId', 'ownerHost'], 'member')
@@ -293,12 +314,20 @@ export function planHostConfig(config: HostConfig, identities: HostIdentitySourc
 }): HostConfig {
   const members = config.members.map(member => member.kind === 'local' && member.sessionId === null ? { ...member, sessionId: identities.nextSessionId() } : member)
   const channels = config.channels.map(channel => channel.channelId === null ? { ...channel, channelId: identities.nextChannelId() } : channel)
-  return decodeHostConfig({ ...config, members, channels }, config.storage.root)
+  const workflows = config.schemaVersion === 3 && config.workflows.kind === 'enabled' ? {
+    ...config.workflows, definitions: config.workflows.definitions.map(entry => {
+      const sessionId = entry.sessionId ?? identities.nextSessionId()
+      return { sessionId, definition: { ...entry.definition, coordinator: formatSessionAddress(parseSessionId(sessionId)) } }
+    }),
+  } : config.schemaVersion === 3 ? config.workflows : undefined
+  return decodeHostConfig({ ...config, members, channels, ...(workflows === undefined ? {} : { workflows }) }, config.storage.root)
 }
 
 /** Resolve peer references and the exact Provider descriptor persisted in each AgentSpec. */
 export function resolveHostConfig(config: HostConfig): ResolvedHostSpec {
   if (config.members.some(member => member.kind === 'local' && member.sessionId === null) || config.channels.some(channel => channel.channelId === null)) invalid('unplanned-identity')
+  if (config.schemaVersion === 3 && config.workflows.kind === 'enabled'
+    && config.workflows.definitions.some(entry => entry.sessionId === null)) invalid('unplanned-workflow-identity')
   const members = new Map(config.members.map(member => [member.agentKey, member]))
   const channels = new Map(config.channels.map(channel => [channel.channelKey, channel.channelId!]))
   const resolved = config.members.map(member => {
@@ -311,7 +340,7 @@ export function resolveHostConfig(config: HostConfig): ResolvedHostSpec {
     const provisional = { ...member.spec, profileEventId: 'ah-event:00000000-0000-4000-8000-000000000000:1',
       target: { ...member.spec.target, provider: descriptor }, peers }
     const { profileEventId: _profileEventId, ...spec } = member.spec.protocolVersion === 1 ? decodeAgentSpec(provisional)
-      : decodeSubagentAgentSpec({ ...provisional, subagents: parentSubagentRole(config.schemaVersion === 2 ? config.subagents : undefined, member.agentKey) })
+      : decodeSubagentAgentSpec({ ...provisional, subagents: parentSubagentRole(config.schemaVersion === 1 ? undefined : config.subagents, member.agentKey) })
     return Object.freeze({ ...member, sessionId: parseSessionId(member.sessionId!), spec })
   })
   const routes = config.routes.map(route => ({ ...route, sessionId: members.get(route.memberKey)!.sessionId! }))
