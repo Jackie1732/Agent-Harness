@@ -11,11 +11,14 @@ import { inboxAcceptedEvent } from '../communication/session-events.js'
 import type { CommittedSessionEvent } from '../session/types.js'
 import { formatSessionAddress } from '../session/ids.js'
 import { sameWorkflowValue, workAssignmentAcceptedEvent } from './work-binding.js'
+import { workStopReceivedEvent, workStopSettledEvent } from './stop-events.js'
 
 /** CP-ACCEPT creates one local input from the receiver's exact protocol Inbox. */
 export function applyWorkAssignmentAccepted(state: AgentProjectionState, event: CommittedSessionEvent): void {
   if (event.stored.payloadVersion !== 1 || event.stored.ignorable) invalidAgent('work-accept-version')
   const accepted = workAssignmentAcceptedEvent.decode(event.payload)
+  if ([...state.sources.values()].some(item => item.stored.type === workStopReceivedEvent.type
+    && sameWorkflowValue(workStopReceivedEvent.decode(item.payload).assignment, accepted.assignment))) invalidAgent('work-accept-after-stop')
   if (!sameWorkflowValue(accepted, event.payload) || !sameWorkflowValue(event.payload, event.stored.payload)) invalidAgent('work-accept-noncanonical')
   if ([...state.inputs.values()].some(input => input.work !== undefined && sameWorkflowValue(input.work.assignment, accepted.assignment))) invalidAgent('duplicate-work-accept')
   const spec = requireSpec(state).payload
@@ -23,7 +26,8 @@ export function applyWorkAssignmentAccepted(state: AgentProjectionState, event: 
     || state.openRun !== null || state.openRecovery !== null || state.closing !== null
     || [...state.roots.values()].some(root => root.outcome === null)
     || [...state.inputs.values()].some(input => input.work !== undefined && ![...state.sources.values()].some(item => item.stored.type === workAssignmentSettledEvent.type
-      && workAssignmentSettledEvent.decode(item.payload).accepted === input.reference.eventId))) invalidAgent('work-accept-not-admissible')
+      && workAssignmentSettledEvent.decode(item.payload).accepted === input.reference.eventId
+      || item.stored.type === workStopSettledEvent.type && sameWorkflowValue(workStopSettledEvent.decode(item.payload).assignment, input.work!.assignment)))) invalidAgent('work-accept-not-admissible')
   const inbox = source(state, accepted.inbox, inboxAcceptedEvent)
   const { inbox: _inbox, ...message } = accepted
   const envelope = inbox.payload.envelope
@@ -69,4 +73,6 @@ export function applyWorkAssignmentSettled(state: AgentProjectionState, event: C
     || !sameWorkflowValue(decision.value.value, workProposalRecordedEvent.decode(proposal.payload).value)
     || !sameWorkflowValue(decision.value.artifacts, workProposalRecordedEvent.decode(proposal.payload).artifacts)
     || [...state.sources.values()].some(item => item.stored.type === event.stored.type && workAssignmentSettledEvent.decode(item.payload).accepted === p.accepted)) invalidAgent('work-settlement-source')
+  const input = state.inputs.get(inputKey({ kind: 'workflow', eventId: p.accepted }))!
+  if (input.status === 'review-required') { input.status = 'not-adopted'; input.reason = 'workflow-decided' }
 }

@@ -23,6 +23,7 @@ import type { HostTimer } from './timer.js'
 import { observeHostMembers } from './report.js'
 import { HostObservations } from './observation.js'
 import { exportHostConfig } from './config-export.js'
+import { workflowObserver } from './workflow-observer.js'
 
 export type HostStatus = 'ready' | 'stopping' | 'stopped' | 'failed'
 export type HostShutdownMode = 'drain' | 'cancel'
@@ -95,14 +96,20 @@ class HostRuntime {
     const domain = this.#assembly.workflows
     if (domain === undefined) throw new HostError('HOST_NOT_READY', 'workflows-disabled')
     domain.report(workflowKey)
-    const control = (kind: 'pause' | 'resume', input: { readonly requestKey: string; readonly reason?: string }) => this.#track(async () => {
+    const wait = workflowObserver(domain, workflowKey, this.#timer, this.#spec.scheduling.scanIntervalMs,
+      this.#observers.bind(`workflow:${workflowKey}`, task => this.#track(task)), () => {
+        this.#assertReady()
+        if ([...hostTasks.getStore() ?? []].some(token => this.#tokens.has(token))) throw new HostError('HOST_REENTRANT_WAIT', 'workflow-cannot-wait-on-own-driver')
+      })
+    const control = (kind: 'pause' | 'resume' | 'cancel', input: { readonly requestKey: string; readonly reason?: string }) => this.#track(async () => {
       this.#assertReady()
       const result = await domain.control(workflowKey, kind, input)
       this.#assembly.wakeup.notify()
       return result
     })
-    return Object.freeze({ report: () => domain.report(workflowKey), readArtifact: (reference: unknown) => domain.readArtifact(workflowKey, reference),
+    return Object.freeze({ report: () => domain.report(workflowKey), readArtifact: (reference: unknown) => domain.readArtifact(workflowKey, reference), wait,
       pause: (input: { readonly requestKey: string; readonly reason?: string }) => control('pause', input),
+      cancel: (input: { readonly requestKey: string; readonly reason?: string }) => control('cancel', input),
       resume: (input: { readonly requestKey: string; readonly reason?: string }) => control('resume', input) })
   }
 
@@ -121,9 +128,9 @@ class HostRuntime {
   }
   /** Persist an answer for one exact durable wait. */
   submitAnswer(agentKey: string, wait: AgentActionReference, text: string, originLabel = 'host-user'): Promise<HostInputReceipt> {
-    const slot = this.#slot(agentKey)
+    this.#slot(agentKey)
     return this.#track(async () => {
-      const accepted = await slot.agent.submitInput({ kind: 'answer', wait, text, originLabel })
+      const accepted = await this.#inputs.get(agentKey)!.acceptInput({ kind: 'answer', wait, text, originLabel })
       this.#assembly.wakeup.notify()
       return Object.freeze({ agentKey, eventId: accepted.stored.eventId })
     })

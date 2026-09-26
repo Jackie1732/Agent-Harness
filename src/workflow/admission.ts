@@ -157,8 +157,14 @@ export class WorkflowAdmission {
     const event: CommittedSessionEvent<WorkflowAssignment & JsonObject> = { kind: 'known', stored, payload }
     const sources = new Map(snapshot.history.at(-1)!.events.filter(item => item.kind === 'known').map(item => [item.stored.eventId, item]))
     sources.set(event.stored.eventId, event)
-    for (const command of workflowSourceCommands(sources, event.stored.eventId).commands) assertWorkflowMessageFits(snapshot.header.sessionId, command,
-      { maxMessageBytes: this.capacity.limits.maxMessageBytes, maxRecordBytes: Math.min(this.coordinator.maxRecordBytes, memberRecordBytes) })
+    for (const command of workflowSourceCommands(sources, event.stored.eventId).commands) {
+      const limits = { maxMessageBytes: this.capacity.limits.maxMessageBytes, maxRecordBytes: Math.min(this.coordinator.maxRecordBytes, memberRecordBytes) }
+      assertWorkflowMessageFits(snapshot.header.sessionId, command, limits)
+      assertWorkflowMessageFits(snapshot.header.sessionId, { ...command, type: 'workflow/stop', payload: {
+        assignment: { address: snapshot.header.address, eventId: event.stored.eventId },
+        stop: { address: snapshot.header.address, eventId: formatSessionEventId(snapshot.header.sessionId, sessionSequence(Number.MAX_SAFE_INTEGER)) }, binding: command.payload,
+      } }, limits)
+    }
     const history = snapshot.history.map(segment => segment.header.sessionId === snapshot.header.sessionId
       ? extendLocalSegment(segment, event) : segment)
     try { projectWorkflowSession({ ...snapshot, localPosition: sessionLogPosition(sequence), history }) }

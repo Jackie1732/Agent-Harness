@@ -12,6 +12,7 @@ import { workAssignmentAcceptedEvent, sameWorkflowValue } from './work-binding.j
 import { workProtocolRecordedEvent } from './protocol.js'
 import { workProtocolClassifiedEvent, workQuestionDeclinedEvent, workflowQuestionMessage, workflowAnswerMessage } from './interaction-events.js'
 import { invalidHistory } from './errors.js'
+import { workStopReceivedEvent } from './stop-events.js'
 
 /** Required replies consume the reservation only when the root can no longer provide a business answer. */
 export function questionDecline(state: AgentProjectionState, inbox: SessionEventId, observedAt: string) {
@@ -28,8 +29,10 @@ export function questionDecline(state: AgentProjectionState, inbox: SessionEvent
   if ([...state.sources.values()].some(event => event.stored.type === workQuestionDeclinedEvent.type
     && workQuestionDeclinedEvent.decode(event.payload).inbox === inbox)) return undefined
   const root = [...state.roots.values()].find(root => root.source.kind === 'workflow' && sameWorkflowValue(root.source.assignment, question.targetAssignment))
+  const stopped = [...state.sources.values()].some(event => event.stored.type === workStopReceivedEvent.type
+    && sameWorkflowValue(workStopReceivedEvent.decode(event.payload).assignment, question.targetAssignment))
   const reason = observedAt >= question.deadline ? 'question-expired' as const
-    : root !== undefined && (root.outcome !== null || root.stopControl !== null) ? 'work-root-terminal' as const
+    : stopped || root !== undefined && (root.outcome !== null || root.stopControl !== null) ? 'work-root-terminal' as const
       : root !== undefined && state.openTurn === null && (!root.allowedNativeActions.includes('agent_answer_work_peer')
         || root.budget.messages >= root.limit.messages || root.budget.models >= root.limit.models || root.budget.steps >= root.limit.steps
         || root.limit.outputTokens - root.budget.outputTokens < state.spec!.payload.target.maxOutputTokens) ? 'work-answer-unavailable' as const : undefined

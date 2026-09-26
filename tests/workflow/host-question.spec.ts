@@ -89,16 +89,20 @@ it.each(['answer', 'decline', 'unanswered', 'cycle', 'automatic', 'timeout'] as 
       expect(host.workflow('research').report().counts.assignments).toBe(2)
       host.resume('writer')
       await host.run()
+      const userWait = host.report().members.find(member => member.agentKey === 'writer')!.agent.waits[0]
       host.resume('reviewer')
       let run = await host.run()
-      if (scenario === 'timeout') { tick += 2000; await host.run(); expect(calls.get('reviewer')).toBe(1) }
-      if (scenario === 'automatic' || scenario === 'timeout') {
+      if (scenario === 'timeout') {
+        tick += 2000; run = await host.run(); expect(calls.get('reviewer')).toBe(1)
+        await expect(host.submitAnswer('writer', userWait!.reference, 'Confirmed')).rejects.toThrow()
         expect(calls.get('writer')).toBe(1)
-        const wait = host.report().members.find(member => member.agentKey === 'writer')!.agent.waits[0]!
-        await host.submitAnswer('writer', wait.reference, 'Confirmed')
+      }
+      if (scenario === 'automatic') {
+        expect(calls.get('writer')).toBe(1)
+        await host.submitAnswer('writer', userWait!.reference, 'Confirmed')
         run = await host.run()
       }
-      expect(host.workflow('research').report(), JSON.stringify(run)).toMatchObject({ state: scenario === 'timeout' ? 'failed' : 'completed', closed: true, counts: { assignments: 2, accepted: scenario === 'timeout' ? 1 : 2 } })
+      expect(host.workflow('research').report(), JSON.stringify(run)).toMatchObject({ state: scenario === 'timeout' ? 'failed' : 'completed', closed: true, counts: { assignments: 2, accepted: scenario === 'timeout' ? 0 : 2 } })
     } finally { await host.shutdown() }
     const repository = new SessionRepository({ backend: new FileSessionBackend(spec.storage), catalog: hostRuntimeEventCatalog, maxLineageDepth: 4 })
     try {
@@ -123,7 +127,7 @@ it.each(['answer', 'decline', 'unanswered', 'cycle', 'automatic', 'timeout'] as 
         const session = await repository.open(parseSessionId(member.sessionId))
         const agent = projectAgentSession(session.snapshot())
         expect(agent.roots).toHaveLength(1)
-        expect(agent.turns).toHaveLength(scenario === 'timeout' && member.agentKey === 'reviewer' ? 1 : 2)
+        expect(agent.turns).toHaveLength(scenario === 'timeout' ? 1 : 2)
         expect(agent.roots[0]?.budget).toMatchObject({ waits: scenario === 'cycle' && member.agentKey === 'reviewer' ? 2 : 1,
           messages: ['automatic', 'unanswered', 'timeout'].includes(scenario) && member.agentKey === 'writer' ? 0 : scenario === 'cycle' && member.agentKey === 'reviewer' ? 2 : 1 })
         const sends = projectCommunicationFacts(session.snapshot()).outbox.filter(item => ['workflow/question', 'workflow/answer'].includes(item.envelope.type))

@@ -17,6 +17,9 @@ import { invalidHistory } from './errors.js'
 import { workInteractionResolvedEvent, workQuestionDeclinedEvent } from './interaction-events.js'
 import { declineCommands } from './question-decline.js'
 import { questionCommands } from './receive.js'
+import { workflowAssignmentStopEvent, workStopSettledEvent, workStopReceivedEvent, workflowStopMessage } from './stop-events.js'
+import { inboxAcceptedEvent } from '../communication/session-events.js'
+import { workStoppedMessageEvent, stoppedQuestionCommands } from './stopped-message.js'
 
 export type WorkflowProtocolRecorded = {
   readonly assignment: WorkflowEventRef
@@ -42,6 +45,7 @@ export function workflowSourceCommands(sources: ReadonlyMap<SessionEventId, Comm
   if (source === undefined) invalidHistory('protocol-source-missing')
   if (source.stored.type === workInteractionResolvedEvent.type) return questionCommands(sources, id)
   if (source.stored.type === workQuestionDeclinedEvent.type) return declineCommands(sources, id)
+  if (source.stored.type === workStoppedMessageEvent.type) return stoppedQuestionCommands(sources, id)
   const ref = { address: formatSessionAddress(source.stored.sessionId), eventId: id }
   let assignment: WorkflowEventRef
   let recipient: import('../session/ids.js').SessionAddress
@@ -72,6 +76,19 @@ export function workflowSourceCommands(sources: ReadonlyMap<SessionEventId, Comm
         return { ref, value: artifactPublishedEvent.decode(event.payload) }
       }) }
     }
+  } else if (source.stored.type === workflowAssignmentStopEvent.type) {
+    const value = workflowAssignmentStopEvent.decode(source.payload)
+    const original = workflowSourceCommands(sources, value.assignment.eventId).commands[0]!
+    if (original.kind !== 'send') invalidHistory('stop-assignment-command')
+    assignment = value.assignment; recipient = original.request.recipient; channelId = original.request.channelId
+    type = 'workflow/stop'; payload = { assignment, stop: ref, binding: original.payload }
+  } else if (source.stored.type === workStopSettledEvent.type) {
+    const value = workStopSettledEvent.decode(source.payload)
+    const stopped = workStopReceivedEvent.decode(sources.get(value.stop)!.payload)
+    const inbox = inboxAcceptedEvent.decode(sources.get(stopped.inbox)!.payload).envelope
+    const message = workflowStopMessage.decode(inbox.payload)
+    assignment = value.assignment; recipient = assignment.address; channelId = message.binding.value.channelId
+    type = 'workflow/stop-acknowledged'; payload = { assignment, stop: message.stop, receipt: ref, value }
   } else if (source.stored.type === workflowDecisionCommittedEvent.type) {
     const value = workflowDecisionCommittedEvent.decode(source.payload)
     const event = sources.get(value.assignment.eventId)
@@ -94,6 +111,6 @@ export function validateWorkflowProtocol(sources: ReadonlyMap<SessionEventId, Co
   }
   if (!sameWorkflowValue(p, workflowSourceCommands(sources, p.source))) invalidHistory('protocol-command-source')
   const source = sources.get(p.source)!
-  const coordinator = source.stored.type === workflowAssignmentCommittedEvent.type || source.stored.type === workflowDecisionCommittedEvent.type
+  const coordinator = [workflowAssignmentCommittedEvent.type, workflowDecisionCommittedEvent.type, workflowAssignmentStopEvent.type].includes(source.stored.type)
   if (event.stored.type !== (coordinator ? workflowProtocolRecordedEvent.type : workProtocolRecordedEvent.type)) invalidHistory('protocol-source-owner')
 }

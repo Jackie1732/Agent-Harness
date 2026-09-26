@@ -14,6 +14,9 @@ import { workResultEventDefinitions } from '../workflow/result-events.js'
 import { applyWorkAssignmentAccepted, applyWorkAssignmentSettled } from '../workflow/work-projection.js'
 import { workAssignmentSettledEvent } from '../workflow/settlement-events.js'
 import { workAssignmentAcceptedEvent } from '../workflow/work-binding.js'
+import { workStopReceivedEvent, workStopSettledEvent, workAssignmentRejectedEvent } from '../workflow/stop-events.js'
+import { applyWorkStop } from '../workflow/stop-projection.js'
+import { applyStoppedWorkMessage, workStoppedMessageEvent } from '../workflow/stopped-message.js'
 import { sessionDelegationsClosed } from '../subagent/closure.js'
 import { isSessionEndedRecord } from '../session/history.js'
 import { inboxAcceptedEvent, inboxAbandonedEvent, inboxProcessedEvent } from '../communication/session-events.js'
@@ -120,7 +123,8 @@ function applyCommunicationInput(state: AgentProjectionState, event: CommittedSe
       if (inbox !== undefined && state.spec.payload.protocolVersion === 3 && String(record(record(inbox.payload).envelope).type).startsWith('workflow/')) {
         if (![...state.inputs.values()].some(input => input.work?.inbox === inbox.stored.eventId)
           && ![...state.sources.values()].some(item => item.stored.type === workProtocolClassifiedEvent.type && workProtocolClassifiedEvent.decode(item.payload).inbox === inbox.stored.eventId)
-          && ![...state.sources.values()].some(item => item.stored.type === workAssignmentSettledEvent.type && workAssignmentSettledEvent.decode(item.payload).inbox === inbox.stored.eventId)) invalidAgent('work-receipt-before-classification')
+          && ![...state.sources.values()].some(item => [workAssignmentSettledEvent, workStopReceivedEvent, workAssignmentRejectedEvent, workStoppedMessageEvent].some(definition =>
+            item.stored.type === definition.type && definition.decode(item.payload).inbox === inbox.stored.eventId))) invalidAgent('work-receipt-before-classification')
         return
       }
       if (inbox !== undefined && String(record(record(inbox.payload).envelope).type).startsWith('subagent/')) {
@@ -155,6 +159,8 @@ export function foldAgentSession(snapshot: SessionSnapshot): AgentProjectionStat
     }
     else if (event.stored.type === workAssignmentAcceptedEvent.type) applyWorkAssignmentAccepted(state, event)
     else if (event.stored.type === workAssignmentSettledEvent.type) applyWorkAssignmentSettled(state, event)
+    else if ([workStopReceivedEvent.type, workStopSettledEvent.type, workAssignmentRejectedEvent.type].includes(event.stored.type)) applyWorkStop(state, event)
+    else if (event.stored.type === workStoppedMessageEvent.type) applyStoppedWorkMessage(state, event)
     else if (event.stored.type === workQuestionDeclinedEvent.type) applyWorkQuestionDeclined(state, event)
     else if (event.stored.type === workInputUnadoptedEvent.type) {
       if (event.stored.payloadVersion !== 1 || event.stored.ignorable) invalidAgent('work-input-version')

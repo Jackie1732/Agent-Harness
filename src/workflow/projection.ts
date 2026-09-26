@@ -25,8 +25,11 @@ import { workflowAssignmentMailboxDemand } from './protocol-capacity.js'
 import { workflowAssignmentCommittedEvent, workflowDefinitionRecordedEvent, workflowNodeResolvedEvent } from './session-events.js'
 import type { WorkflowAssignment, WorkflowDefinition } from './types.js'
 import type { WorkflowNodeResolved } from './session-events.js'
+import { applyCoordinatorStop, initialWorkflowStopState } from './coordinator-stop.js'
+import type { WorkflowStopState } from './coordinator-stop.js'
+import { workflowStoppedEvent, workflowAssignmentStopEvent, workflowStopAcknowledgedEvent, workflowTerminalEvent, workflowClosedEvent } from './stop-events.js'
 
-export interface WorkflowSnapshot {
+export interface WorkflowSnapshot extends WorkflowStopState {
   readonly definition: { readonly stored: StoredSessionEvent; readonly payload: WorkflowDefinition } | null
   readonly ready: readonly string[]
   readonly resolved: readonly WorkflowNodeResolved[]
@@ -57,6 +60,7 @@ export function projectWorkflowSession(snapshot: SessionSnapshot): WorkflowSnaps
   const assignments: WorkflowSnapshot['assignments'][number][] = []
   const controls: { requested: WorkflowSnapshot['controls'][number]['requested']; settled: WorkflowSnapshot['controls'][number]['settled'] }[] = []
   let desired: WorkflowSnapshot['desired'] = 'paused'
+  const lifecycle = initialWorkflowStopState()
   const proposals: WorkflowSnapshot['proposals'][number][] = []
   const reviews: WorkflowSnapshot['reviews'][number][] = []
   const decisions: WorkflowSnapshot['decisions'][number][] = []
@@ -100,6 +104,7 @@ export function projectWorkflowSession(snapshot: SessionSnapshot): WorkflowSnaps
       upstream.set(payload.nodeKey, { kind: payload.outcome })
     } else if (record.stored.type === workflowAssignmentCommittedEvent.type) {
       if (record.stored.payloadVersion !== 1 || definition === null) invalidHistory('assignment-before-definition')
+      if (lifecycle.stop !== null || lifecycle.terminal !== null || controls.some(item => item.requested.payload.kind === 'cancel' && item.settled?.payload.outcome !== 'no-op')) invalidHistory('assignment-after-stop')
       const payload = workflowAssignmentCommittedEvent.decode(record.payload)
       const recipe = definition.payload
       if (assignments.filter(item => !decisions.some(decision => decision.payload.assignment.eventId === item.stored.eventId)).length >= recipe.limits.maxActiveAssignments) invalidHistory('assignment-not-admissible')
@@ -168,6 +173,8 @@ export function projectWorkflowSession(snapshot: SessionSnapshot): WorkflowSnaps
         || (received.payload.message.value.outcome === 'completed' ? evaluated === undefined || payload.outcome !== evaluated.outcome || !same(payload.reviews, evaluated.reviews)
           : payload.outcome !== 'rejected' || payload.reviews.length !== 0)
         || !same(payload.value, received.payload.message.value.value) || !same(payload.artifacts, received.payload.message.value.artifacts)) invalidHistory('decision-source')
+      if (assignment.payload.kind === 'production' && payload.outcome === 'accepted' && (lifecycle.stop !== null || lifecycle.terminal !== null
+        || controls.some(item => item.requested.payload.kind === 'cancel' && item.settled?.payload.outcome !== 'no-op'))) invalidHistory('decision-after-stop')
       decisions.push({ ...record, payload })
       if (assignment.payload.kind === 'production') upstream.set(assignment.payload.nodeKey, payload.outcome === 'accepted' ? { kind: 'accepted', value: payload.value }
         : { kind: received.payload.message.value.outcome === 'result-unknown' || evaluated?.resultUnknown ? 'result-unknown' : 'failed' })
@@ -177,18 +184,33 @@ export function projectWorkflowSession(snapshot: SessionSnapshot): WorkflowSnaps
       if (record.stored.payloadVersion !== 1 || payload.definition !== definition?.stored.eventId
         || controls.some(item => item.requested.payload.requestKey === payload.requestKey || item.settled === null)) invalidHistory('workflow-control-conflict')
       controls.push({ requested: { ...record, payload }, settled: null })
+      if (payload.kind === 'cancel' && lifecycle.terminal === null) desired = 'paused'
     } else if (record.stored.type === workflowControlSettledEvent.type) {
       const payload = workflowControlSettledEvent.decode(record.payload)
       const control = controls.at(-1)
       if (record.stored.payloadVersion !== 1 || control === undefined || control.settled !== null || control.requested.stored.eventId !== payload.request) invalidHistory('workflow-control-settlement')
       control.settled = { ...record, payload }
-      desired = control.requested.payload.kind === 'resume' ? 'running' : 'paused'
+      if ((lifecycle.terminal !== null || lifecycle.stop !== null || controls.some(item => item !== control && item.requested.payload.kind === 'cancel' && item.settled?.payload.outcome !== 'no-op'))
+        && payload.outcome !== 'no-op') invalidHistory('workflow-control-after-stop')
+      if (payload.outcome === 'applied') desired = control.requested.payload.kind === 'resume' ? 'running' : 'paused'
+    }
+    if ([workflowStoppedEvent.type, workflowAssignmentStopEvent.type, workflowStopAcknowledgedEvent.type, workflowTerminalEvent.type, workflowClosedEvent.type].includes(record.stored.type)) {
+      if (definition === null) invalidHistory('workflow-stop-before-definition')
+      applyCoordinatorStop(lifecycle, { definition, assignments, decisions, resolved: [...resolved.values()], upstream: [...upstream].map(([nodeKey, state]) => ({ nodeKey, state })) }, sources, record)
+      if (record.stored.type === workflowStopAcknowledgedEvent.type) {
+        const receipt = workflowStopAcknowledgedEvent.decode(record.payload), work = assignments.find(item => item.stored.eventId === receipt.message.assignment.eventId)!
+        if (work.payload.kind === 'production' && !decisions.some(item => item.payload.assignment.eventId === work.stored.eventId && item.payload.outcome === 'accepted')) {
+          upstream.set(work.payload.nodeKey, { kind: receipt.message.value.outcome === 'result-unknown' ? 'result-unknown' : 'failed' })
+        }
+      }
+      if (lifecycle.stop !== null || lifecycle.terminal !== null) desired = 'paused'
     }
     if (record.stored.type === workflowInteractionAdmittedEvent.type) {
       const value = workflowInteractionAdmittedEvent.decode(record.payload)
       if (definition === null || record.stored.payloadVersion !== 1 || record.stored.ignorable === true) invalidHistory('interaction-before-definition')
-      const blocked = value.kind === 'question' ? checkWorkflowInteraction({ definition, assignments, decisions, interactions }, value)
-        : checkGroupAdmission({ definition, assignments, decisions, interactions }, value)
+      if (lifecycle.stop !== null || lifecycle.terminal !== null || controls.some(item => item.requested.payload.kind === 'cancel')) invalidHistory('interaction-after-stop')
+      const admission = { definition, assignments, decisions, interactions, assignmentStops: lifecycle.assignmentStops }
+      const blocked = value.kind === 'question' ? checkWorkflowInteraction(admission, value) : checkGroupAdmission(admission, value)
       if (blocked !== undefined) invalidHistory(blocked.reason)
       interactions.push({ admitted: { ...record, payload: value }, settled: null })
     } else if (record.stored.type === workflowInteractionSettledEvent.type) {
@@ -201,7 +223,7 @@ export function projectWorkflowSession(snapshot: SessionSnapshot): WorkflowSnaps
     if (record.stored.type === workflowProtocolRecordedEvent.type) validateWorkflowProtocol(sources, record)
     sources.set(record.stored.eventId, record)
   }
-  return Object.freeze({ definition,
+  return Object.freeze({ definition, ...lifecycle,
     ready: definition?.payload.nodes.filter(node => resolveWorkflowNode(node, upstream, definition!.payload).kind === 'ready' && !resolved.has(node.nodeKey)
       && !assignments.some(item => item.payload.nodeKey === node.nodeKey)).map(node => node.nodeKey) ?? [],
     controls: Object.freeze(controls), desired, proposals: Object.freeze(proposals), reviews: Object.freeze(reviews), decisions: Object.freeze(decisions), progress: Object.freeze(progress), upstream: Object.freeze([...upstream].map(([nodeKey, state]) => Object.freeze({ nodeKey, state }))),

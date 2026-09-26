@@ -28,6 +28,8 @@ it('runs a paused-by-default DAG through independent roots and accepted output c
       await host.run()
       expect(workflow.report()).toMatchObject({ state: 'completed', closed: true, counts: { assignments: 2, proposals: 2, accepted: 2, pendingInbox: 0, pendingOutbox: 0 } })
       expect(host.report().members.every(member => member.agent.roots.length === 1 && member.agent.roots[0]!.outcome === 'completed')).toBe(true)
+      expect(await workflow.cancel({ requestKey: 'after-completion' })).toMatchObject({ status: 'no-op' })
+      expect(workflow.report()).toMatchObject({ state: 'completed', closed: true, counts: { accepted: 2 } })
     } finally { await host.shutdown() }
     const repository = new SessionRepository({ backend: new FileSessionBackend(spec.storage), catalog: hostRuntimeEventCatalog, maxLineageDepth: 4 })
     let artifact

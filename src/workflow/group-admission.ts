@@ -9,13 +9,13 @@ import type { InteractionRejection } from './interactions.js'
 export type GroupAdmission = Extract<ReturnType<typeof workflowInteractionAdmittedEvent.decode>, { kind: 'group' }>
 
 /** Group admission atomically consumes the sender's group slot and every target's incoming slot. */
-export function checkGroupAdmission(state: Pick<WorkflowSnapshot, 'definition' | 'assignments' | 'decisions' | 'interactions'>,
+export function checkGroupAdmission(state: Pick<WorkflowSnapshot, 'definition' | 'assignments' | 'decisions' | 'interactions' | 'assignmentStops'>,
   value: GroupAdmission): InteractionRejection | undefined {
   const definition = state.definition!, recipe = definition.payload
   const sender = state.assignments.find(item => item.stored.eventId === value.assignment.eventId)
   const blocked = (reason: string): InteractionRejection => ({ outcome: 'blocked', reason, cycle: [] })
   if (value.definition !== definition.stored.eventId || sender?.payload.kind !== 'production' || value.assignment.address !== recipe.coordinator
-    || value.request.address !== sender.payload.memberAddress || state.decisions.some(item => sameWorkflowValue(item.payload.assignment, value.assignment))) return blocked('work-group-sender-unavailable')
+    || value.request.address !== sender.payload.memberAddress || [...state.decisions, ...state.assignmentStops].some(item => sameWorkflowValue(item.payload.assignment, value.assignment))) return blocked('work-group-sender-unavailable')
   if (value.targets.length === 0 || value.targets.length > recipe.limits.maxGroupRecipients
     || new Set(value.targets.map(item => item.assignment.eventId)).size !== value.targets.length) return blocked('work-group-recipients')
   if (value.observedAt >= value.deadline || value.deadline > sender.payload.deadline) return blocked('work-group-expired')
@@ -25,7 +25,7 @@ export function checkGroupAdmission(state: Pick<WorkflowSnapshot, 'definition' |
   for (const target of value.targets) {
     const work = state.assignments.find(item => item.stored.eventId === target.assignment.eventId)
     if (work?.payload.kind !== 'production' || work.payload.nodeKey !== target.nodeKey || target.assignment.address !== recipe.coordinator
-      || sameWorkflowValue(target.assignment, value.assignment) || state.decisions.some(item => sameWorkflowValue(item.payload.assignment, target.assignment))) return blocked('work-group-peer-unavailable')
+      || sameWorkflowValue(target.assignment, value.assignment) || [...state.decisions, ...state.assignmentStops].some(item => sameWorkflowValue(item.payload.assignment, target.assignment))) return blocked('work-group-peer-unavailable')
     const index = recipe.roster.findIndex(member => member.memberKey === work.payload.memberKey)
     if (index <= priorIndex) return blocked('work-group-roster-order')
     priorIndex = index

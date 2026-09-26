@@ -10,7 +10,8 @@ export function workflowReport(session: SessionHandle, slots: readonly HostSlot[
   const definition = state.definition!.payload
   const maximum = definition.limits.maxReportEntries
   const nodes = definition.nodes.map(node => ({ nodeKey: node.nodeKey,
-    status: state.upstream.find(item => item.nodeKey === node.nodeKey)?.state.kind ?? (state.assignments.some(item => item.payload.nodeKey === node.nodeKey) ? 'assigned' : state.ready.includes(node.nodeKey) ? 'ready' : 'blocked') }))
+    status: state.upstream.find(item => item.nodeKey === node.nodeKey)?.state.kind ?? (state.stop !== null ? state.stop.payload.reason === 'cancelled' ? 'cancelled' : 'failed'
+      : state.assignments.some(item => item.payload.nodeKey === node.nodeKey) ? 'assigned' : state.ready.includes(node.nodeKey) ? 'ready' : 'blocked') }))
   const closed = state.assignments.every(assignment => {
     const member = slots.find(slot => slot.session.header.address === assignment.payload.memberAddress)
     return member !== undefined && workflowAssignmentClosed(session, member.session, assignment.stored.eventId, slots.map(slot => slot.session))
@@ -21,8 +22,11 @@ export function workflowReport(session: SessionHandle, slots: readonly HostSlot[
     || definition.requiredOutputs.some(key => state.upstream.find(item => item.nodeKey === key)?.state.kind === 'skipped')
   const communication = projectCommunicationFacts(session.snapshot())
   return Object.freeze({ workflowKey: definition.workflowKey, desired: state.desired,
-    state: failed ? 'failed' as const : completed ? 'completed' as const : state.desired === 'paused' ? 'paused' as const : resumed ? 'running' as const : 'suspended' as const,
-    settled: completed || failed, closed: (completed || failed) && closed, budget: definition.budget, reservedBudget: state.reservedBudget,
+    state: state.terminal?.payload.outcome ?? (state.stop !== null ? state.stop.payload.reason === 'cancelled' ? 'cancelled' as const : 'failed' as const
+      : failed ? 'failed' as const : completed ? 'completed' as const : state.desired === 'paused' ? 'paused' as const : resumed ? 'running' as const : 'suspended' as const),
+    settled: state.terminal !== null, closed: state.closed !== null && closed && state.controls.every(item => item.settled !== null),
+    terminal: state.terminal === null ? null : { address: session.header.address, eventId: state.terminal.stored.eventId },
+    budget: definition.budget, reservedBudget: state.reservedBudget,
     counts: { nodes: nodes.length, assignments: state.assignments.length, proposals: state.proposals.length, reviews: state.reviews.length, progress: state.progress.length,
       accepted: state.decisions.filter(item => item.payload.outcome === 'accepted' && state.assignments.some(work => work.stored.eventId === item.payload.assignment.eventId && work.payload.kind === 'production')).length,
       failed: state.decisions.filter(item => item.payload.outcome === 'rejected' && state.assignments.some(work => work.stored.eventId === item.payload.assignment.eventId && work.payload.kind === 'production')).length,
@@ -31,6 +35,8 @@ export function workflowReport(session: SessionHandle, slots: readonly HostSlot[
       pendingQuestions: state.interactions.filter(item => item.admitted.payload.kind === 'question' && item.settled === null).length,
       groups: state.interactions.filter(item => item.admitted.payload.kind === 'group').length,
       pendingGroups: state.interactions.filter(item => item.admitted.payload.kind === 'group' && item.settled === null).length,
+      pendingControls: state.controls.filter(item => item.settled === null).length,
+      pendingStops: state.assignmentStops.filter(item => !state.stopReceipts.some(receipt => receipt.payload.message.stop.eventId === item.stored.eventId)).length,
       pendingOutbox: communication.outbox.filter(item => item.status === 'pending').length },
     progress: Object.freeze(state.progress.slice(0, maximum)),
     nodes: Object.freeze(nodes.slice(0, maximum)), assignments: Object.freeze(state.assignments.slice(0, maximum).map(item => ({

@@ -8,7 +8,7 @@ export type InteractionAdmission = Extract<ReturnType<typeof workflowInteraction
 export type InteractionRejection = { readonly outcome: 'blocked'; readonly reason: string; readonly cycle: readonly WorkflowEventRef[] }
 
 /** All active question edges and both quota debits are evaluated against the same coordinator prefix. */
-export function checkWorkflowInteraction(state: Pick<WorkflowSnapshot, 'definition' | 'assignments' | 'decisions' | 'interactions'>,
+export function checkWorkflowInteraction(state: Pick<WorkflowSnapshot, 'definition' | 'assignments' | 'decisions' | 'interactions' | 'assignmentStops'>,
   value: InteractionAdmission): InteractionRejection | undefined {
   const definition = state.definition!
   const sender = state.assignments.find(item => item.stored.eventId === value.assignment.eventId)
@@ -17,7 +17,7 @@ export function checkWorkflowInteraction(state: Pick<WorkflowSnapshot, 'definiti
   if (value.definition !== definition.stored.eventId || sender?.payload.kind !== 'production' || target?.payload.kind !== 'production'
     || value.assignment.address !== definition.payload.coordinator || value.targetAssignment.address !== definition.payload.coordinator
     || value.request.address !== sender.payload.memberAddress || sameWorkflowValue(value.assignment, value.targetAssignment)
-    || state.decisions.some(item => [value.assignment.eventId, value.targetAssignment.eventId].includes(item.payload.assignment.eventId))) return blocked('work-peer-unavailable')
+    || [...state.decisions, ...state.assignmentStops].some(item => [value.assignment.eventId, value.targetAssignment.eventId].includes(item.payload.assignment.eventId))) return blocked('work-peer-unavailable')
   if (!definition.payload.communication.ask.some(pair => pair.from === sender.payload.memberKey && pair.to === target.payload.memberKey)) return blocked('work-question-not-permitted')
   if (value.observedAt >= value.deadline || value.deadline > sender.payload.deadline || value.deadline > target.payload.deadline) return blocked('work-question-expired')
   const questions = state.interactions.filter(item => item.admitted.payload.kind === 'question')

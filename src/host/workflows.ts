@@ -33,6 +33,10 @@ import { resolveWorkflowReviews } from '../workflow/review.js'
 import { workflowReport } from './workflow-report.js'
 import { prepareWorkWorkspace, workExecutionTools } from './workflow-workspace.js'
 import type { WorkspaceAuthority, WorkspaceLease } from '../subagent/workspace.js'
+import { nextWorkflowStop, nextWorkStop, notifyWorkflowStop } from './workflow-stop.js'
+import type { NotifyWorkStop } from './workflow-stop.js'
+import { workStopReceivedEvent, workStopSettledEvent } from '../workflow/stop-events.js'
+import { workAssignmentSettledEvent } from '../workflow/settlement-events.js'
 
 interface WorkflowEntry { readonly slot: HostProtocolSlot; readonly journal: WorkflowJournal; readonly admission: WorkflowAdmission }
 
@@ -41,12 +45,13 @@ export class HostWorkflows {
   readonly #gate = new SerialGate()
   readonly #entries = new Map<string, WorkflowEntry>()
   readonly #active = new Set<string>()
+  readonly #stopping = new Set<string>()
   readonly #retired = new Set<string>()
   readonly #workspaces = new Map<string, WorkspaceLease>()
   #cursor = 0
   #closed = false
   constructor(readonly slots: HostSlot[], coordinators: readonly HostProtocolSlot[], readonly communication: CommunicationService,
-    readonly clock: Clock, readonly owner: string, readonly workspaceAuthority: WorkspaceAuthority) {
+    readonly clock: Clock, readonly owner: string, readonly workspaceAuthority: WorkspaceAuthority, readonly notifyChildren: NotifyWorkStop) {
     for (const slot of coordinators) {
       const definition = projectWorkflowSession(slot.session.snapshot()).definition!
       this.#entries.set(definition.payload.workflowKey, { slot, journal: new WorkflowJournal(slot.session, clock),
@@ -73,7 +78,7 @@ export class HostWorkflows {
     return copy
   }
 
-  control(key: string, kind: 'pause' | 'resume', input: { readonly requestKey: string; readonly reason?: string }) {
+  control(key: string, kind: 'pause' | 'resume' | 'cancel', input: { readonly requestKey: string; readonly reason?: string }) {
     return this.#gate.run(async () => {
       if (this.#closed) throw new HostError('HOST_INACTIVE', 'workflow-host-closed')
       const entry = this.#entry(key)
@@ -82,11 +87,16 @@ export class HostWorkflows {
         requestKey: input.requestKey, reason: input.reason ?? '' })
       const prior = state.controls.find(item => item.requested.payload.requestKey === input.requestKey)
       if (prior !== undefined && !sameWorkflowValue(prior.requested.payload, payload)) throw new HostError('HOST_BINDING_CONFLICT', 'workflow-request-key-conflict')
+      if (kind === 'cancel' && state.terminal === null) {
+        this.#stopping.add(key)
+        notifyWorkflowStop(entry.slot, this.slots, this.notifyChildren)
+      }
       const requested = prior?.requested ?? await entry.journal.append(workflowControlRequestedEvent, () => payload)
-      const settled = prior?.settled ?? await entry.journal.append(workflowControlSettledEvent, () => ({ request: requested.stored.eventId, outcome: 'applied' as const, owner: this.owner }))
+      const stopped = state.stop !== null || state.terminal !== null || state.controls.some(item => item.requested.payload.kind === 'cancel' && item.settled?.payload.outcome !== 'no-op')
+      const settled = prior?.settled ?? await entry.journal.append(workflowControlSettledEvent, () => ({ request: requested.stored.eventId, outcome: stopped ? 'no-op' as const : 'applied' as const, owner: this.owner }))
       const latest = projectWorkflowSession(entry.slot.session.snapshot()).controls.at(-1)
-      if (latest?.requested.stored.eventId === requested.stored.eventId && kind === 'resume') this.#active.add(key)
-      return { status: kind === 'resume' && latest?.requested.stored.eventId === requested.stored.eventId ? 'resumed' as const : 'applied' as const,
+      if (latest?.requested.stored.eventId === requested.stored.eventId && kind === 'resume' && settled.payload.outcome === 'applied') this.#active.add(key)
+      return { status: settled.payload.outcome === 'no-op' ? 'no-op' as const : kind === 'resume' && latest?.requested.stored.eventId === requested.stored.eventId ? 'resumed' as const : 'applied' as const,
         ref: { address: entry.slot.session.header.address, eventId: settled.stored.eventId } }
     })
   }
@@ -96,7 +106,7 @@ export class HostWorkflows {
       const state = projectWorkflowSession(entry.slot.session.snapshot())
       const assignment = state.assignments.find(item => item.payload.memberAddress === slot.session.header.address && !this.#retired.has(item.stored.eventId))
       if (assignment === undefined) continue
-      return !this.#closed && this.#active.has(key) && state.desired === 'running'
+      return !this.#closed && !this.#stopping.has(key) && this.#active.has(key) && state.desired === 'running' && state.stop === null && state.terminal === null
         && slot.selection?.kind === 'workflow' && slot.selection.assignment.eventId === assignment.stored.eventId
     }
     return slot.selection?.kind !== 'workflow'
@@ -107,8 +117,7 @@ export class HostWorkflows {
     const entries = [...this.#entries]
     for (let offset = 0; offset < entries.length; offset++) {
       const index = (this.#cursor + offset) % entries.length
-      const [key, entry] = entries[index]!
-      if (!this.#active.has(key)) continue
+      const [, entry] = entries[index]!
       const action = this.#next(entry)
       if (action !== undefined) return () => this.#gate.run(async () => {
         this.#cursor = (index + 1) % entries.length
@@ -122,12 +131,15 @@ export class HostWorkflows {
     const coordinator = entry.slot
     const state = projectWorkflowSession(coordinator.session.snapshot())
     const definition = state.definition!
-    const protocol = nextWorkflowInbox(coordinator.session, coordinator.mailbox, this.clock, 'coordinator')
+    const enabled = this.#active.has(definition.payload.workflowKey) && !this.#stopping.has(definition.payload.workflowKey) && state.desired === 'running' && state.stop === null && state.terminal === null
+    const protocol = nextWorkflowStop(coordinator, this.slots, this.clock, this.notifyChildren, this.#retired, state)
+      ?? nextWorkflowInbox(coordinator.session, coordinator.mailbox, this.clock, 'coordinator')
       ?? nextWorkflowSend(coordinator.session, coordinator.mailbox, this.clock, 'coordinator')
       ?? nextWorkInteractionSettlement(coordinator.session, this.slots, this.clock)
     if (protocol !== undefined) return protocol
     for (const member of this.slots.filter(member => definition.payload.roster.some(peer => peer.address === member.session.header.address))) {
       const incoming = nextWorkflowInbox(member.session, member.mailbox, this.clock, 'member')
+        ?? nextWorkStop(member, this.clock, this.notifyChildren)
         ?? nextWorkQuestionDecline(member.session, this.clock)
         ?? nextWorkInputDisposition(member.session, this.clock)
         ?? nextWorkGroupAction(member.session, member.mailbox, this.clock)
@@ -137,24 +149,34 @@ export class HostWorkflows {
     for (const work of state.assignments) {
       if (this.#retired.has(work.stored.eventId)) continue
       const member = assignmentMember(this.slots, work.payload)
+      const settled = member.session.snapshot().history.at(-1)!.events.some(item => item.kind === 'known' && [workAssignmentSettledEvent, workStopSettledEvent].some(definition =>
+        item.stored.type === definition.type && definition.decode(item.payload).assignment.eventId === work.stored.eventId))
+      if (settled && workflowAssignmentClosed(coordinator.session, member.session, work.stored.eventId, this.slots.map(slot => slot.session))) return async () => {
+        await this.#workspaces.get(work.stored.eventId)?.dispose()
+        this.#workspaces.delete(work.stored.eventId)
+        this.slots[this.slots.indexOf(member)] = await member.executions!.replace({ kind: 'ordinary' }, {})
+        entry.admission.retire(work.stored.eventId, member.session, this.slots.map(slot => slot.session))
+        this.#retired.add(work.stored.eventId)
+      }
       const agent = projectAgentSession(member.session.snapshot())
       const accepted = agent.inputs.find(input => input.work?.assignment.eventId === work.stored.eventId)
       if (accepted === undefined) continue
       const root = agent.roots.find(root => root.source.kind === 'workflow' && root.source.assignment.eventId === work.stored.eventId)
       if (root?.outcome == null) {
-        if (state.desired === 'running' && member.selection?.kind !== 'workflow') return async () => {
+        if (enabled && member.selection?.kind !== 'workflow') return async () => {
           const lease = this.#workspaces.get(work.stored.eventId) ?? await prepareWorkWorkspace(member.member, work.payload, this.workspaceAuthority, work.payload.workspaceBaseline)
           if (lease !== undefined) this.#workspaces.set(work.stored.eventId, lease)
           const replacement = await member.executions!.replace({ kind: 'workflow', assignment: accepted.work!.assignment }, {
             ...workExecutionTools(member.member, work.payload, lease), workActions: new SessionWorkActions(member.session, this.clock, {
-              admitGroup: request => this.#gate.run(async () => this.#closed || projectWorkflowSession(coordinator.session.snapshot()).desired !== 'running'
+              admitGroup: request => this.#gate.run(async () => this.#closed || this.#stopping.has(definition.payload.workflowKey) || projectWorkflowSession(coordinator.session.snapshot()).desired !== 'running'
                 ? { outcome: 'blocked' as const, reason: 'workflow-admission-paused' }
                 : admitWorkGroup(coordinator.session, this.slots, this.clock, request)),
-              admit: request => this.#gate.run(async () => this.#closed || projectWorkflowSession(coordinator.session.snapshot()).desired !== 'running'
+              admit: request => this.#gate.run(async () => this.#closed || this.#stopping.has(definition.payload.workflowKey) || projectWorkflowSession(coordinator.session.snapshot()).desired !== 'running'
                 ? { outcome: 'blocked' as const, reason: 'workflow-admission-paused', cycle: [] }
                 : admitWorkQuestion(coordinator.session, this.slots, this.clock, request)),
             }),
           })
+          this.#workspaces.delete(work.stored.eventId)
           this.slots[this.slots.indexOf(member)] = replacement
         }
         continue
@@ -175,17 +197,19 @@ export class HostWorkflows {
           if (outcome === 'unknown') throw failure
         }
       }
+      if (member.session.snapshot().history.at(-1)!.events.some(item => item.kind === 'known' && item.stored.type === workStopReceivedEvent.type
+        && workStopReceivedEvent.decode(item.payload).assignment.eventId === work.stored.eventId)) continue
       const publication = nextWorkPublication(member.session, this.clock)
       if (publication !== undefined) return publication
       const proposal = [...state.proposals, ...state.reviews].find(item => item.payload.message.assignment.eventId === work.stored.eventId)
       const decisionMissing = !state.decisions.some(item => item.payload.assignment.eventId === work.stored.eventId)
       const evaluated = resolveWorkflowReviews(state, work.stored.eventId)
-      if (proposal !== undefined && decisionMissing && (evaluated !== undefined || proposal.payload.message.value.outcome !== 'completed')) return () => entry.journal.append(workflowDecisionCommittedEvent, () => ({
+      if (state.stop === null && !this.#stopping.has(definition.payload.workflowKey) && proposal !== undefined && decisionMissing && (evaluated !== undefined || proposal.payload.message.value.outcome !== 'completed')) return () => entry.journal.append(workflowDecisionCommittedEvent, () => ({
         definition: definition.stored.eventId, assignment: proposal.payload.message.assignment, proposal: proposal.payload.message.proposal,
         expectedOutputRevision: 0 as const, outcome: proposal.payload.message.value.outcome === 'completed' ? evaluated!.outcome : 'rejected' as const, value: proposal.payload.message.value.value,
         artifacts: proposal.payload.message.value.artifacts, reviews: proposal.payload.message.value.outcome === 'completed' ? evaluated!.reviews : [],
       }))
-      if (proposal !== undefined && decisionMissing && state.desired === 'running' && work.payload.kind === 'production' && work.payload.acceptance.kind === 'reviewed-all'
+      if (proposal !== undefined && decisionMissing && enabled && work.payload.kind === 'production' && work.payload.acceptance.kind === 'reviewed-all'
         && state.assignments.filter(item => !state.decisions.some(decision => decision.payload.assignment.eventId === item.stored.eventId)).length < definition.payload.limits.maxActiveAssignments) {
         for (const reviewer of work.payload.acceptance.reviewers) {
           if (state.assignments.some(item => item.payload.kind === 'review' && item.payload.reviewOf.assignment.eventId === work.stored.eventId && item.payload.memberKey === reviewer)) continue
@@ -209,15 +233,8 @@ export class HostWorkflows {
           }
         }
       }
-      if (workflowAssignmentClosed(coordinator.session, member.session, work.stored.eventId, this.slots.map(slot => slot.session))) return async () => {
-        entry.admission.retire(work.stored.eventId, member.session, this.slots.map(slot => slot.session))
-        this.#retired.add(work.stored.eventId)
-        this.#workspaces.delete(work.stored.eventId)
-        const replacement = await member.executions!.replace({ kind: 'ordinary' }, {})
-        this.slots[this.slots.indexOf(member)] = replacement
-      }
     }
-    if (state.desired !== 'running') return undefined
+    if (!enabled || state.assignments.filter(work => !this.#retired.has(work.stored.eventId)).length >= definition.payload.limits.maxActiveAssignments) return undefined
     for (const node of definition.payload.nodes) {
       if (state.assignments.some(item => item.payload.nodeKey === node.nodeKey) || state.resolved.some(item => item.nodeKey === node.nodeKey)) continue
       const resolution = resolveWorkflowNode(node, new Map(state.upstream.map(item => [item.nodeKey, item.state])),  definition.payload)

@@ -14,16 +14,23 @@ import { workAssignmentSettledEvent } from '../workflow/settlement-events.js'
 import { workflowProposalReceivedEvent, workflowReviewReceivedEvent } from '../workflow/coordinator-events.js'
 import { workflowAssignmentAcceptedMessage, workflowProposalMessage, workflowDecisionMessage } from '../workflow/messages.js'
 import { invalidHistory } from '../workflow/errors.js'
+import { workflowStopMessage, workflowStopAcknowledgedMessage, workflowStopAcknowledgedEvent, workStopReceivedEvent, workAssignmentRejectedEvent } from '../workflow/stop-events.js'
+import { workStoppedMessageEvent } from '../workflow/stopped-message.js'
 
 /** Adopt one supported Inbox item, then separately acknowledge its durable classification. */
 export function nextWorkflowInbox(session: SessionHandle, mailbox: SessionMailbox, clock: Clock,
   role: 'coordinator' | 'member'): (() => Promise<unknown>) | undefined {
   const inbox = mailbox.snapshot().inbox.filter(item => item.status === 'pending' && item.envelope.type.startsWith('workflow/'))
+    .sort((a, b) => Number(b.envelope.type === workflowStopMessage.type) - Number(a.envelope.type === workflowStopMessage.type))
   const events = session.snapshot().history.at(-1)!.events.filter(item => item.kind === 'known')
   for (const item of inbox) {
     if (role === 'coordinator') {
       const state = projectWorkflowSession(session.snapshot())
       const journal = new WorkflowJournal(session, clock)
+      if (item.envelope.type === workflowStopAcknowledgedMessage.type) {
+        if (state.stopReceipts.some(receipt => receipt.payload.inbox === item.acceptedEventId)) return () => mailbox.markProcessed(item.messageId)
+        return () => journal.append(workflowStopAcknowledgedEvent, () => ({ inbox: item.acceptedEventId, message: workflowStopAcknowledgedMessage.decode(item.envelope.payload) }))
+      }
       if (item.envelope.type === 'workflow/progress') return () => mailbox.markProcessed(item.messageId)
       if (item.envelope.type === workflowAssignmentAcceptedMessage.type) {
         const message = workflowAssignmentAcceptedMessage.decode(item.envelope.payload)
@@ -40,16 +47,32 @@ export function nextWorkflowInbox(session: SessionHandle, mailbox: SessionMailbo
     } else {
       const state = projectAgentSession(session.snapshot())
       const journal = new AgentJournal(session, state.spec!.payload.limits.maxJournalConflicts, clock)
+      if (item.envelope.type === workflowStopMessage.type) {
+        if (events.some(event => event.stored.type === workStopReceivedEvent.type && workStopReceivedEvent.decode(event.payload).inbox === item.acceptedEventId)) return () => mailbox.markProcessed(item.messageId)
+        const message = workflowStopMessage.decode(item.envelope.payload)
+        return () => journal.append(workStopReceivedEvent, current => ({ inbox: item.acceptedEventId, assignment: message.assignment,
+          root: current.roots.find(root => root.source.kind === 'workflow' && sameWorkflowValue(root.source.assignment, message.assignment))?.id ?? null }))
+      }
       if (['workflow/question', 'workflow/answer', 'workflow/group'].includes(item.envelope.type)) {
+        if (events.some(event => event.stored.type === workStoppedMessageEvent.type
+          && workStoppedMessageEvent.decode(event.payload).inbox === item.acceptedEventId)) return () => mailbox.markProcessed(item.messageId)
         if (events.some(event => event.stored.type === workProtocolClassifiedEvent.type
           && workProtocolClassifiedEvent.decode(event.payload).inbox === item.acceptedEventId)) return () => mailbox.markProcessed(item.messageId)
         const message = item.envelope.type === 'workflow/group' ? workflowGroupMessage.decode(item.envelope.payload)
           : item.envelope.type === 'workflow/question' ? workflowQuestionMessage.decode(item.envelope.payload) : workflowAnswerMessage.decode(item.envelope.payload)
-        if (!state.inputs.some(input => input.work !== undefined && sameWorkflowValue(input.work.assignment, message.targetAssignment))) continue
+        if (!state.inputs.some(input => input.work !== undefined && sameWorkflowValue(input.work.assignment, message.targetAssignment))) {
+          const stop = events.find(event => event.stored.type === workStopReceivedEvent.type && sameWorkflowValue(workStopReceivedEvent.decode(event.payload).assignment, message.targetAssignment))
+          if (stop === undefined) continue
+          return () => journal.append(workStoppedMessageEvent, () => ({ inbox: item.acceptedEventId, stop: stop.stored.eventId }))
+        }
         return () => journal.append(workProtocolClassifiedEvent, (_state, snapshot) => classifyWorkMessage(foldAgentSession(snapshot), item.acceptedEventId))
       }
       if (item.envelope.type === 'workflow/assignment') {
+        if (events.some(event => event.stored.type === workAssignmentRejectedEvent.type && workAssignmentRejectedEvent.decode(event.payload).inbox === item.acceptedEventId)) return () => mailbox.markProcessed(item.messageId)
         if (state.inputs.some(input => input.work?.inbox === item.acceptedEventId)) return () => mailbox.markProcessed(item.messageId)
+        const message = decodeWorkAssignmentMessage(item.envelope.payload)
+        const stopped = events.find(event => event.stored.type === workStopReceivedEvent.type && sameWorkflowValue(workStopReceivedEvent.decode(event.payload).assignment, message.assignment))
+        if (stopped !== undefined) return () => journal.append(workAssignmentRejectedEvent, () => ({ inbox: item.acceptedEventId, stop: stopped.stored.eventId }))
         if (state.openRun !== null || state.roots.some(root => root.outcome === null)) continue
         return () => journal.append(workAssignmentAcceptedEvent, () => workAssignmentAcceptedEvent.decode({ inbox: item.acceptedEventId,
           ...decodeWorkAssignmentMessage(item.envelope.payload) } as unknown as import('../foundation/json.js').JsonObject))

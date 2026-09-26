@@ -8,6 +8,7 @@ import { workflowGroupMessage } from './group-events.js'
 import { workProtocolClassifiedEvent } from './interaction-events.js'
 import { sameWorkflowValue } from './work-binding.js'
 import { invalidHistory } from './errors.js'
+import { workStopReceivedEvent } from './stop-events.js'
 
 export function classifyGroupMessage(state: AgentProjectionState, inbox: SessionEventId) {
   const incoming = source(state, inbox, inboxAcceptedEvent), envelope = incoming.payload.envelope
@@ -24,6 +25,8 @@ export function classifyGroupMessage(state: AgentProjectionState, inbox: Session
   const root = [...state.roots.values()].find(root => root.source.kind === 'workflow' && sameWorkflowValue(root.source.assignment, binding.assignment))
   const duplicate = [...state.inputs.values()].some(input => input.workMessage?.kind === 'group' && sameWorkflowValue(input.workMessage.group, value.group))
   const late = incoming.stored.recordedAt >= value.deadline || root !== undefined && (root.outcome !== null || root.stopControl !== null)
+    || [...state.sources.values()].some(event => event.stored.type === workStopReceivedEvent.type
+      && sameWorkflowValue(workStopReceivedEvent.decode(event.payload).assignment, binding.assignment))
   return { accepted: accepted.reference.eventId, inbox, kind: 'group' as const, classification: duplicate ? 'duplicate' as const : late ? 'late' as const : 'eligible' as const }
 }
 

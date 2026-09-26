@@ -11,6 +11,7 @@ import { sameWorkflowValue, workAssignmentAcceptedEvent } from './work-binding.j
 import { invalidHistory } from './errors.js'
 import { classifyGroupMessage, applyGroupInput } from './group-receive.js'
 import { workGroupRequestedEvent } from './group-events.js'
+import { workStopReceivedEvent } from './stop-events.js'
 
 /** Classification uses this Session's binding and Inbox; it does not claim a model input. */
 export function classifyWorkMessage(state: AgentProjectionState, inbox: SessionEventId) {
@@ -53,6 +54,8 @@ export function classifyWorkMessage(state: AgentProjectionState, inbox: SessionE
   const prior = [...state.inputs.values()].some(input => input.workMessage?.kind === kind && sameWorkflowValue(input.workMessage.question, value.question))
   const root = [...state.roots.values()].find(root => root.source.kind === 'workflow' && sameWorkflowValue(root.source.assignment, binding.assignment))
   const late = root !== undefined && (root.outcome !== null || root.stopControl !== null)
+    || [...state.sources.values()].some(event => event.stored.type === workStopReceivedEvent.type
+      && sameWorkflowValue(workStopReceivedEvent.decode(event.payload).assignment, binding.assignment))
     || event.stored.recordedAt >= deadline
     || kind === 'answer' && [...state.waits.values()].some(wait => wait.created.payload.result.kind === 'wait'
       && wait.created.payload.result.descriptor.kind === 'work-answer' && wait.created.payload.result.descriptor.request === value.question.eventId
