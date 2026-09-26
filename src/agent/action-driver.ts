@@ -75,7 +75,7 @@ export async function executeAgentAction(runtime: AgentRuntime, turnId: SessionE
   let parsed
   try {
     parsed = record(agentJson(JSON.parse(block.argumentsText)))
-    if (intent.route === 'work-progress') {
+    if (intent.route.startsWith('work-')) {
       if (runtime.workActions === undefined) return { kind: 'not-started', reason: 'work-capability-unavailable' }
       return await runtime.workActions.execute(turnId, action, intent, parsed, signal)
     }
@@ -111,7 +111,7 @@ export async function executeAgentAction(runtime: AgentRuntime, turnId: SessionE
       if (error.code === 'WORKFLOW_ADMISSION_BLOCKED' || error.code === 'WORKFLOW_RESULT_INVALID') return { kind: 'not-started', reason: error.message }
       throw error
     }
-    if (intent.route === 'work-progress' && !(error instanceof AgentError) && !(error instanceof SyntaxError)) throw error
+    if (intent.route.startsWith('work-') && !(error instanceof AgentError) && !(error instanceof SyntaxError)) throw error
     if (error instanceof SubagentError && error.code === 'SUBAGENT_COMMIT_UNKNOWN') throw new AgentError('AGENT_COMMIT_UNKNOWN', 'subagent-commit-unknown')
     if (error instanceof AgentError && ['AGENT_COMMIT_UNKNOWN', 'AGENT_WRITE_FAILED'].includes(error.code)) throw error
     return { kind: 'not-started', reason: error instanceof SubagentError ? error.message : 'native-arguments-invalid' }

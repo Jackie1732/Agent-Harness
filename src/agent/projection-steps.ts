@@ -4,6 +4,7 @@ import type { CommittedSessionEvent } from '../session/types.js'
 import type { AgentActionIntent, AgentEventPayloads } from './event-contract.js'
 import { actionBudget, emptyAgentBudget, reserveAgentBudget } from './budget.js'
 import { workProtocolRecordedEvent } from '../workflow/protocol.js'
+import { workQuestionRequestedEvent, workInteractionResolvedEvent } from '../workflow/interaction-events.js'
 import { classifyAgentModel } from './decision.js'
 import { invalidAgent } from './errors.js'
 import { referenceKey } from './input-codec.js'
@@ -103,7 +104,7 @@ export function applyActionSettled(state: AgentProjectionState, event: Committed
       break
     }
     case 'wait': {
-      if (turn === null || intent === null || !['wait', 'ask', 'spawn', 'await-subagent', 'answer-subagent', 'ask-parent'].includes(intent.route)) invalidAgent('wait-route-mismatch')
+      if (turn === null || intent === null || !['wait', 'ask', 'spawn', 'await-subagent', 'answer-subagent', 'ask-parent', 'work-ask', 'work-receive'].includes(intent.route)) invalidAgent('wait-route-mismatch')
       const descriptor = result.descriptor
       const root = requireEntry(state.roots, turn.root, 'missing-root')
       if (descriptor.root !== turn.root || descriptor.deadline > root.deadline
@@ -121,6 +122,11 @@ export function applyActionSettled(state: AgentProjectionState, event: Committed
       break
     }
     case 'not-started':
+      if ([...state.sources.values()].some(entry => {
+        if (entry.stored.type !== workInteractionResolvedEvent.type) return false
+        const resolved = workInteractionResolvedEvent.decode(entry.payload)
+        return resolved.outcome === 'admitted' && equal(workQuestionRequestedEvent.decode(state.sources.get(resolved.request)!.payload).action, event.payload.action)
+      })) invalidAgent('not-started-has-work-admission')
       if ([...state.sources.values()].some(entry => {
         if (entry.stored.type !== workProtocolRecordedEvent.type) return false
         const source = workProtocolRecordedEvent.decode(entry.payload).source

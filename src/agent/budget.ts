@@ -27,7 +27,7 @@ export function reserveAgentBudget(used: AgentBudget, amount: AgentBudget, maxim
 export function actionBudget(routes: readonly AgentActionIntent['route'][]): AgentBudget {
   return Object.freeze({ ...emptyAgentBudget,
     tools: routes.filter(route => route === 'tool').length,
-    messages: routes.filter(route => route === 'send' || route === 'reply' || route === 'work-progress').length,
-    waits: routes.filter(route => ['wait', 'ask', 'spawn', 'await-subagent', 'answer-subagent', 'ask-parent'].includes(route)).length,
+    messages: routes.filter(route => ['send', 'reply', 'work-progress', 'work-ask', 'work-answer'].includes(route)).length,
+    waits: routes.filter(route => ['wait', 'ask', 'spawn', 'await-subagent', 'answer-subagent', 'ask-parent', 'work-ask', 'work-receive'].includes(route)).length,
   })
 }

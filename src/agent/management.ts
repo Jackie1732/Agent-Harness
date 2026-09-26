@@ -10,6 +10,7 @@ import type { SessionSnapshot } from '../session/types.js'
 import type { AgentSessionSnapshot } from './state.js'
 import type { AgentWaitSettled } from './event-contract.js'
 import { subagentMessageDefinitions } from '../subagent/messages.js'
+import { workflowQuestionMessage, workflowAnswerMessage } from '../workflow/interaction-events.js'
 
 function takeManagement(runtime: AgentRuntime): boolean {
   if (runtime.management === undefined) return true
@@ -55,7 +56,8 @@ export async function manageAgentWaits(runtime: AgentRuntime): Promise<void> {
     if (state.turns.find(turn => turn.started.stored.eventId === wait.turn)?.settled?.payload.outcome !== 'waiting') continue
     const descriptor = wait.created.payload.result.kind === 'wait' ? wait.created.payload.result.descriptor : undefined
     if (descriptor === undefined || state.roots.find(root => root.id === descriptor.root)?.stopControl !== null) continue
-    const messageKinds = spec.protocolVersion === 1 ? spec.messages : [...spec.messages, ...subagentMessageDefinitions]
+    const messageKinds = spec.protocolVersion === 1 ? spec.messages : [...spec.messages, ...subagentMessageDefinitions,
+      ...(spec.protocolVersion === 3 ? [workflowQuestionMessage, workflowAnswerMessage] : [])]
     const supportedMessages = messageKinds.filter(kind => runtime.messageCatalog.resolve(kind.type, kind.payloadVersion) !== undefined).map(({ type, payloadVersion }) => ({ type, payloadVersion }))
     const match = findWaitResponse(runtime.session.snapshot(), state, wait, supportedMessages)
     const outgoing = descriptor.kind === 'reply' ? projectCommunicationFacts(runtime.session.snapshot()).outbox.find(item => item.acceptedEventId === descriptor.outboxEventId) : undefined

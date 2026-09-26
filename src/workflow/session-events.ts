@@ -1,4 +1,5 @@
 import { workflowControlEventDefinitions } from './control-events.js'
+import { workInteractionEventDefinitions, workflowInteractionAdmittedEvent, workflowInteractionSettledEvent } from './interaction-events.js'
 import { workAssignmentSettledEvent } from './settlement-events.js'
 import { workflowDefinitionRecordedEvent, workflowNodeResolvedEvent, workflowAssignmentCommittedEvent } from './definition-events.js'
 import { workAssignmentAcceptedEvent } from './work-binding.js'
@@ -10,4 +11,5 @@ export type { WorkflowDefinitionRecorded, WorkflowNodeResolved } from './definit
 
 export const workflowSessionEventDefinitions = Object.freeze([workflowDefinitionRecordedEvent, workflowNodeResolvedEvent,
   workflowAssignmentCommittedEvent, workAssignmentAcceptedEvent, ...workResultEventDefinitions, ...workflowCoordinatorEventDefinitions,
-  workflowProtocolRecordedEvent, workProtocolRecordedEvent, ...workflowControlEventDefinitions, workAssignmentSettledEvent])
+  workflowProtocolRecordedEvent, workProtocolRecordedEvent, ...workflowControlEventDefinitions, workAssignmentSettledEvent,
+  ...workInteractionEventDefinitions, workflowInteractionAdmittedEvent, workflowInteractionSettledEvent])

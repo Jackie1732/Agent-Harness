@@ -13,7 +13,7 @@ export function workflowReport(session: SessionHandle, slots: readonly HostSlot[
     status: state.upstream.find(item => item.nodeKey === node.nodeKey)?.state.kind ?? (state.assignments.some(item => item.payload.nodeKey === node.nodeKey) ? 'assigned' : state.ready.includes(node.nodeKey) ? 'ready' : 'blocked') }))
   const closed = state.assignments.every(assignment => {
     const member = slots.find(slot => slot.session.header.address === assignment.payload.memberAddress)
-    return member !== undefined && workflowAssignmentClosed(session, member.session, assignment.stored.eventId)
+    return member !== undefined && workflowAssignmentClosed(session, member.session, assignment.stored.eventId, slots.map(slot => slot.session))
   })
   const completed = definition.requiredOutputs.every(key => state.upstream.find(item => item.nodeKey === key)?.state.kind === 'accepted')
     && nodes.every(node => ['accepted', 'skipped'].includes(node.status))
@@ -27,6 +27,7 @@ export function workflowReport(session: SessionHandle, slots: readonly HostSlot[
       accepted: state.decisions.filter(item => item.payload.outcome === 'accepted' && state.assignments.some(work => work.stored.eventId === item.payload.assignment.eventId && work.payload.kind === 'production')).length,
       failed: state.decisions.filter(item => item.payload.outcome === 'rejected' && state.assignments.some(work => work.stored.eventId === item.payload.assignment.eventId && work.payload.kind === 'production')).length,
       pendingInbox: communication.inbox.filter(item => item.status === 'pending').length,
+      questions: state.interactions.length, pendingQuestions: state.interactions.filter(item => item.settled === null).length,
       pendingOutbox: communication.outbox.filter(item => item.status === 'pending').length },
     progress: Object.freeze(state.progress.slice(0, maximum)),
     nodes: Object.freeze(nodes.slice(0, maximum)), assignments: Object.freeze(state.assignments.slice(0, maximum).map(item => ({

@@ -14,6 +14,9 @@ import {  artifactPublishedEvent, workProposalRecordedEvent , workReviewRecorded
 import { workflowDecisionCommittedEvent } from './coordinator-events.js'
 import type { WorkflowDefinition, WorkflowEventRef } from './types.js'
 import { invalidHistory } from './errors.js'
+import { workInteractionResolvedEvent, workQuestionDeclinedEvent } from './interaction-events.js'
+import { declineCommands } from './question-decline.js'
+import { questionCommands } from './receive.js'
 
 export type WorkflowProtocolRecorded = {
   readonly assignment: WorkflowEventRef
@@ -37,6 +40,8 @@ export const workProtocolRecordedEvent = createDurableEventDefinition({ type: 'w
 export function workflowSourceCommands(sources: ReadonlyMap<SessionEventId, CommittedSessionEvent>, id: SessionEventId): WorkflowProtocolRecorded & JsonObject {
   const source = sources.get(id)
   if (source === undefined) invalidHistory('protocol-source-missing')
+  if (source.stored.type === workInteractionResolvedEvent.type) return questionCommands(sources, id)
+  if (source.stored.type === workQuestionDeclinedEvent.type) return declineCommands(sources, id)
   const ref = { address: formatSessionAddress(source.stored.sessionId), eventId: id }
   let assignment: WorkflowEventRef
   let recipient: import('../session/ids.js').SessionAddress

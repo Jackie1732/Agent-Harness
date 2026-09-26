@@ -1,4 +1,5 @@
 import { parseMessageId } from '../communication/ids.js'
+import { workflowReference } from '../workflow/work-binding.js'
 import type { AgentActionReference, AgentInput, AgentInputReference, AgentSendCommand, AgentWaitDescriptor } from './contract.js'
 import { AgentError } from './errors.js'
 import { agentJson, array, choice, eventId, exact, integer, record, text, timestamp, unique } from './validation.js'
@@ -37,14 +38,16 @@ export function decodeAgentCommand(value: unknown): AgentSendCommand {
 
 export function decodeWaitDescriptor(value: unknown, version: 1 | 2 | 3 = 1): AgentWaitDescriptor {
   const input = record(value)
-  const kind = choice(input.kind, version === 1 ? ['user', 'reply'] : ['user', 'reply', 'delegation', 'parent-answer'])
+  const kind = choice(input.kind, version === 1 ? ['user', 'reply'] : ['user', 'reply', 'delegation', 'parent-answer', ...(version === 3 ? ['work-message', 'work-answer'] as const : [])])
   const fields = kind === 'user' ? ['question'] : kind === 'reply' ? ['messageId', 'outboxEventId']
-    : kind === 'delegation' ? ['delegation'] : ['delegation', 'question']
+    : kind === 'delegation' ? ['delegation'] : kind === 'work-message' ? ['assignment', 'receive'] : kind === 'work-answer' ? ['request', 'interaction'] : ['delegation', 'question']
   exact(input, ['kind', 'root', 'deadline', 'observedAt', 'protectedTurns', ...fields])
   timestamp(input.observedAt)
   eventId(input.root); timestamp(input.deadline); unique(array(input.protectedTurns).map(eventId))
   if (kind === 'user') text(input.question, 1024 * 1024)
   else if (kind === 'reply') { parseMessageId(text(input.messageId)); eventId(input.outboxEventId) }
+  else if (kind === 'work-message') { workflowReference(input.assignment); choice(input.receive, ['question', 'group', 'either']) }
+  else if (kind === 'work-answer') { eventId(input.request); workflowReference(input.interaction) }
   else { eventId(input.delegation); if (kind === 'parent-answer') eventId(input.question) }
   return input as AgentWaitDescriptor
 }

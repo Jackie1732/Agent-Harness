@@ -11,6 +11,8 @@ import { projectAgentSession } from './projection.js'
 import { referenceKey } from './input-codec.js'
 import type { AgentSessionSnapshot } from './state.js'
 import { record } from './validation.js'
+import { workQuestionRequestedEvent, workInteractionResolvedEvent } from '../workflow/interaction-events.js'
+import { sameWorkflowValue } from '../workflow/work-binding.js'
 
 /** Complete original calls plus one result per intent; no result text can create an action. */
 export function agentActionHistory(snapshot: SessionSnapshot, decisionId: SessionEventId, state: AgentSessionSnapshot = projectAgentSession(snapshot)): readonly ModelInputMessage[] {
@@ -40,6 +42,15 @@ export function agentActionHistory(snapshot: SessionSnapshot, decisionId: Sessio
       return toolResultForModel(snapshot, tool.invocationId)
     }
     let body: JsonValue = result
+    if (result.kind === 'not-started' && intent.route === 'work-ask') {
+      const events = snapshot.history.at(-1)!.events.filter(item => item.kind === 'known')
+      const question = events.find(item => item.stored.type === workQuestionRequestedEvent.type
+        && sameWorkflowValue(workQuestionRequestedEvent.decode(item.payload).action, action.payload.action))
+      const rejected = events.find(item => item.stored.type === workInteractionResolvedEvent.type
+        && workInteractionResolvedEvent.decode(item.payload).request === question?.stored.eventId)
+      const resolution = rejected === undefined ? undefined : workInteractionResolvedEvent.decode(rejected.payload)
+      if (resolution?.outcome === 'blocked') body = { ...result, cycle: resolution.cycle }
+    }
     if (result.kind === 'outbox') {
       const accepted = snapshot.history.at(-1)?.events.find(item => item.stored.eventId === result.accepted)
       if (accepted?.kind !== 'known') return invalidAgent('history-outbox-missing')

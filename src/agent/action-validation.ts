@@ -14,7 +14,7 @@ import { validateWorkActionResult } from '../workflow/actions.js'
 /** Durable success must prove the exact command and permitted task association. */
 export function validateAgentActionSource(state: AgentProjectionState, event: CommittedSessionEvent<AgentActionSettled>, intent: AgentActionIntent | null) {
   const result = event.payload.result
-  if (result.kind === 'protocol-accepted' && intent?.route === 'work-progress') {
+  if ((result.kind === 'protocol-accepted' || result.kind === 'wait') && intent?.route.startsWith('work-')) {
     validateWorkActionResult(state, event, intent); return
   }
   if (result.kind === 'protocol-accepted' || result.kind === 'wait' && (result.descriptor.kind === 'delegation' || result.descriptor.kind === 'parent-answer')) {

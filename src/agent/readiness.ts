@@ -1,5 +1,6 @@
 import type { AgentRunSelection } from './contract.js'
 import { subagentMessageDefinitions } from '../subagent/messages.js'
+import { workflowQuestionMessage, workflowAnswerMessage } from '../workflow/interaction-events.js'
 import type { MessageCatalog } from '../communication/message-catalog.js'
 import { projectCommunicationFacts } from '../communication/projection.js'
 import type { SessionSnapshot } from '../session/types.js'
@@ -44,7 +45,8 @@ export function inspectAgentReadiness(
   const sources = new Map(snapshot.history.at(-1)?.events.flatMap(event => event.kind === 'known'
     ? [[event.stored.eventId, event] as const] : []) ?? [])
   const controls = new Map(state.controls.map(control => [control.requested.stored.eventId, control]))
-  const support = [...(state.spec?.payload.messages ?? []), ...(state.spec?.payload.protocolVersion !== 1 ? subagentMessageDefinitions : [])]
+  const support = [...(state.spec?.payload.messages ?? []), ...(state.spec?.payload.protocolVersion !== 1 ? subagentMessageDefinitions : []),
+    ...(state.spec?.payload.protocolVersion === 3 ? [workflowQuestionMessage, workflowAnswerMessage] : [])]
     .filter(item => catalog.resolve(item.type, item.payloadVersion) !== undefined)
   const pendingControls = state.controls.filter(item => item.settled === null && item.supersededBy === null
     && ['cancel-work', 'expire-work'].includes(item.requested.payload.kind)).length
@@ -70,7 +72,7 @@ export function inspectAgentReadiness(
     capacityBlocked = true
   }
   const unsupportedInputs = state.inputs.filter(input => input.status === 'queued' && input.message !== null
-    && (input.protocol === undefined && !state.spec?.payload.messages.some(kind => kind.type === input.message!.type && kind.payloadVersion === input.message!.payloadVersion)
+    && (input.protocol === undefined && input.workMessage === undefined && !state.spec?.payload.messages.some(kind => kind.type === input.message!.type && kind.payloadVersion === input.message!.payloadVersion)
       || catalog.resolve(input.message.type, input.message.payloadVersion) === undefined)).length
   const reviewRequiredInputs = state.inputs.filter(input => input.status === 'review-required').length
   const nextWakeAt = [...state.waits.flatMap(wait => wait.settled === null && wait.created.payload.result.kind === 'wait'

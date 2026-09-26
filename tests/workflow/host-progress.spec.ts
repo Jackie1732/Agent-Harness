@@ -10,11 +10,10 @@ import { workProtocolRecordedEvent } from '../../src/workflow/protocol.js'
 import { ScriptedModelProvider } from '../../src/model/providers/scripted.js'
 import type { ModelFrame } from '../../src/model/contract.js'
 import { FileSessionBackend } from '../../src/session/file-backend.js'
-import { MemorySessionBackend } from '../../src/session/memory-backend.js'
 import { SessionRepository } from '../../src/session/repository.js'
-import { parseSessionId, sessionLogPosition } from '../../src/session/ids.js'
+import { parseSessionId } from '../../src/session/ids.js'
 import { projectAgentSession } from '../../src/agent/projection.js'
-import { recoverAgentSession } from '../../src/agent/recovery.js'
+import { recoverWorkPrefix } from './prefix-fixture.js'
 import { runnableWorkflowHost } from './host-fixture.js'
 
 it.each(['progress', 'quota', 'oversized', 'budget'] as const)('routes %s through the work root and its reserved mailbox', async kind => {
@@ -73,23 +72,11 @@ it.each(['progress', 'quota', 'oversized', 'budget'] as const)('routes %s throug
         const progress = events.find(event => event.kind === 'known' && event.stored.type === workProtocolRecordedEvent.type
           && typeof workProtocolRecordedEvent.decode(event.payload).source !== 'string')!
         for (const count of [progress.stored.sequence - 1, progress.stored.sequence, progress.stored.sequence + 1]) {
-          const backend = new MemorySessionBackend({ maxRecordBytes: spec.storage.maxRecordBytes })
-          await backend.create(snapshot.header)
-          const writer = await backend.openWriter(snapshot.header.sessionId)
-          for (const event of events.slice(0, count)) await writer.append(sessionLogPosition(event.stored.sequence - 1), event.stored)
-          await writer.dispose()
-          const recovery = new SessionRepository({ backend, catalog: hostRuntimeEventCatalog, maxLineageDepth: 4 })
-          try {
-            const stopped = await recovery.open(snapshot.header.sessionId)
-            const result = await recoverAgentSession(stopped, { predecessorStopped: true, supersedes: null,
-              maxRecoveryWrites: 16, maxJournalConflicts: 4, clock: { now: () => Date.now() } })
-            expect(result.kind).toBe('recovered')
-            const recovered = projectAgentSession(stopped.snapshot())
-            expect(recovered.actions[0]?.payload.result).toMatchObject(count < progress.stored.sequence
-              ? { kind: 'not-started' } : { kind: 'protocol-accepted', protocol: progress.stored.eventId })
-            expect(stopped.snapshot().history.at(-1)!.events.slice(count).some(event =>
-              ['model/invocation-prepared', 'communication/outbox-accepted', 'artifact/published'].includes(event.stored.type))).toBe(false)
-          } finally { await recovery.dispose() }
+          const recovered = await recoverWorkPrefix(snapshot, count, spec.storage.maxRecordBytes)
+          expect(recovered.result.kind).toBe('recovered')
+          expect(recovered.state.actions[0]?.payload.result).toMatchObject(count < progress.stored.sequence
+            ? { kind: 'not-started' } : { kind: 'protocol-accepted', protocol: progress.stored.eventId })
+          expect(recovered.added.some(event => ['model/invocation-prepared', 'communication/outbox-accepted', 'artifact/published'].includes(event.stored.type))).toBe(false)
         }
         const changed = { ...snapshot, history: snapshot.history.map(segment => ({ ...segment, events: segment.events.map(event => {
           if (event.kind !== 'known' || event.stored.type !== workProtocolRecordedEvent.type) return event

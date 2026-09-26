@@ -2,6 +2,8 @@ import { workflowControlRequestedEvent, workflowControlSettledEvent } from './co
 import { validateWorkBaseline } from './workspace.js'
 import type { WorkflowControlRequested, WorkflowControlSettled } from './control-events.js'
 import { workflowProgressMessage } from './progress.js'
+import { workflowInteractionAdmittedEvent, workflowInteractionSettledEvent } from './interaction-events.js'
+import { checkWorkflowInteraction } from './interactions.js'
 import { validateWorkflowProtocol, workflowProtocolRecordedEvent } from './protocol.js'
 import { inboxAcceptedEvent } from '../communication/session-events.js'
 import { workflowDecisionCommittedEvent, workflowProposalReceivedEvent, workflowReviewReceivedEvent } from './coordinator-events.js'
@@ -34,6 +36,8 @@ export interface WorkflowSnapshot {
   readonly reviews: readonly CommittedSessionEvent<WorkflowProposalReceived & import('../foundation/json.js').JsonObject>[]
   readonly decisions: readonly CommittedSessionEvent<WorkflowDecisionCommitted & import('../foundation/json.js').JsonObject>[]
   readonly progress: readonly { readonly inbox: SessionEventId; readonly value: ReturnType<typeof workflowProgressMessage.decode> }[]
+  readonly interactions: readonly { readonly admitted: CommittedSessionEvent<ReturnType<typeof workflowInteractionAdmittedEvent.decode>>;
+    readonly settled: CommittedSessionEvent<ReturnType<typeof workflowInteractionSettledEvent.decode>> | null }[]
   readonly upstream: readonly { readonly nodeKey: string; readonly state: WorkflowUpstreamState }[]
   readonly reservedBudget: AgentBudget
 }
@@ -56,6 +60,7 @@ export function projectWorkflowSession(snapshot: SessionSnapshot): WorkflowSnaps
   const reviews: WorkflowSnapshot['reviews'][number][] = []
   const decisions: WorkflowSnapshot['decisions'][number][] = []
   const progress: WorkflowSnapshot['progress'][number][] = []
+  const interactions: { admitted: WorkflowSnapshot['interactions'][number]['admitted']; settled: WorkflowSnapshot['interactions'][number]['settled'] }[] = []
   const upstream = new Map<string, WorkflowUpstreamState>()
   const sources = new Map<SessionEventId, CommittedSessionEvent>()
   let reservedBudget: AgentBudget = emptyAgentBudget
@@ -178,6 +183,19 @@ export function projectWorkflowSession(snapshot: SessionSnapshot): WorkflowSnaps
       control.settled = { ...record, payload }
       desired = control.requested.payload.kind === 'resume' ? 'running' : 'paused'
     }
+    if (record.stored.type === workflowInteractionAdmittedEvent.type) {
+      const value = workflowInteractionAdmittedEvent.decode(record.payload)
+      if (definition === null || record.stored.payloadVersion !== 1 || record.stored.ignorable === true) invalidHistory('interaction-before-definition')
+      const blocked = checkWorkflowInteraction({ definition, assignments, decisions, interactions }, value)
+      if (blocked !== undefined) invalidHistory(blocked.reason)
+      interactions.push({ admitted: { ...record, payload: value }, settled: null })
+    } else if (record.stored.type === workflowInteractionSettledEvent.type) {
+      const value = workflowInteractionSettledEvent.decode(record.payload)
+      const interaction = interactions.find(item => item.admitted.stored.eventId === value.interaction)
+      if (record.stored.payloadVersion !== 1 || interaction === undefined || interaction.settled !== null
+        || value.source.address !== interaction.admitted.payload.request.address) invalidHistory('interaction-settlement-source')
+      interaction.settled = { ...record, payload: value }
+    }
     if (record.stored.type === workflowProtocolRecordedEvent.type) validateWorkflowProtocol(sources, record)
     sources.set(record.stored.eventId, record)
   }
@@ -185,5 +203,5 @@ export function projectWorkflowSession(snapshot: SessionSnapshot): WorkflowSnaps
     ready: definition?.payload.nodes.filter(node => resolveWorkflowNode(node, upstream, definition!.payload).kind === 'ready' && !resolved.has(node.nodeKey)
       && !assignments.some(item => item.payload.nodeKey === node.nodeKey)).map(node => node.nodeKey) ?? [],
     controls: Object.freeze(controls), desired, proposals: Object.freeze(proposals), reviews: Object.freeze(reviews), decisions: Object.freeze(decisions), progress: Object.freeze(progress), upstream: Object.freeze([...upstream].map(([nodeKey, state]) => Object.freeze({ nodeKey, state }))),
-    resolved: Object.freeze([...resolved.values()]), assignments: Object.freeze(assignments), reservedBudget })
+    interactions: Object.freeze(interactions), resolved: Object.freeze([...resolved.values()]), assignments: Object.freeze(assignments), reservedBudget })
 }

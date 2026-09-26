@@ -1,4 +1,7 @@
 import { WorkflowError } from '../workflow/errors.js'
+import { SessionWorkActions } from '../workflow/actions.js'
+import { admitWorkQuestion, nextWorkInteractionSettlement } from './workflow-interactions.js'
+import { nextWorkQuestionDecline } from '../workflow/question-decline.js'
 import { randomUUID } from 'node:crypto'
 import { SerialGate } from '../foundation/serial-gate.js'
 import type { Clock } from '../foundation/clock.js'
@@ -51,7 +54,7 @@ export class HostWorkflows {
   async restore(): Promise<void> {
     for (const entry of this.#entries.values()) for (const assignment of projectWorkflowSession(entry.slot.session.snapshot()).assignments) {
       const member = assignmentMember(this.slots, assignment.payload)
-      if (workflowAssignmentClosed(entry.slot.session, member.session, assignment.stored.eventId)) { this.#retired.add(assignment.stored.eventId); continue }
+      if (workflowAssignmentClosed(entry.slot.session, member.session, assignment.stored.eventId, this.slots.map(slot => slot.session))) { this.#retired.add(assignment.stored.eventId); continue }
       await entry.admission.restore({ kind: 'known', stored: assignment.stored, payload: assignment.payload as typeof assignment.payload & import('../foundation/json.js').JsonObject }, member.session)
       this.communication.workflowChannels.bind(entry.slot.session, assignment.stored.eventId, member.session)
     }
@@ -118,13 +121,17 @@ export class HostWorkflows {
     const definition = state.definition!
     const protocol = nextWorkflowInbox(coordinator.session, coordinator.mailbox, this.clock, 'coordinator')
       ?? nextWorkflowSend(coordinator.session, coordinator.mailbox, this.clock, 'coordinator')
+      ?? nextWorkInteractionSettlement(coordinator.session, this.slots, this.clock)
     if (protocol !== undefined) return protocol
+    for (const member of this.slots.filter(member => definition.payload.roster.some(peer => peer.address === member.session.header.address))) {
+      const incoming = nextWorkflowInbox(member.session, member.mailbox, this.clock, 'member')
+        ?? nextWorkQuestionDecline(member.session, this.clock)
+        ?? nextWorkflowSend(member.session, member.mailbox, this.clock, 'member')
+      if (incoming !== undefined) return incoming
+    }
     for (const work of state.assignments) {
       if (this.#retired.has(work.stored.eventId)) continue
       const member = assignmentMember(this.slots, work.payload)
-      const incoming = nextWorkflowInbox(member.session, member.mailbox, this.clock, 'member')
-        ?? nextWorkflowSend(member.session, member.mailbox, this.clock, 'member')
-      if (incoming !== undefined) return incoming
       const agent = projectAgentSession(member.session.snapshot())
       const accepted = agent.inputs.find(input => input.work?.assignment.eventId === work.stored.eventId)
       if (accepted === undefined) continue
@@ -133,7 +140,13 @@ export class HostWorkflows {
         if (state.desired === 'running' && member.selection?.kind !== 'workflow') return async () => {
           const lease = this.#workspaces.get(work.stored.eventId) ?? await prepareWorkWorkspace(member.member, work.payload, this.workspaceAuthority, work.payload.workspaceBaseline)
           if (lease !== undefined) this.#workspaces.set(work.stored.eventId, lease)
-          const replacement = await member.executions!.replace({ kind: 'workflow', assignment: accepted.work!.assignment }, workExecutionTools(member.member, work.payload, lease))
+          const replacement = await member.executions!.replace({ kind: 'workflow', assignment: accepted.work!.assignment }, {
+            ...workExecutionTools(member.member, work.payload, lease), workActions: new SessionWorkActions(member.session, this.clock, {
+              admit: request => this.#gate.run(async () => this.#closed || projectWorkflowSession(coordinator.session.snapshot()).desired !== 'running'
+                ? { outcome: 'blocked' as const, reason: 'workflow-admission-paused', cycle: [] }
+                : admitWorkQuestion(coordinator.session, this.slots, this.clock, request)),
+            }),
+          })
           this.slots[this.slots.indexOf(member)] = replacement
         }
         continue
@@ -188,8 +201,8 @@ export class HostWorkflows {
           }
         }
       }
-      if (workflowAssignmentClosed(coordinator.session, member.session, work.stored.eventId)) return async () => {
-        entry.admission.retire(work.stored.eventId, member.session)
+      if (workflowAssignmentClosed(coordinator.session, member.session, work.stored.eventId, this.slots.map(slot => slot.session))) return async () => {
+        entry.admission.retire(work.stored.eventId, member.session, this.slots.map(slot => slot.session))
         this.#retired.add(work.stored.eventId)
         this.#workspaces.delete(work.stored.eventId)
         const replacement = await member.executions!.replace({ kind: 'ordinary' }, {})

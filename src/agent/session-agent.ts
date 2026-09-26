@@ -358,7 +358,7 @@ export class SessionAgent {
         const original = root === undefined ? selected : state.inputs.find(item => item.reference.eventId === state.turns.find(turn => turn.started.stored.eventId === root.id)!.started.payload.input.eventId)!
         const work = original.work
         return { ...(state.spec!.payload.protocolVersion === 3 ? { work: work === undefined ? null : { accepted: original.reference.eventId, assignment: work.assignment, allowance: work.value.effectiveAllowance, toolNames: work.value.toolNames, nativeActions: work.value.nativeActions } } : {}),
-          ...(state.spec!.payload.protocolVersion !== 1 ? { protocolSource: selected.protocol?.inbox ?? selected.work?.inbox ?? null } : {}), run: run.stored.eventId, input: selected.reference, lane: selected.lane, ordinal: state.turns.length + 1,
+          ...(state.spec!.payload.protocolVersion !== 1 ? { protocolSource: selected.protocol?.inbox ?? selected.work?.inbox ?? selected.workMessage?.inbox ?? null } : {}), run: run.stored.eventId, input: selected.reference, lane: selected.lane, ordinal: state.turns.length + 1,
           root: root?.id ?? null, predecessor: selected.reservedBy,
           deadline: root?.deadline ?? work?.value.deadline ?? (state.spec!.payload.protocolVersion !== 1 && state.spec!.payload.subagents.role === 'child' ? state.spec!.payload.subagents.deadline : null),
           observedAt: clockTimestamp(runtime.clock) }

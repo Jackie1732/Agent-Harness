@@ -102,6 +102,8 @@ export type AgentWaitDescriptor = {
   | { readonly kind: 'reply'; readonly messageId: MessageId; readonly outboxEventId: SessionEventId }
   | { readonly kind: 'delegation'; readonly delegation: SessionEventId }
   | { readonly kind: 'parent-answer'; readonly delegation: SessionEventId; readonly question: SessionEventId }
+  | { readonly kind: 'work-message'; readonly assignment: import('../workflow/types.js').WorkflowEventRef; readonly receive: 'question' | 'group' | 'either' }
+  | { readonly kind: 'work-answer'; readonly request: SessionEventId; readonly interaction: import('../workflow/types.js').WorkflowEventRef }
 )
 
 /** Commands are owned by a distinct Run and never mutate a root's obligations. */

@@ -37,11 +37,14 @@ export function classifyAgentModel(
           case 'agent_ask_parent': if (spec.protocolVersion !== 1) route = 'ask-parent'; break
           case 'agent_report_progress': if (spec.protocolVersion !== 1) route = 'progress'; break
           case 'agent_report_work_progress': if (spec.protocolVersion === 3) route = 'work-progress'; break
+          case 'agent_ask_work_peer': if (spec.protocolVersion === 3) route = 'work-ask'; break
+          case 'agent_await_work_message': if (spec.protocolVersion === 3) route = 'work-receive'; break
+          case 'agent_answer_work_peer': if (spec.protocolVersion === 3) route = 'work-answer'; break
         }
       }
     }
     return { source: { invocationId: result.invocationId, outputBlockIndex: block.index }, route }
   })
-  return { classification: 'actions', reason: actions.length > 1 && actions.some(action => ['wait', 'ask', 'spawn', 'await-subagent', 'answer-subagent', 'ask-parent'].includes(action.route))
+  return { classification: 'actions', reason: actions.length > 1 && actions.some(action => ['wait', 'ask', 'spawn', 'await-subagent', 'answer-subagent', 'ask-parent', 'work-ask', 'work-receive'].includes(action.route))
     ? 'invalid-control-batch' : 'model-actions', actions }
 }

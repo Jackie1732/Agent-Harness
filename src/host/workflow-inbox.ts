@@ -1,7 +1,9 @@
 import {  workProposalRecordedEvent , workReviewRecordedEvent } from '../workflow/result-events.js'
 import type { SessionHandle } from '../session/session-handle.js'
 import type { SessionMailbox } from '../communication/mailbox.js'
-import { projectAgentSession } from '../agent/projection.js'
+import { projectAgentSession, foldAgentSession } from '../agent/projection.js'
+import { workProtocolClassifiedEvent, workflowQuestionMessage, workflowAnswerMessage } from '../workflow/interaction-events.js'
+import { classifyWorkMessage } from '../workflow/receive.js'
 import { AgentJournal } from '../agent/journal.js'
 import type { Clock } from '../foundation/clock.js'
 import { WorkflowJournal } from '../workflow/journal.js'
@@ -37,6 +39,13 @@ export function nextWorkflowInbox(session: SessionHandle, mailbox: SessionMailbo
     } else {
       const state = projectAgentSession(session.snapshot())
       const journal = new AgentJournal(session, state.spec!.payload.limits.maxJournalConflicts, clock)
+      if (item.envelope.type === 'workflow/question' || item.envelope.type === 'workflow/answer') {
+        if (events.some(event => event.stored.type === workProtocolClassifiedEvent.type
+          && workProtocolClassifiedEvent.decode(event.payload).inbox === item.acceptedEventId)) return () => mailbox.markProcessed(item.messageId)
+        const message = item.envelope.type === 'workflow/question' ? workflowQuestionMessage.decode(item.envelope.payload) : workflowAnswerMessage.decode(item.envelope.payload)
+        if (!state.inputs.some(input => input.work !== undefined && sameWorkflowValue(input.work.assignment, message.targetAssignment))) continue
+        return () => journal.append(workProtocolClassifiedEvent, (_state, snapshot) => classifyWorkMessage(foldAgentSession(snapshot), item.acceptedEventId))
+      }
       if (item.envelope.type === 'workflow/assignment') {
         if (state.inputs.some(input => input.work?.inbox === item.acceptedEventId)) return () => mailbox.markProcessed(item.messageId)
         if (state.openRun !== null || state.roots.some(root => root.outcome === null)) continue

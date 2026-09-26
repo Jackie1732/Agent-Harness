@@ -1,5 +1,10 @@
 import { validateWorkflowProtocol, workProtocolRecordedEvent } from '../workflow/protocol.js'
 import { validateWorkActionProtocol } from '../workflow/actions.js'
+import { workProtocolClassifiedEvent, workQuestionRequestedEvent, workInteractionResolvedEvent } from '../workflow/interaction-events.js'
+import { applyWorkProtocolClassified } from '../workflow/receive.js'
+import { validateWorkInteractionEvent } from '../workflow/question-action.js'
+import { workQuestionDeclinedEvent } from '../workflow/interaction-events.js'
+import { applyWorkQuestionDeclined } from '../workflow/question-decline.js'
 import { applyWorkResultEvent } from '../workflow/result-projection.js'
 import { workResultEventDefinitions } from '../workflow/result-events.js'
 import { applyWorkAssignmentAccepted, applyWorkAssignmentSettled } from '../workflow/work-projection.js'
@@ -110,6 +115,7 @@ function applyCommunicationInput(state: AgentProjectionState, event: CommittedSe
         && record(record(item.payload).envelope).messageId === messageId)
       if (inbox !== undefined && state.spec.payload.protocolVersion === 3 && String(record(record(inbox.payload).envelope).type).startsWith('workflow/')) {
         if (![...state.inputs.values()].some(input => input.work?.inbox === inbox.stored.eventId)
+          && ![...state.sources.values()].some(item => item.stored.type === workProtocolClassifiedEvent.type && workProtocolClassifiedEvent.decode(item.payload).inbox === inbox.stored.eventId)
           && ![...state.sources.values()].some(item => item.stored.type === workAssignmentSettledEvent.type && workAssignmentSettledEvent.decode(item.payload).inbox === inbox.stored.eventId)) invalidAgent('work-receipt-before-classification')
         return
       }
@@ -145,6 +151,12 @@ export function foldAgentSession(snapshot: SessionSnapshot): AgentProjectionStat
     }
     else if (event.stored.type === workAssignmentAcceptedEvent.type) applyWorkAssignmentAccepted(state, event)
     else if (event.stored.type === workAssignmentSettledEvent.type) applyWorkAssignmentSettled(state, event)
+    else if (event.stored.type === workQuestionDeclinedEvent.type) applyWorkQuestionDeclined(state, event)
+    else if ([workQuestionRequestedEvent.type, workInteractionResolvedEvent.type, workProtocolClassifiedEvent.type].includes(event.stored.type)) {
+      if (event.stored.payloadVersion !== 1 || event.stored.ignorable) invalidAgent('work-interaction-version')
+      if (event.stored.type === workProtocolClassifiedEvent.type) applyWorkProtocolClassified(state, event)
+      else validateWorkInteractionEvent(state, event)
+    }
     else if (event.stored.type === workProtocolRecordedEvent.type) {
       validateWorkflowProtocol(state.sources, event)
       validateWorkActionProtocol(state, event)

@@ -8,6 +8,9 @@ import { CommunicationError } from './errors.js'
 import { projectCommunicationFacts } from './projection.js'
 import type { MessageSendCommand, MessageSendKey } from './send-command.js'
 import type { MessageEnvelope } from './types.js'
+import { workflowQuestionMessage, workflowAnswerMessage } from '../workflow/interaction-events.js'
+import { workQuestionSendReady } from '../workflow/receive.js'
+import { foldAgentSession } from '../agent/projection.js'
 
 /** Binds local protocol writers to a committed assignment; no Peer receives these handles. */
 export class WorkflowChannels {
@@ -36,16 +39,27 @@ export class WorkflowChannels {
     else projectAgentSession(handle.snapshot())
     validateWorkflowProtocol(new Map(events.filter(item => item.stored.sequence < event.stored.sequence)
       .map(item => [item.stored.eventId, item])), event)
+    if (command.type === workflowQuestionMessage.type) {
+      const question = workflowQuestionMessage.decode(command.payload)
+      if (!workQuestionSendReady(foldAgentSession(handle.snapshot()), question.question.eventId)) forbidden('work-question-before-wait-checkpoint')
+      const admitted = projectWorkflowSession(binding.coordinator.snapshot()).interactions.find(item => item.admitted.stored.eventId === question.interaction.eventId)
+      if (admitted === undefined || admitted.settled !== null || !sameWorkflowValue(admitted.admitted.payload.assignment, question.assignment)
+        || !sameWorkflowValue(admitted.admitted.payload.targetAssignment, question.targetAssignment)
+        || !sameWorkflowValue(admitted.admitted.payload.request, question.question)) forbidden('work-question-without-admission')
+    }
   }
 
   /** Only an exact authorized local Outbox copy may cross this reserved protocol channel. */
   authorizeReceive(envelope: MessageEnvelope): boolean {
     if (envelope.payload === null || typeof envelope.payload !== 'object' || Array.isArray(envelope.payload)) return false
-    const body = envelope.payload as { readonly assignment?: { readonly eventId?: SessionEventId } }
+    const body = envelope.payload as { readonly assignment?: { readonly eventId?: SessionEventId }; readonly targetAssignment?: { readonly eventId?: SessionEventId } }
     const binding = body.assignment?.eventId === undefined ? undefined : this.#bindings.get(body.assignment.eventId)
     if (binding === undefined) return false
     const sender = envelope.sender === binding.coordinator.header.address ? binding.coordinator : binding.member
-    const recipient = sender === binding.coordinator ? binding.member : binding.coordinator
+    const peer = body.targetAssignment?.eventId === undefined ? undefined : this.#bindings.get(body.targetAssignment.eventId)
+    if (peer !== undefined && peer.coordinator !== binding.coordinator) return false
+    const recipient = sender === binding.coordinator ? binding.member : peer?.member ?? binding.coordinator
+    if (peer !== undefined && ![workflowQuestionMessage.type, workflowAnswerMessage.type].includes(envelope.type)) return false
     if (sender.header.address !== envelope.sender || recipient.header.address !== envelope.recipient) return false
     const outgoing = projectCommunicationFacts(sender.snapshot()).outbox.find(item => item.messageId === envelope.messageId)
     return outgoing !== undefined && outgoing.sendKey !== undefined && outgoing.command !== undefined && sameWorkflowValue(outgoing.envelope, envelope)

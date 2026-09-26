@@ -17,6 +17,7 @@ import { decodeAgentContextProfile, decodeSubagentContextProfile, decodeWorkflow
 import { agentContextProfileRecordedEvent, agentContextAssemblyCommittedEvent, subagentContextProfileRecordedEvent, subagentContextAssemblyCommittedEvent, workflowContextProfileRecordedEvent, workflowContextAssemblyCommittedEvent } from './session-events.js'
 import { projectAgentSession } from '../agent/projection.js'
 import { subagentMessageDefinitions } from '../subagent/messages.js'
+import { workflowQuestionMessage, workflowAnswerMessage } from '../workflow/interaction-events.js'
 import { describeToolForModel } from '../tool/model-bridge.js'
 import { decodeMessagePayload } from '../communication/message-catalog.js'
 import { captureContextFacts } from './capture.js'
@@ -193,7 +194,8 @@ export class SessionContext {
         const item = registry.find(item => item.definition.name === name && item.status === 'active')
         return item === undefined ? [] : [{ definition: item.definition, provider: item.provider, model: describeToolForModel(item.definition) }]
       })
-      const messageKinds = state.spec.payload.protocolVersion === 1 ? state.spec.payload.messages : [...state.spec.payload.messages, ...subagentMessageDefinitions]
+      const messageKinds = state.spec.payload.protocolVersion === 1 ? state.spec.payload.messages : [...state.spec.payload.messages, ...subagentMessageDefinitions,
+        ...(state.spec.payload.protocolVersion === 3 ? [workflowQuestionMessage, workflowAnswerMessage] : [])]
       const messageSupport = messageKinds.map(kind => {
         const definition = this.#messageCatalog.resolve(kind.type, kind.payloadVersion)
         if (definition !== undefined) for (const input of state.inputs) {

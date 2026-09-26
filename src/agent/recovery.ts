@@ -136,7 +136,7 @@ export async function recoverAgentSession(session: SessionHandle, options: Agent
       const root = state.roots.find(root => root.id === request.root)!
       const response = state.inputs.find(input => input.reservedBy !== null && state.waits.some(wait => referenceKey(wait.reference) === referenceKey(input.reservedBy!) && wait.created.payload.result.kind === 'wait' && wait.created.payload.result.descriptor.root === root.id))
       await journal.append(events.agentControlSettledEvent, () => ({ control: control.requested.stored.eventId, outcome: 'completed' as const, reason: request.reason,
-        rootOutcome: root.outcome ?? (request.kind === 'expire-work' ? 'timed-out' as const : 'cancelled' as const), responseDisposition: response === undefined ? null : response.message === null || response.protocol !== undefined ? 'not-adopted' as const : 'release-peer' as const }))
+        rootOutcome: root.outcome ?? (request.kind === 'expire-work' ? 'timed-out' as const : 'cancelled' as const), responseDisposition: response === undefined ? null : response.message === null || response.protocol !== undefined || response.workMessage !== undefined ? 'not-adopted' as const : 'release-peer' as const }))
     } else {
       const input = request.kind === 'abandon-input' ? state.inputs.find(input => inputKey(input.reference) === inputKey(request.input)) : undefined
       const lost = input !== undefined && legacyAbandonLostClaim(control, input, state.turns.find(turn => turn.started.stored.eventId === input.claimedBy)?.started.stored.sequence)

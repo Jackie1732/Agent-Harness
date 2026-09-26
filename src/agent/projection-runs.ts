@@ -58,7 +58,7 @@ export function applyTurnStarted(state: AgentProjectionState, event: CommittedSe
   if (state.openTurn !== null || state.openRecovery !== null || state.closing !== null) invalidAgent('turn-not-admissible')
   const spec = requireSpec(state).payload
   const input = requireEntry(state.inputs, inputKey(payload.input), 'missing-turn-input')
-  if (spec.protocolVersion !== 1 && payload.protocolSource !== (input.protocol?.inbox ?? input.work?.inbox ?? null)) invalidAgent('turn-protocol-source')
+  if (spec.protocolVersion !== 1 && payload.protocolSource !== (input.protocol?.inbox ?? input.work?.inbox ?? input.workMessage?.inbox ?? null)) invalidAgent('turn-protocol-source')
   const inherited = payload.root === null ? input : workAcceptanceForRoot(state, payload.root)
   const work = inherited.work
   if (spec.protocolVersion === 3) {
@@ -74,7 +74,7 @@ export function applyTurnStarted(state: AgentProjectionState, event: CommittedSe
   if (input.lane !== payload.lane || payload.ordinal !== state.turns.size + 1) invalidAgent('turn-order')
   if ([...state.turns.values()].filter(turn => turn.started.payload.run === payload.run).length >= (spec.protocolVersion === 3 ? 1 : spec.limits.maxTurnsPerRun)) invalidAgent('run-turn-budget')
   if (payload.root === null) {
-    if (payload.predecessor !== null || input.status !== 'queued' || input.input?.kind === 'answer') invalidAgent('root-input-not-queued')
+    if (payload.predecessor !== null || input.status !== 'queued' || input.input?.kind === 'answer' || input.workMessage !== undefined) invalidAgent('root-input-not-queued')
     const child = spec.protocolVersion !== 1 && spec.subagents.role === 'child' ? spec.subagents : undefined
     if (child === undefined && work === undefined && (payload.deadline !== null || input.protocol !== undefined)) invalidAgent('root-deadline-must-derive-from-acceptance')
     if (child !== undefined && state.subagents.bound?.payload.requested.effectivePlan.workspace.kind !== 'none') {

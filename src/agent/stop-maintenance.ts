@@ -32,7 +32,7 @@ export function agentStopAction(session: SessionHandle, journal: AgentJournal, c
       try {
         await journal.append(events.agentControlSettledEvent, () => ({ control: control.requested.stored.eventId, outcome: 'completed' as const, reason: request.reason,
           rootOutcome: root.outcome ?? (request.kind === 'expire-work' ? 'timed-out' : 'cancelled'),
-          responseDisposition: reserved === undefined ? null : reserved.message === null || reserved.protocol !== undefined ? 'not-adopted' as const : 'release-peer' as const,
+          responseDisposition: reserved === undefined ? null : reserved.message === null || reserved.protocol !== undefined || reserved.workMessage !== undefined ? 'not-adopted' as const : 'release-peer' as const,
         }))
       } catch (cause) {
         const current = projectAgentSession(session.snapshot()).controls.find(item => item.requested.stored.eventId === control.requested.stored.eventId)

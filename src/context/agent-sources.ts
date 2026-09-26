@@ -26,9 +26,13 @@ export function agentTurnUnits(snapshot: SessionSnapshot, state: AgentSessionSna
     const input = state.inputs.find(item => inputKey(item.reference) === inputKey(turn.started.payload.input))
     if (input === undefined) invalidSource('agent-claim-source')
     const reference: ContextUnitReference = { eventId: input.reference.eventId, selector: input.reference.kind === 'user' ? 'user-input' : 'peer-message' }
-    units.push({ reference, sourceEventIds: [input.reference.eventId, turn.started.stored.eventId, ...(input.protocol === undefined ? [] : [input.protocol.inbox])], messages: [agentDataMessage(
-      input.work !== undefined ? 'workflow-task' : input.protocol === undefined ? input.message === null ? 'agent-user-input' : 'agent-peer-input' : `subagent-${input.protocol.kind}`,
-      input.reference, input.work === undefined ? input.input ?? input.message ?? snapshot.history.at(-1)!.events.find(item => item.stored.eventId === input.reference.eventId)!.stored.payload : { task: input.input!.text, assignment: input.work.assignment, inputs: input.work.value.inputs, output: input.work.value.kind === 'review' ? workReviewOutput : input.work.recipe.nodes.find(node => node.nodeKey === input.work!.value.nodeKey)!.output })] })
+    units.push({ reference, sourceEventIds: [input.reference.eventId, turn.started.stored.eventId, ...(input.protocol === undefined ? [] : [input.protocol.inbox]), ...(input.workMessage === undefined ? [] : [input.workMessage.inbox])], messages: [agentDataMessage(
+      input.work !== undefined ? 'workflow-task' : input.workMessage !== undefined ? `workflow-${input.workMessage.kind}` : input.protocol === undefined ? input.message === null ? 'agent-user-input' : 'agent-peer-input' : `subagent-${input.protocol.kind}`,
+      input.reference, input.work === undefined ? input.input ?? input.message ?? snapshot.history.at(-1)!.events.find(item => item.stored.eventId === input.reference.eventId)!.stored.payload : {
+        task: input.input!.text, assignment: input.work.assignment, inputs: input.work.value.inputs,
+        collaboration: { questionTargets: input.work.recipe.nodes.filter(node => input.work!.recipe.communication.ask.some(pair => pair.from === input.work!.value.memberKey && pair.to === node.executor)).map(node => node.nodeKey),
+          reception: 'Questions are queued until agent_await_work_message. Receive and answer inside this root; a peer waiting for another answer cannot be interrupted. Targets must already have active assignments.' },
+        output: input.work.value.kind === 'review' ? workReviewOutput : input.work.recipe.nodes.find(node => node.nodeKey === input.work!.value.nodeKey)!.output })] })
     for (const step of state.steps.filter(item => item.opened.payload.turn === turn.started.stored.eventId)) {
       const decision = step.decided
       if (decision === null) continue

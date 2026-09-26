@@ -38,12 +38,13 @@ function payloadRef(value: unknown): string | undefined {
 /** Map one Workflow envelope to its sender or recipient Assignment reservation. */
 function belongs(event: CommittedSessionEvent<WorkflowAssignment & JsonObject>, envelope: MessageEnvelope,
   address: string, direction: MailboxDirection): boolean {
-  if (!envelope.type.startsWith('workflow/') || envelope.payloadVersion !== 1 || envelope.channelId !== event.payload.channelId) return false
+  if (!envelope.type.startsWith('workflow/') || envelope.payloadVersion !== 1) return false
   const body = envelope.payload
   if (body === null || typeof body !== 'object' || Array.isArray(body)) return false
   const payload = body as JsonObject
   const source = payloadRef(payload.assignment)
   const target = payloadRef(payload.targetAssignment)
+  if (target === undefined && envelope.channelId !== event.payload.channelId) return false
   const id = event.stored.eventId
   if (direction === 'outbox') return envelope.sender === address && source === id
   return envelope.recipient === address && (target ?? source) === id
@@ -57,8 +58,8 @@ export class WorkflowAdmission {
 
   constructor(readonly coordinator: SessionHandle, readonly capacity: ProtocolCapacity, readonly clock: Clock) {}
 
-  retire(assignment: SessionEventId, member: SessionHandle): void {
-    if (!workflowAssignmentClosed(this.coordinator, member, assignment)) blocked('assignment-still-open')
+  retire(assignment: SessionEventId, member: SessionHandle, peers: readonly SessionHandle[] = []): void {
+    if (!workflowAssignmentClosed(this.coordinator, member, assignment, peers)) blocked('assignment-still-open')
     const lease = this.#leases.get(assignment)
     if (lease !== undefined) { this.capacity.retire(lease); this.#leases.delete(assignment) }
   }
