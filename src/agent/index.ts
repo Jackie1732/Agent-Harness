@@ -14,7 +14,7 @@ export { agentNativeToolDefinitions } from './native-actions.js'
 export { SessionAgentKey, createSessionAgentComponent } from './component.js'
 export type { SessionAgentComponentOptions } from './component.js'
 export type { SessionAgentOptions } from './runtime-contract.js'
-export type { AgentSpec, AgentSpecV1, AgentSpecV2, ChildAgentSpecTemplate, AgentLimits, AgentBudget, AgentActionReference, AgentInputReference, AgentInput, AgentInputStatus,
+export type { AgentSpec, AgentSpecV1, AgentSpecV2, AgentSpecV3, AgentWorkflowRole, ChildAgentSpecTemplate, AgentLimits, AgentBudget, AgentActionReference, AgentInputReference, AgentInput, AgentInputStatus,
   AgentInputDisposition, AgentNativeActionName, AgentRootOutcome, AgentRunStop, AgentTurnOutcome, AgentSendCommand, AgentWaitDescriptor } from './contract.js'
 export type { AgentSessionSnapshot, AgentRootState, AgentRunState, AgentTurnState, AgentStepState, AgentInputState, AgentWaitState, AgentControlState } from './state.js'
 export * from './session-events.js'

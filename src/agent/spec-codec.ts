@@ -2,8 +2,8 @@ import { parseChannelId } from '../communication/ids.js'
 import { decodeProviderDescriptor } from '../model/submission.js'
 import { snapshotModelRequest } from '../model/request.js'
 import { parseSessionAddress } from '../session/ids.js'
-import type { AgentLimits, AgentSpec, AgentSpecV1, AgentSpecV2, ChildAgentSpecTemplate } from './contract.js'
-import { agentNativeActionNames, subagentNativeActionNames } from './contract.js'
+import type { AgentLimits, AgentSpec, AgentSpecV1, AgentSpecV2, AgentSpecV3, ChildAgentSpecTemplate } from './contract.js'
+import { agentNativeActionNames, subagentNativeActionNames, workflowNativeActionNames } from './contract.js'
 import { decodeAgentSubagentRole } from '../subagent/role-codec.js'
 import { decodeAgentBudget } from './budget.js'
 import { AgentError } from './errors.js'
@@ -40,17 +40,23 @@ export function decodeSubagentAgentSpec(value: unknown): AgentSpecV2 {
   return decodeSpec(value, 2) as AgentSpecV2
 }
 
+/** Version 3 fixes separate ordinary and Workflow capability selections. */
+export function decodeWorkflowAgentSpec(value: unknown): AgentSpecV3 {
+  return decodeSpec(value, 3) as AgentSpecV3
+}
+
 /** Installation-local references are bound only after their actual predecessor commits. */
 export function decodeChildAgentSpecTemplate(value: unknown): ChildAgentSpecTemplate {
   return decodeSpec(value, 2, true) as ChildAgentSpecTemplate
 }
 
-function decodeSpec(value: unknown, version: 1 | 2, childTemplate = false): AgentSpec | ChildAgentSpecTemplate {
+function decodeSpec(value: unknown, version: 1 | 2 | 3, childTemplate = false): AgentSpec | AgentSpecV3 | ChildAgentSpecTemplate {
   try {
     const input = record(agentJson(value))
     exact(input, ['protocolVersion', 'label', 'responsibility', 'nonGoals', ...(!childTemplate ? ['profileEventId'] : []), 'target', 'toolNames',
       'nativeActions', 'peers', 'messages', 'context', 'budget', 'rootDurationMs', 'maxDirectSendCommandsPerSession',
-      'limits', 'errorFeedback', 'usagePolicy', 'businessRefusalHandled', ...(version === 2 && !childTemplate ? ['subagents'] : [])])
+      'limits', 'errorFeedback', 'usagePolicy', 'businessRefusalHandled', ...(version !== 1 && !childTemplate ? ['subagents'] : []),
+      ...(version === 3 ? ['workflow'] : [])])
     integer(input.protocolVersion, version, version); text(input.label, 128); text(input.responsibility, 8192)
     array(input.nonGoals, 64).forEach(item => text(item, 1024))
     if (!childTemplate) eventId(input.profileEventId)
@@ -61,7 +67,8 @@ function decodeSpec(value: unknown, version: 1 | 2, childTemplate = false): Agen
     const { provider: _provider, ...controls } = target
     snapshotModelRequest({ ...controls, instructions: [], messages: [{ role: 'user', content: [{ kind: 'text', text: 'validate' }] }], tools: [] })
     const tools = names(input.toolNames)
-    const reservedNames: readonly string[] = [...agentNativeActionNames, ...subagentNativeActionNames]
+    const reservedNames: readonly string[] = [...agentNativeActionNames, ...subagentNativeActionNames,
+      ...(version === 3 ? workflowNativeActionNames : [])]
     if (tools.some(name => !/^[A-Za-z0-9_-]+$/.test(name) || (version === 1 ? agentNativeActionNames as readonly string[] : reservedNames).includes(name))) throw new Error('tool-name')
     const actions = names(input.nativeActions)
     actions.forEach(name => choice(name, version === 1 ? agentNativeActionNames : reservedNames))
@@ -99,7 +106,7 @@ function decodeSpec(value: unknown, version: 1 | 2, childTemplate = false): Agen
     flag(input.businessRefusalHandled)
     if (childTemplate) {
       if (peers.length !== 0 || actions.some(name => name !== 'agent_ask_parent' && name !== 'agent_report_progress')) throw new Error('child-template-authority')
-    } else if (version === 2) {
+    } else if (version !== 1) {
       const role = decodeAgentSubagentRole(input.subagents)
       const parentActions: readonly string[] = ['agent_spawn_subagent', 'agent_await_subagent', 'agent_answer_subagent']
       const childActions: readonly string[] = ['agent_ask_parent', 'agent_report_progress']
@@ -107,6 +114,21 @@ function decodeSpec(value: unknown, version: 1 | 2, childTemplate = false): Agen
         || childActions.includes(name) && role.role !== 'child')) throw new Error('role-action')
       if (role.role === 'child' && (peers.length !== 0 || actions.some(name => agentNativeActionNames.includes(name as typeof agentNativeActionNames[number])))) throw new Error('child-direct-action')
     }
-    return input as AgentSpec
+    if (version === 3) {
+      const workflow = record(input.workflow)
+      if (workflow.kind === 'disabled') exact(workflow, ['kind'])
+      else {
+        exact(workflow, ['kind', 'toolNames', 'nativeActions', 'resourceIds'])
+        choice(workflow.kind, ['participant'])
+        const workTools = names(workflow.toolNames)
+        if (workTools.some(name => !/^[A-Za-z0-9_-]+$/.test(name) || reservedNames.includes(name))) throw new Error('workflow-tool-name')
+        const workActions = names(workflow.nativeActions)
+        workActions.forEach(name => choice(name, [...workflowNativeActionNames, 'agent_ask_user', 'agent_spawn_subagent']))
+        if (names(workflow.resourceIds).some(name => !/^[A-Za-z][A-Za-z0-9_.-]*$/.test(name))) throw new Error('workflow-resource-id')
+        const role = decodeAgentSubagentRole(input.subagents).role
+        if (role === 'child' || workActions.includes('agent_spawn_subagent') && role !== 'parent') throw new Error('workflow-subagent-role')
+      }
+    }
+    return input as AgentSpec | AgentSpecV3
   } catch { throw new AgentError('AGENT_SPEC_INVALID', 'invalid-agent-spec') }
 }
