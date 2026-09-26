@@ -21,8 +21,10 @@ it('shares a read gate with static parents, hashes exact input files and retains
   const f = await fixture()
   try {
     const read = await f.authority.staticAccess(f.root).borrow('out/existing.txt', 'read')
+    expect(f.authority.available(f.request)).toBe(false)
     expect(() => f.authority.reserve(f.request, 4, 4096)).toThrow('workspace-busy')
     read.release(true); await Promise.resolve(); await Promise.resolve()
+    expect(f.authority.available(f.request)).toBe(true)
     const lease = f.authority.reserve(f.request, 4, 4096)
     expect((await lease.baseline()).entries).toMatchObject([{ path: 'in/source.txt', byteLength: 6 }])
     const borrowed = await lease.borrow('out/new.txt', 'write')
@@ -30,6 +32,7 @@ it('shares a read gate with static parents, hashes exact input files and retains
     await Promise.resolve(); expect(closed).toBe(false)
     expect(() => f.authority.reserve(f.request, 4, 4096)).toThrow('workspace-busy')
     borrowed.release(true); await close
+    expect(f.authority.available(f.request)).toBe(true)
     const next = f.authority.reserve(f.request, 4, 4096); await next.dispose()
   } finally { await f.authority.dispose(); await rm(f.root, { recursive: true, force: true }) }
 })

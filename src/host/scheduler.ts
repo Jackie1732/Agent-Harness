@@ -10,6 +10,8 @@ import type { HostAssembly } from './assembly.js'
 import { HostSchedulerTasks } from './scheduler-tasks.js'
 import { projectCommunicationFacts } from '../communication/projection.js'
 import { isModelAdmissionPending } from './model-admission.js'
+import { HostBusinessLane } from './business-lane.js'
+import type { HostBusinessCursor } from './business-lane.js'
 
 type HostSchedulerLane = 'delivery' | 'maintenance' | 'business'
 
@@ -17,6 +19,7 @@ export interface HostSchedulerState {
   cursor: number
   protocolNext: boolean
   protocolCursor: number
+  readonly business: HostBusinessCursor
   readonly laneOrder: HostSchedulerLane[]
   readonly memberCursors: Record<HostSchedulerLane, number>
   readonly faults: Set<string>
@@ -76,7 +79,7 @@ export async function runHostScheduler(input: HostSchedulerInput): Promise<HostR
   let deliveryAttempts = 0
   let scannedWithoutWork = 0
   let stoppedBy: HostRunReport['stoppedBy'] = 'quiescent'
-  let business: Promise<void> | undefined
+  const business = new HostBusinessLane(input.assembly.workflows?.scheduling.maxBusinessConcurrency ?? 1, state.business)
   let maintenance: Promise<void> | undefined
   let delivery: Promise<void> | undefined
   const busy = new Set<HostSlot>()
@@ -110,6 +113,9 @@ export async function runHostScheduler(input: HostSchedulerInput): Promise<HostR
       const selected = Array.from({ length: count }, (_, offset) => slots[(state.cursor + offset) % slots.length]!)
       state.cursor = (state.cursor + count) % slots.length
       let admitted = false
+      business.retainExclusive(key => slots.some(slot => slot.member.agentKey === key && !input.paused.has(key) && !input.offline.has(key)
+        && !state.faults.has(key) && slot.agent.status === 'accepting' && state.observations.read(slot, input.clock.now()).readiness.canRun
+        && (input.assembly.workflows?.businessAllowed(slot) ?? true)))
       for (const slot of selected) {
         if (input.offline.has(slot.member.agentKey)) continue
         // Expiry continues while an accepted run drains, even after its admission budget is exhausted.
@@ -126,11 +132,11 @@ export async function runHostScheduler(input: HostSchedulerInput): Promise<HostR
       const lanes = [...state.laneOrder]
       for (const lane of lanes) {
         if (stopping || batches >= scheduling.maxBatchesPerRun) break
-        if (lane === 'delivery' && delivery !== undefined || lane === 'maintenance' && maintenance !== undefined || lane === 'business' && business !== undefined) continue
+        if (lane === 'delivery' && delivery !== undefined || lane === 'maintenance' && maintenance !== undefined) continue
         if (lane === 'maintenance' && state.protocolNext) {
-          const domains = state.protocolCursor % 2 === 0 ? [input.assembly.subagents, business === undefined ? input.assembly.workflows : undefined]
-            : [business === undefined ? input.assembly.workflows : undefined, input.assembly.subagents]
-          const operation = domains[0]?.nextAction() ?? domains[1]?.nextAction()
+          const subagent = () => input.assembly.subagents?.nextAction()
+          const workflow = () => input.assembly.workflows?.nextAction(busy)
+          const operation = state.protocolCursor % 2 === 0 ? subagent() ?? workflow() : workflow() ?? subagent()
           if (operation !== undefined) {
             batches++; maintenanceRuns++; admitted = true; state.protocolNext = false; state.protocolCursor++
             maintenance = accepted.run(() => Promise.resolve().then(operation).then(() => undefined).finally(() => { maintenance = undefined }))
@@ -179,8 +185,9 @@ export async function runHostScheduler(input: HostSchedulerInput): Promise<HostR
             } else {
               if (input.paused.has(slot.member.agentKey) || !readiness.canRun
                 || input.assembly.workflows !== undefined && (maintenance !== undefined || !input.assembly.workflows.businessAllowed(execution))) continue
+              if (!business.admit(slot.member.agentKey, input.assembly.workflows?.businessMode(execution) ?? 'exclusive')) continue
               batches++; businessRuns++; admitted = true
-              business = accepted.run(() => work(execution, () => execution.agent.start({ signal: accepted.signal, ...(execution.selection === undefined ? {} : { selection: execution.selection }) })).finally(() => { business = undefined }))
+              accepted.run(() => work(execution, () => execution.agent.start({ signal: accepted.signal, ...(execution.selection === undefined ? {} : { selection: execution.selection }) })).finally(() => business.release(slot.member.agentKey)))
             }
           }
           state.memberCursors[lane] = (page.indexOf(slot) + 1) % page.length
@@ -195,7 +202,7 @@ export async function runHostScheduler(input: HostSchedulerInput): Promise<HostR
       if (tasks.length === 0) {
         if (stopping || batches >= scheduling.maxBatchesPerRun) break
         scannedWithoutWork = admitted ? 0 : scannedWithoutWork + count
-        if (scannedWithoutWork >= slots.length + input.assembly.protocolSlots.length && (input.assembly.subagents?.nextAction() === undefined) && input.assembly.workflows?.nextAction() === undefined) break
+        if (scannedWithoutWork >= slots.length + input.assembly.protocolSlots.length && (input.assembly.subagents?.nextAction() === undefined) && input.assembly.workflows?.nextAction(busy) === undefined) break
         continue
       }
       scannedWithoutWork = 0

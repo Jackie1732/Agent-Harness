@@ -145,7 +145,8 @@ export async function assembleHost(spec: ResolvedHostSpec, clock: Clock,
           resume: (memberKey, root) => {
             if (subagents?.resume(memberKey, root).some(item => item.status === 'blocked')) throw new HostError('HOST_RECOVERY_REQUIRED', 'workflow-child-resume-blocked')
           },
-        }), value => release(value))
+        }, { maxBusinessConcurrency: spec.schemaVersion === 3 && spec.workflows.kind === 'enabled' ? spec.workflows.maxBusinessConcurrency : 1,
+          customModelProvider: bindings.createModelProvider !== undefined }), value => release(value))
       await workflowDomain?.restore()
       const server = https !== undefined && tls !== undefined ? await effect.apply('HTTPS listener',
         () => createHttpsMessageServer({ directory, host: https.listen.host,

@@ -57,7 +57,7 @@ class HostRuntime {
   readonly #observers = new HostObservationTasks()
   readonly #scheduler: HostSchedulerState = {
     cursor: 0, protocolNext: true, protocolCursor: 0, laneOrder: ['delivery', 'maintenance', 'business'], memberCursors: { delivery: 0, maintenance: 0, business: 0 },
-    faults: new Set(), stalled: new Map(), cooldowns: new Map(), observations: new HostObservations(),
+    business: {}, faults: new Set(), stalled: new Map(), cooldowns: new Map(), observations: new HostObservations(),
   }
   #status: HostStatus = 'ready'
   #activity: Promise<HostRunReport> | undefined

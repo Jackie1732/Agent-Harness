@@ -38,8 +38,11 @@ import { nextWorkflowStop, nextWorkStop } from './workflow-stop.js'
 import { workStopReceivedEvent, workStopSettledEvent } from '../workflow/stop-events.js'
 import { workAssignmentSettledEvent } from '../workflow/settlement-events.js'
 import { nextWorkflowAttempt } from '../workflow/retry.js'
+import { isModelAdmissionPending } from './model-admission.js'
+import type { HostBusinessMode } from './business-lane.js'
+import { SubagentError } from '../subagent/errors.js'
 
-interface WorkflowEntry { readonly slot: HostProtocolSlot; readonly journal: WorkflowJournal; readonly admission: WorkflowAdmission }
+interface WorkflowEntry { readonly slot: HostProtocolSlot; readonly journal: WorkflowJournal; readonly admission: WorkflowAdmission; protocolCursor: number }
 
 /** Host-owned admission and one-transition maintenance across independent coordinator Sessions. */
 export class HostWorkflows {
@@ -50,10 +53,11 @@ export class HostWorkflows {
   readonly #workspaces = new Map<string, WorkspaceLease>()
   #cursor = 0
   constructor(readonly slots: HostSlot[], coordinators: readonly HostProtocolSlot[], readonly communication: CommunicationService,
-    readonly clock: Clock, readonly owner: string, readonly workspaceAuthority: WorkspaceAuthority, readonly children: WorkflowChildren) {
+    readonly clock: Clock, readonly owner: string, readonly workspaceAuthority: WorkspaceAuthority, readonly children: WorkflowChildren,
+    readonly scheduling: { readonly maxBusinessConcurrency: 1 | 2; readonly customModelProvider: boolean } = { maxBusinessConcurrency: 1, customModelProvider: false }) {
     for (const slot of coordinators) {
       const definition = projectWorkflowSession(slot.session.snapshot()).definition!
-      this.#entries.set(definition.payload.workflowKey, { slot, journal: new WorkflowJournal(slot.session, clock),
+      this.#entries.set(definition.payload.workflowKey, { slot, journal: new WorkflowJournal(slot.session, clock), protocolCursor: 0,
         admission: new WorkflowAdmission(slot.session, communication.protocolCapacity, clock) })
     }
     this.controls = new HostWorkflowControls({ entries: this.#entries, slots, gate: this.#gate, clock, owner, retired: this.#retired, children })
@@ -91,43 +95,44 @@ export class HostWorkflows {
     return slot.selection?.kind !== 'workflow'
   }
 
-  nextAction(): (() => Promise<unknown>) | undefined {
+  /** Installed work tools and provider ownership determine eligibility for the shared read lane. */
+  businessMode(slot: HostSlot): HostBusinessMode {
+    const selection = slot.selection
+    if (selection?.kind !== 'workflow' || this.scheduling.customModelProvider) return 'exclusive'
+    for (const entry of this.#entries.values()) {
+      const work = projectWorkflowSession(entry.slot.session.snapshot()).assignments.find(item => item.stored.eventId === selection.assignment.eventId)?.payload
+      if (work !== undefined) return work.workspace.kind !== 'exclusive-write' && !work.nativeActions.includes('agent_spawn_subagent')
+        && work.toolNames.every(name => name === 'read_text') ? 'readonly' : 'exclusive'
+    }
+    return 'exclusive'
+  }
+
+  nextAction(busy: ReadonlySet<HostSlot> = new Set()): (() => Promise<unknown>) | undefined {
     if (this.controls.closed) return undefined
     const entries = [...this.#entries]
     for (let offset = 0; offset < entries.length; offset++) {
       const index = (this.#cursor + offset) % entries.length
       const [, entry] = entries[index]!
-      const action = this.#next(entry)
+      const action = this.#next(entry, busy)
       if (action !== undefined) return () => this.#gate.run(async () => {
         this.#cursor = (index + 1) % entries.length
-        return this.controls.closed ? undefined : this.#next(entry)?.()
+        return this.controls.closed ? undefined : this.#next(entry, busy)?.()
       })
     }
     return undefined
   }
 
-  #next(entry: WorkflowEntry): (() => Promise<unknown>) | undefined {
+  #next(entry: WorkflowEntry, busy: ReadonlySet<HostSlot>): (() => Promise<unknown>) | undefined {
     const coordinator = entry.slot
     const state = projectWorkflowSession(coordinator.session.snapshot())
     const definition = state.definition!
     const enabled = this.controls.active(definition.payload.workflowKey) && !this.controls.stopping(definition.payload.workflowKey) && state.desired === 'running' && state.stop === null && state.terminal === null
-    const protocol = nextWorkflowStop(coordinator, this.slots, this.clock, this.children.notify, this.#retired, state)
-      ?? nextWorkflowInbox(coordinator.session, coordinator.mailbox, this.clock, 'coordinator')
-      ?? nextWorkflowSend(coordinator.session, coordinator.mailbox, this.clock, 'coordinator')
-      ?? nextWorkInteractionSettlement(coordinator.session, this.slots, this.clock)
+    const protocol = this.#nextProtocol(entry)
     if (protocol !== undefined) return protocol
-    for (const member of this.slots.filter(member => definition.payload.roster.some(peer => peer.address === member.session.header.address))) {
-      const incoming = nextWorkflowInbox(member.session, member.mailbox, this.clock, 'member')
-        ?? nextWorkStop(member, this.clock, this.children.notify)
-        ?? nextWorkQuestionDecline(member.session, this.clock)
-        ?? nextWorkInputDisposition(member.session, this.clock)
-        ?? nextWorkGroupAction(member.session, member.mailbox, this.clock)
-        ?? nextWorkflowSend(member.session, member.mailbox, this.clock, 'member')
-      if (incoming !== undefined) return incoming
-    }
     for (const work of state.assignments) {
       if (this.#retired.has(work.stored.eventId)) continue
       const member = assignmentMember(this.slots, work.payload)
+      if (busy.has(member) || isModelAdmissionPending(member.session.snapshot())) continue
       const settled = member.session.snapshot().history.at(-1)!.events.some(item => item.kind === 'known' && [workAssignmentSettledEvent, workStopSettledEvent].some(definition =>
         item.stored.type === definition.type && definition.decode(item.payload).assignment.eventId === work.stored.eventId))
       if (settled && workflowAssignmentClosed(coordinator.session, member.session, work.stored.eventId, this.slots.map(slot => slot.session))) return async () => {
@@ -142,6 +147,7 @@ export class HostWorkflows {
       if (accepted === undefined) continue
       const root = agent.roots.find(root => root.source.kind === 'workflow' && root.source.assignment.eventId === work.stored.eventId)
       if (root?.outcome == null) {
+        if (!this.#workspaces.has(work.stored.eventId) && work.payload.workspace.kind !== 'none' && !this.workspaceAuthority.available(work.payload.workspace)) continue
         if (enabled && member.selection?.kind !== 'workflow') return async () => {
           const lease = this.#workspaces.get(work.stored.eventId) ?? await prepareWorkWorkspace(member.member, work.payload, this.workspaceAuthority, work.payload.workspaceBaseline)
           if (lease !== undefined) this.#workspaces.set(work.stored.eventId, lease)
@@ -193,7 +199,7 @@ export class HostWorkflows {
         for (const reviewer of work.payload.acceptance.reviewers) {
           if (state.assignments.some(item => item.payload.kind === 'review' && item.payload.reviewOf.assignment.eventId === work.stored.eventId && item.payload.memberKey === reviewer)) continue
           const peer = this.slots.find(slot => slot.member.agentKey === reviewer)
-          if (peer === undefined || !workflowMemberIdle(peer) || !this.businessAllowed(peer)) continue
+          if (peer === undefined || busy.has(peer) || !workflowMemberIdle(peer) || !this.businessAllowed(peer)) continue
           return async () => {
             const authority = assertWorkflowParticipant(definition.payload, peer, reviewer)
             const actions = work.payload.reviewerReservations.find(item => item.memberKey === reviewer)!.grant.waits > 0
@@ -225,7 +231,9 @@ export class HostWorkflows {
         () => ({ definition: definition.stored.eventId, nodeKey: node.nodeKey, outcome: resolution.kind as 'skipped' | 'failed', reason: resolution.reason }))
       if (resolution.kind !== 'ready') continue
       const member = this.slots.find(slot => slot.member.agentKey === node.executor)
-      if (member === undefined || !workflowMemberIdle(member) || !this.businessAllowed(member)) continue
+      if (member === undefined || busy.has(member) || !workflowMemberIdle(member) || !this.businessAllowed(member)) continue
+      const workspace = node.attempts[number - 1]!.workspace
+      if (workspace.kind !== 'none' && !this.workspaceAuthority.available(workspace)) continue
       return async () => {
         assertWorkflowMember(definition.payload, member, node.nodeKey, number)
         await member.executions!.release()
@@ -241,9 +249,33 @@ export class HostWorkflows {
             await lease?.dispose()
             this.slots[this.slots.indexOf(member)] = await member.executions!.replace({ kind: 'ordinary' }, {})
           }
+          if (cause instanceof SubagentError && cause.code === 'SUBAGENT_STATE_INVALID' && cause.message === 'workspace-busy') return
           throw cause
         }
       }
+    }
+    return undefined
+  }
+
+  #nextProtocol(entry: WorkflowEntry): (() => Promise<unknown>) | undefined {
+    const coordinator = entry.slot, state = projectWorkflowSession(coordinator.session.snapshot())
+    const members = this.slots.filter(member => state.definition!.payload.roster.some(peer => peer.address === member.session.header.address))
+    const candidates = [() => members.some(member => isModelAdmissionPending(member.session.snapshot())) ? undefined
+      : nextWorkflowStop(coordinator, this.slots, this.clock, this.children.notify, this.#retired, state)
+        ?? nextWorkflowInbox(coordinator.session, coordinator.mailbox, this.clock, 'coordinator')
+        ?? nextWorkflowSend(coordinator.session, coordinator.mailbox, this.clock, 'coordinator')
+        ?? nextWorkInteractionSettlement(coordinator.session, this.slots, this.clock),
+    ...members.map(member => () => isModelAdmissionPending(member.session.snapshot()) ? undefined
+      : nextWorkflowInbox(member.session, member.mailbox, this.clock, 'member')
+        ?? nextWorkStop(member, this.clock, this.children.notify)
+        ?? nextWorkQuestionDecline(member.session, this.clock)
+        ?? nextWorkInputDisposition(member.session, this.clock)
+        ?? nextWorkGroupAction(member.session, member.mailbox, this.clock)
+        ?? nextWorkflowSend(member.session, member.mailbox, this.clock, 'member'))]
+    for (let offset = 0; offset < candidates.length; offset++) {
+      const index = (entry.protocolCursor + offset) % candidates.length
+      const action = candidates[index]!()
+      if (action !== undefined) return () => { entry.protocolCursor = (index + 1) % candidates.length; return action() }
     }
     return undefined
   }

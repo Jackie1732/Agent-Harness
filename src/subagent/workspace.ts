@@ -37,6 +37,15 @@ export class WorkspaceAuthority {
   }
   private constructor(readonly clock: Clock) {}
   reserve(request: Exclude<DelegationWorkspace, { kind: 'none' }>, maxFiles: number, maxBytes: number): WorkspaceLease {
+    const { resource, ranges } = this.#resolve(request, maxFiles)
+    return this.#reserve(resource.root, request, ranges, Math.min(maxBytes, resource.config.maxBaselineBytes))
+  }
+  /** Availability is observational; reserve rechecks it before publishing the lease. */
+  available(request: Exclude<DelegationWorkspace, { kind: 'none' }>): boolean {
+    const { ranges } = this.#resolve(request, Infinity)
+    return !this.#closing && !this.#conflicts(ranges)
+  }
+  #resolve(request: Exclude<DelegationWorkspace, { kind: 'none' }>, maxFiles: number) {
     const resource = this.#resources.get(request.resourceId)
     if (resource === undefined || request.kind === 'exclusive-write' && resource.config.mode !== 'exclusive-write') invalid('workspace-resource-authority')
     const permitted = (path: string, prefixes: readonly string[]) => prefixes.some(prefix => path === prefix || path.startsWith(prefix + '/'))
@@ -44,7 +53,7 @@ export class WorkspaceAuthority {
     if (request.readFiles.length > Math.min(maxFiles, resource.config.maxBaselineFiles)) invalid('workspace-baseline-files')
     const ranges: Range[] = [...request.readFiles.map(path => ({ path: join(resource.root.path, path), mode: 'read' as const })),
       ...request.writePrefixes.map(path => ({ path: join(resource.root.path, path), mode: 'write' as const }))]
-    return this.#reserve(resource.root, request, ranges, Math.min(maxBytes, resource.config.maxBaselineBytes))
+    return { resource, ranges }
   }
   /** A static Provider obtains a short read reservation only when its execution starts. */
   staticAccess(rootPath: string): WorkspaceAccess {
@@ -60,10 +69,13 @@ export class WorkspaceAuthority {
   }
   #reserve(root: Root, request: Exclude<DelegationWorkspace, { kind: 'none' }>, ranges: readonly Range[], maximum: number): WorkspaceLease {
     if (this.#closing) invalid('workspace-authority-closed')
-    if ([...this.#held].some(lease => lease.ranges.some(held => ranges.some(next => (held.mode === 'write' || next.mode === 'write')
-      && (contains(held.path, next.path) || contains(next.path, held.path)))))) invalid('workspace-busy')
+    if (this.#conflicts(ranges)) invalid('workspace-busy')
     const lease = new WorkspaceLease(root, request, ranges, maximum, this.clock, value => this.#held.delete(value))
     this.#held.add(lease); return lease
+  }
+  #conflicts(ranges: readonly Range[]): boolean {
+    return [...this.#held].some(lease => lease.ranges.some(held => ranges.some(next => (held.mode === 'write' || next.mode === 'write')
+      && (contains(held.path, next.path) || contains(next.path, held.path)))))
   }
   async dispose(): Promise<void> {
     this.#closing = true
