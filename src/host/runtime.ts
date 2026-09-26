@@ -23,6 +23,8 @@ import type { HostTimer } from './timer.js'
 import { observeHostMembers } from './report.js'
 import { HostObservations } from './observation.js'
 import { exportHostConfig } from './config-export.js'
+import { workflowReportSummary } from './workflow-report.js'
+import type { WorkflowReportSummary } from './workflow-report.js'
 import { workflowObserver } from './workflow-observer.js'
 import type { WorkflowRetryRequest } from '../workflow/control-events.js'
 
@@ -65,6 +67,7 @@ class HostRuntime {
   #shutdownTask: Promise<void> | undefined
   #workflowCancellation: Promise<void> | undefined
   #shutdownMode: HostShutdownMode | undefined
+  #releasing = false
   #stoppingAt: number | undefined
 
   constructor(spec: ResolvedHostSpec, clock: Clock, timer: HostTimer, assembly: HostAssembly) {
@@ -92,6 +95,9 @@ class HostRuntime {
         if ([...hostTasks.getStore() ?? []].some(token => this.#tokens.has(token))) throw new HostError('HOST_REENTRANT_WAIT', 'parent-cannot-wait-on-own-business-lane')
       }, track: task => this.#track(task), wake: () => this.#assembly.wakeup.notify() })
   }
+  /** Count every configured Workflow before truncating the displayed reports. */
+  workflowReport(): WorkflowReportSummary { return this.#assembly.workflows?.reportAll(this.#spec.scheduling.maxReportEntries) ?? workflowReportSummary([], this.#spec.scheduling.maxReportEntries) }
+
   /** Bind operator access to one fixed coordinator without starting its driver. */
   workflow(workflowKey: string) {
     this.#assertReady()
@@ -182,7 +188,7 @@ class HostRuntime {
         await observers
         await this.#assembly.subagents?.releaseParent(agentKey)
         if (mode === 'drain') await slot.agent.wait()
-        await slot.dispose()
+        await this.#assembly.release(agentKey)
       }
     })
     this.#mailboxTransitions.set(agentKey, task)
@@ -221,7 +227,7 @@ class HostRuntime {
       ...observeHostMembers(this.#assembly.slots.filter(slot => this.#assembly.local.some(item => item.session === slot.session)), this.#paused, this.#scheduler.faults, this.#clock, this.#spec.scheduling.maxReportEntries, this.#scheduler.observations, this.#assembly, this.#routingPaused) })
   }
 
-  /** Close admission synchronously; repeated calls join one task and drain can upgrade to cancel. */
+  /** Close admission synchronously; drain can upgrade to cancel until resource release begins. */
   shutdown(options: { readonly mode?: HostShutdownMode } = {}): Promise<void> {
     const mode = options.mode ?? this.#spec.shutdown.mode
     if (this.#shutdownTask === undefined) {
@@ -236,7 +242,8 @@ class HostRuntime {
       this.#shutdownTask = hostTasks.run(closingChain, () => Promise.resolve().then(async () => {
         await Promise.allSettled([...this.#operations, ...(this.#activity === undefined ? [] : [this.#activity])])
         try {
-          const cancellation = await Promise.allSettled([this.#workflowCancellation])
+          const cancellation = this.#workflowCancellation === undefined ? [] : await Promise.allSettled([this.#workflowCancellation])
+          this.#releasing = true
           await this.#assembly.dispose()
           if (cancellation[0]?.status === 'rejected') throw cancellation[0].reason
           this.#status = 'stopped'
@@ -252,7 +259,7 @@ class HostRuntime {
       this.#assembly.server?.stopAdmission()
       this.#wake.abort()
     }
-    if (mode === 'cancel' && this.#status === 'stopping') {
+    if (mode === 'cancel' && this.#status === 'stopping' && !this.#releasing) {
       this.#shutdownMode = 'cancel'
       if (this.#assembly.workflows !== undefined) this.#workflowCancellation ??= this.#track(() => this.#assembly.workflows!.controls.cancelOwned())
       this.#lifetime.abort()

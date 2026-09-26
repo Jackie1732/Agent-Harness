@@ -234,6 +234,19 @@ export async function adoptEmptyHostMember(
   }
 }
 
+/** Bind only the operator-confirmed empty coordinator Header under exclusive storage ownership. */
+export async function adoptEmptyHostWorkflow(spec: ResolvedHostSpec, workflowKey: string,
+  options: { readonly predecessorStopped: true; readonly expectedHeader: SessionHeader; readonly clock?: Clock }): Promise<HostWorkflowInitializationResult> {
+  const entry = spec.schemaVersion === 3 && spec.workflows.kind === 'enabled' ? spec.workflows.definitions.find(item => item.definition.workflowKey === workflowKey) : undefined
+  if (entry === undefined) throw new HostError('HOST_CONFIG_INVALID', 'adopt-empty-workflow-invalid')
+  preflightWorkflowInitialization(spec.hostKey, entry.definition, spec.storage.maxRecordBytes)
+  const lock = await acquireHostStorageLock(spec.storage.root, spec.hostKey)
+  const repository = new SessionRepository({ backend: new FileSessionBackend({ root: lock.root, maxRecordBytes: spec.storage.maxRecordBytes }),
+    catalog: hostRuntimeEventCatalog, maxLineageDepth: spec.storage.maxLineageDepth, clock: options.clock ?? systemClock })
+  try { return await initializeWorkflowCoordinator(repository, spec.hostKey, entry.definition, spec.storage.maxRecordBytes, true, options) }
+  finally { await repository.dispose(); await lock.dispose() }
+}
+
 async function adoptMember(repository: SessionRepository, hostKey: string, member: ResolvedHostLocalMember,
   hostVersion: 1 | 2 | 3): Promise<HostInitializationResult> {
   const session = await repository.open(parseSessionId(member.sessionId))

@@ -19,12 +19,15 @@ import type { ResolvedHostSpec } from './config.js'
 import type { RecoverHostOptions } from './recovery.js'
 import { validateHostMemberSession } from './binding.js'
 import { HostError } from './errors.js'
+import type { SessionSnapshot } from '../session/types.js'
+import { recoverWorkflowRelations, workflowRecoveryDomains } from './workflow-recovery.js'
 
 /** One recovery invocation shares its write budget across all parent, child and lower-domain journals. */
-export async function recoverHostDelegations(spec: ResolvedHostSpec, repository: SessionRepository, options: RecoverHostOptions, clock: Clock) {
+export async function recoverHostDelegations(spec: ResolvedHostSpec, repository: SessionRepository, options: RecoverHostOptions, clock: Clock, inventory?: readonly SessionSnapshot[]) {
   if (options.predecessorStopped !== true || !Number.isSafeInteger(options.maxRecoveryWrites) || options.maxRecoveryWrites < 0) throw new HostError('HOST_CONFIG_INVALID', 'delegation-recovery-options')
-  const discovered = await discoverHostDelegations(spec, repository)
-  const maximum = spec.schemaVersion !== 1 && spec.subagents.kind === 'enabled' ? Math.min(options.maxRecoveryWrites, spec.subagents.limits.maxRecoveryWrites) : options.maxRecoveryWrites
+  const discovered = await discoverHostDelegations(spec, repository, inventory)
+  const maximum = Math.min(options.maxRecoveryWrites, spec.schemaVersion !== 1 && spec.subagents.kind === 'enabled' ? spec.subagents.limits.maxRecoveryWrites : Infinity,
+    ...(spec.schemaVersion === 3 && spec.workflows.kind === 'enabled' ? spec.workflows.definitions.map(item => item.definition.limits.maxRecoveryWrites) : []))
   const opened = new Map<string, SessionHandle>()
   const through = new Map<string, number>()
   const open = async (id: string) => {
@@ -48,10 +51,16 @@ export async function recoverHostDelegations(spec: ResolvedHostSpec, repository:
     else pending.add('resume-installation:' + relation.requested.stored.eventId)
   }
   const expectedDomains = new Map<string, SessionEventId | null>()
+  const agentKey = (session: SessionHandle) => spec.schemaVersion === 3 ? `agent:${session.header.address}` : session.header.sessionId + ':agent'
+  const delegationKey = (session: SessionHandle, delegation: SessionEventId) => spec.schemaVersion === 3 ? `subagent:${session.header.address}:${delegation}` : session.header.sessionId + ':subagent:' + delegation
+  if (spec.schemaVersion === 3 && spec.workflows.kind === 'enabled') {
+    for (const entry of spec.workflows.definitions) await open(entry.sessionId)
+    for (const [key, previous] of workflowRecoveryDomains([...opened.values()].map(session => session.snapshot()))) expectedDomains.set(key, previous)
+  }
   for (const { session, delegations } of participants.values()) {
     const state = projectAgentSession(session.snapshot())
-    expectedDomains.set(session.header.sessionId + ':agent', state.openRecovery)
-    for (const delegation of delegations) expectedDomains.set(session.header.sessionId + ':subagent:' + delegation,
+    expectedDomains.set(agentKey(session), state.openRecovery)
+    for (const delegation of delegations) expectedDomains.set(delegationKey(session, delegation),
       state.subagents.recoveries.find(item => item.requested.payload.delegation === delegation && item.settled === null && item.supersededBy === null)?.requested.stored.eventId ?? null)
   }
   for (const [key, expected] of expectedDomains) if ((options.domainSupersedes?.[key] ?? null) !== expected) throw new HostError('HOST_RECOVERY_REQUIRED', 'recovery-supersedes-mismatch')
@@ -61,13 +70,12 @@ export async function recoverHostDelegations(spec: ResolvedHostSpec, repository:
     const needsAgent = state.openRun !== null || state.openRecovery !== null || state.controls.some(item => item.settled === null && item.supersededBy === null)
     const needsLower = hasPendingLowerExecution(session.snapshot().history.at(-1)!.events.filter(item => item.kind === 'known'))
     let ownersReady = true
-    const agentKey = session.header.sessionId + ':agent'
-    const expectedAgent = options.domainSupersedes?.[agentKey] ?? null
+    const expectedAgent = options.domainSupersedes?.[agentKey(session)] ?? null
     if (expectedAgent !== state.openRecovery) throw new HostError('HOST_RECOVERY_REQUIRED', 'agent-recovery-supersedes-mismatch')
     const owners: { id: SessionEventId; delegation: SessionEventId; journal: AgentJournal; start: number }[] = []
     for (const delegation of delegations) {
       const previous = state.subagents.recoveries.filter(item => item.requested.payload.delegation === delegation && item.settled === null && item.supersededBy === null).at(-1)
-      if ((options.domainSupersedes?.[session.header.sessionId + ':subagent:' + delegation] ?? null) !== (previous?.requested.stored.eventId ?? null)) throw new HostError('HOST_RECOVERY_REQUIRED', 'delegation-recovery-supersedes-mismatch')
+      if ((options.domainSupersedes?.[delegationKey(session, delegation)] ?? null) !== (previous?.requested.stored.eventId ?? null)) throw new HostError('HOST_RECOVERY_REQUIRED', 'delegation-recovery-supersedes-mismatch')
       if (!needsAgent && !needsLower && previous === undefined && state.subagents.resources.filter(item => item.opened.payload.delegation === delegation).every(item => effectiveResourceRelease(item, state.subagents.recoveries)?.outcome === 'released')) continue
       if (maximum - writes() < 2 + owners.length) { pending.add('recovery-write-budget'); ownersReady = false; break }
       const request = state.subagents.delegations.find(item => item.stored.eventId === delegation)?.payload ?? state.subagents.bound!.payload.requested
@@ -98,9 +106,20 @@ export async function recoverHostDelegations(spec: ResolvedHostSpec, repository:
         evidence: state.subagents.resources.filter(item => item.opened.payload.delegation === owner.delegation && item.opened.stored.sequence <= owner.start).map(item => item.opened.stored.eventId) }))
     }
   }
+  if (spec.schemaVersion === 3) await recoverWorkflowRelations(opened, () => maximum - writes(), pending, options, clock)
+  const domains = new Map(spec.schemaVersion === 3 ? workflowRecoveryDomains([...opened.values()].map(session => session.snapshot())) : [])
+  for (const { session, delegations } of participants.values()) {
+    const state = projectAgentSession(session.snapshot())
+    domains.set(agentKey(session), state.openRecovery)
+    if (state.openRun !== null || state.openRecovery !== null || state.controls.some(item => item.settled === null && item.supersededBy === null)
+      || hasPendingLowerExecution(session.snapshot().history.at(-1)!.events.filter(item => item.kind === 'known'))) pending.add(agentKey(session))
+    for (const delegation of delegations) domains.set(delegationKey(session, delegation), state.subagents.recoveries.find(item => item.requested.payload.delegation === delegation
+      && item.settled === null && item.supersededBy === null)?.requested.stored.eventId ?? null)
+  }
   return Object.freeze([...participants].map(([sessionId, { session }]) => ({ agentKey: spec.members.find(item => item.sessionId === sessionId)?.agentKey ?? 'child.' + sessionId,
     sessionId, result: { kind: pending.size === 0 ? 'delegation-recovered' as const : 'delegation-recovery-pending' as const,
       totalWrites: writes(), maxRecoveryWrites: maximum, pending: [...pending],
+      ...(spec.schemaVersion === 3 ? { domainSupersedes: Object.fromEntries(domains) } : {}),
       openAgentRecovery: projectAgentSession(session.snapshot()).openRecovery,
       openDelegationRecoveries: projectAgentSession(session.snapshot()).subagents.recoveries.filter(item => item.settled === null && item.supersededBy === null).map(item => item.requested.stored.eventId) } })))
 }

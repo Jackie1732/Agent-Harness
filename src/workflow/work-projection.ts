@@ -12,6 +12,7 @@ import type { CommittedSessionEvent } from '../session/types.js'
 import { formatSessionAddress } from '../session/ids.js'
 import { sameWorkflowValue, workAssignmentAcceptedEvent } from './work-binding.js'
 import { workStopReceivedEvent, workStopSettledEvent } from './stop-events.js'
+import { settleWorkRootInputs } from './input-disposition.js'
 
 /** CP-ACCEPT creates one local input from the receiver's exact protocol Inbox. */
 export function applyWorkAssignmentAccepted(state: AgentProjectionState, event: CommittedSessionEvent): void {
@@ -73,6 +74,5 @@ export function applyWorkAssignmentSettled(state: AgentProjectionState, event: C
     || !sameWorkflowValue(decision.value.value, workProposalRecordedEvent.decode(proposal.payload).value)
     || !sameWorkflowValue(decision.value.artifacts, workProposalRecordedEvent.decode(proposal.payload).artifacts)
     || [...state.sources.values()].some(item => item.stored.type === event.stored.type && workAssignmentSettledEvent.decode(item.payload).accepted === p.accepted)) invalidAgent('work-settlement-source')
-  const input = state.inputs.get(inputKey({ kind: 'workflow', eventId: p.accepted }))!
-  if (input.status === 'review-required') { input.status = 'not-adopted'; input.reason = 'workflow-decided' }
+  settleWorkRootInputs(state, workProposalRecordedEvent.decode(proposal.payload).root, 'workflow-decided')
 }

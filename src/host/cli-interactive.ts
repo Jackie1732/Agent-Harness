@@ -9,16 +9,19 @@ import { openHost } from './runtime.js'
 import type { HostRunReport } from './runtime-types.js'
 
 /** Exit classification uses complete counts, never only the visible member prefix. */
-export function hostExitCode(report: HostRunReport): number {
+export function hostExitCode(report: HostRunReport, workflows?: ReturnType<import('./runtime.js').AtomicHost['workflowReport']>): number {
   const counts = report.counts
+  if (workflows !== undefined && (workflows.failed > 0 || workflows.unknown > 0 || workflows.blocked > 0)) return 11
   if (report.blockedRoutes.length > 0 || counts.blockedMembers > 0 || counts.reviewRequiredInputs > 0 || counts.unsupportedInputs > 0 || counts.failedRoots > 0) return 11
+  if ((workflows?.exhausted ?? 0) > 0 || report.stoppedBy === 'batch-budget' && (workflows?.runnable ?? 0) > 0) return 12
   if (counts.exhaustedRoots > 0 || report.stoppedBy === 'batch-budget' && (counts.runnableInputs > 0 || counts.pendingMaintenance > 0 || counts.pendingOutbox > 0)) return 12
+  if ((workflows?.unclosed ?? 0) > 0) return 10
   if (counts.pendingInputs > 0 || counts.pendingWaits > 0 || counts.pendingOutbox > 0 || counts.pendingMaintenance > 0) return 10
   return 0
 }
 
 /** Own CLI streams, bounded command admission and signal subscriptions around one Host. */
-export async function interactive(spec: ResolvedHostSpec, mode: 'run' | 'serve', io: HostCliIo, protectedRoots: readonly string[], protocolVersion: 1 | 2 = 1): Promise<number> {
+export async function interactive(spec: ResolvedHostSpec, mode: 'run' | 'serve', io: HostCliIo, protectedRoots: readonly string[], protocolVersion: 1 | 2 | 3 = 1): Promise<number> {
   const refs = new Set(spec.members.filter(isLocalHostMember).flatMap(member => member.model.kind === 'scripted-fixed' ? [] : [member.model.credentialRef]))
   if (spec.schemaVersion !== 1 && spec.subagents.kind === 'enabled') for (const template of spec.subagents.templates) if (template.model.kind !== 'scripted-fixed') refs.add(template.model.credentialRef)
   const credentials = Object.fromEntries([...refs].flatMap(reference => process.env[reference] === undefined ? [] : [[reference, process.env[reference]!]]))
@@ -54,7 +57,7 @@ export async function interactive(spec: ResolvedHostSpec, mode: 'run' | 'serve',
             await write({ protocolVersion, kind: 'error', error: hostDiagnostic(new HostError('HOST_PROTOCOL_INVALID', 'duplicate-request-id')) })
             continue
           }
-          const control = ['cancel', 'shutdown', 'pause', 'resume', 'report'].includes(envelope.kind)
+          const control = ['cancel', 'shutdown', 'pause', 'resume', 'report', 'workflow-pause', 'workflow-resume', 'workflow-cancel', 'workflow-retry', 'workflow-report', 'workflow-artifact'].includes(envelope.kind)
           const lane = control ? controls : pending
           const maximum = control ? spec.cli.maxPendingControls : spec.cli.maxQueuedCommands
           while (lane.size >= maximum) await Promise.race(lane)
@@ -86,8 +89,8 @@ export async function interactive(spec: ResolvedHostSpec, mode: 'run' | 'serve',
     let result = 0
     if (mode === 'run' && host.status === 'ready') {
       const report = await host.run()
-      await write({ protocolVersion, kind: 'complete', report: protocolVersion === 1 ? report : { ...report, subagents: host.delegationReport() } })
-      result = hostExitCode(report)
+      await write({ protocolVersion, kind: 'complete', report: protocolVersion === 1 ? report : { ...report, subagents: host.delegationReport(), ...(protocolVersion === 3 ? { workflows: host.workflowReport() } : {}) } })
+      result = hostExitCode(report, protocolVersion === 3 ? host.workflowReport() : undefined)
       if (host.delegationReport().blocked > 0 || host.delegationReport().failed > 0) result = 11
       else if (host.delegationReport().unresolved > 0 && result === 0) result = 10
       await host.shutdown({ mode: 'drain' })

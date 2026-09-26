@@ -38,7 +38,7 @@ function histories(frames) {
   return sessions
 }
 
-async function seed(root, frames) {
+export async function seedFileCommits(root, frames) {
   for (const [id, session] of histories(frames)) {
     const directory = join(root, 'sessions', id)
     await mkdir(directory, { recursive: true })
@@ -118,14 +118,14 @@ export async function verifySubagentPrefixes(label, config, frames, clock, start
     for (let cut = start; cut <= frames.length; cut++) {
       const prefix = frames.slice(0, cut)
       const directory = join(root, 'business-' + cut)
-      await seed(directory, prefix)
+      await seedFileCommits(directory, prefix)
       let added
       try { added = await reconcile(directory, config, prefix, clock) }
       catch (cause) { throw new Error(label + ' business cut ' + cut + ': ' + JSON.stringify(frames[cut - 1]), { cause }) }
       for (let interrupted = 1; interrupted < added.length; interrupted++) {
         const recovered = [...prefix, ...added.slice(0, interrupted)]
         const again = join(root, 'recovery-' + cut + '-' + interrupted)
-        await seed(again, recovered)
+        await seedFileCommits(again, recovered)
         try { await reconcile(again, config, recovered, clock) }
         catch (cause) { throw new Error(label + ' recovery cut ' + cut + '/' + interrupted, { cause }) }
         recoveryPrefixes++

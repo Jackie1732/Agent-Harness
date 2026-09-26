@@ -6,7 +6,7 @@ import { isLocalHostMember, parseHostConfig, planHostConfig, resolveHostConfig }
 import { exportHostConfig } from './config-export.js'
 import type { HostConfig } from './config.js'
 import { HostError } from './errors.js'
-import { initializeHost, adoptEmptyHostMember } from './initialization.js'
+import { initializeHost, adoptEmptyHostMember, adoptEmptyHostWorkflow } from './initialization.js'
 import { decodeSessionHeader } from '../session/codec.js'
 import { parseSessionEventId } from '../session/ids.js'
 import type { SessionEventId } from '../session/ids.js'
@@ -30,7 +30,7 @@ Commands:
   plan       allocate null local Session and Channel identities
   init       initialize configured Sessions; add --resume for an interrupted prefix
   adopt      explicitly bind existing Sessions configured with mode=adopt
-  adopt-empty claim an exact empty Header with --agent-key, --expected-header and --predecessor-stopped
+  adopt-empty claim an exact empty Header with --agent-key or --workflow-key, --expected-header and --predecessor-stopped
   inspect    read persisted Host and Agent facts without loading Providers
   recover    reconcile interrupted facts after explicit predecessor-stop confirmation
   run        accept JSONL commands from stdin and perform a finite drain at EOF
@@ -82,7 +82,7 @@ export async function runHostCli(args: readonly string[], io: HostCliIo): Promis
   if (command === 'help' || command === '--help' || command === '-h') { io.stdout.write(help); return 0 }
   if (command === 'version' || command === '--version' || command === '-v') { io.stdout.write(`${HARNESS_VERSION}\n`); return 0 }
   const booleanFlags = new Set(['--resume', '--predecessor-stopped'])
-  const valueFlags = new Set(['--config', '--expected-token', '--max-recovery-writes', '--max-journal-conflicts', '--supersedes', '--agent-key', '--expected-header', '--protocol-version'])
+  const valueFlags = new Set(['--config', '--expected-token', '--max-recovery-writes', '--max-journal-conflicts', '--supersedes', '--agent-key', '--expected-header', '--protocol-version', '--workflow-key'])
   const seen = new Set<string>()
   for (let index = 1; index < args.length; index++) {
     const key = args[index]!
@@ -91,8 +91,8 @@ export async function runHostCli(args: readonly string[], io: HostCliIo): Promis
     if (valueFlags.has(key)) { option(args, key); index++ }
   }
   const version = option(args, '--protocol-version') ?? '1'
-  if (version !== '1' && version !== '2') throw new HostError('HOST_CONFIG_INVALID', 'protocol-version')
-  const protocolVersion = Number(version) as 1 | 2
+  if (version !== '1' && version !== '2' && version !== '3') throw new HostError('HOST_CONFIG_INVALID', 'protocol-version')
+  const protocolVersion = Number(version) as 1 | 2 | 3
   const write = async (value: unknown) => {
     const writer = createJsonLineWriter(io.stdout, 3 * 1024 * 1024)
     try { await writer(value) } finally { await writer.dispose() }
@@ -113,6 +113,7 @@ export async function runHostCli(args: readonly string[], io: HostCliIo): Promis
     await write(planHostConfig(config))
     return 0
   }
+  if (config.schemaVersion === 3 && protocolVersion !== 3) throw new HostError('HOST_PROTOCOL_INVALID', 'host-v3-requires-protocol-v3')
   const spec = resolveHostConfig(config)
   switch (command) {
     case 'check':
@@ -126,14 +127,15 @@ export async function runHostCli(args: readonly string[], io: HostCliIo): Promis
       await write({ protocolVersion, kind: 'adopted', results: await initializeHost(spec) })
       return 0
     case 'adopt-empty': {
-      const agentKey = option(args, '--agent-key'); const header = option(args, '--expected-header')
-      if (!flag(args, '--predecessor-stopped') || agentKey === undefined || header === undefined || Buffer.byteLength(header) > 16384) throw new HostError('HOST_CONFIG_INVALID', 'adopt-empty-arguments')
-      await write({ protocolVersion, kind: 'adopted-empty', result: await adoptEmptyHostMember(spec, agentKey,
+      const agentKey = option(args, '--agent-key'), workflowKey = option(args, '--workflow-key'); const header = option(args, '--expected-header')
+      if (!flag(args, '--predecessor-stopped') || (agentKey === undefined) === (workflowKey === undefined) || header === undefined || Buffer.byteLength(header) > 16384) throw new HostError('HOST_CONFIG_INVALID', 'adopt-empty-arguments')
+      await write({ protocolVersion, kind: 'adopted-empty', result: workflowKey === undefined ? await adoptEmptyHostMember(spec, agentKey!,
+        { predecessorStopped: true, expectedHeader: decodeSessionHeader(Buffer.from(header)) }) : await adoptEmptyHostWorkflow(spec, workflowKey,
         { predecessorStopped: true, expectedHeader: decodeSessionHeader(Buffer.from(header)) }) })
       return 0
     }
     case 'inspect':
-      await write({ protocolVersion, kind: 'inspection', ...(protocolVersion === 1 ? { members: await inspectHost(spec) } : await inspectHost(spec, { protocolVersion: 2 })) })
+      await write({ protocolVersion, kind: 'inspection', ...(protocolVersion === 1 ? { members: await inspectHost(spec) } : protocolVersion === 2 ? await inspectHost(spec, { protocolVersion: 2 }) : await inspectHost(spec, { protocolVersion: 3 })) })
       return 0
     case 'recover': {
       if (!flag(args, '--predecessor-stopped')) throw new HostError('HOST_CONFIG_INVALID', 'recovery-confirmation-required')
@@ -143,17 +145,18 @@ export async function runHostCli(args: readonly string[], io: HostCliIo): Promis
         const parsed = parseBoundedJson(raw, { maxBytes: 65536, maxDepth: 2, maxNodes: 1024 })
         if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) throw new HostError('HOST_CONFIG_INVALID', 'supersedes-object')
         for (const [key, value] of Object.entries(parsed)) {
-          if ((protocolVersion === 1 ? !spec.members.some(member => member.kind === 'local' && member.agentKey === key) : !/^[0-9a-f-]{36}:(agent|subagent:ah-event:[0-9a-f-]{36}:\d+)$/.test(key))
+          if ((protocolVersion === 1 ? !spec.members.some(member => member.kind === 'local' && member.agentKey === key) : protocolVersion === 3 ? key.length > 256 : !/^[0-9a-f-]{36}:(agent|subagent:ah-event:[0-9a-f-]{36}:\d+)$/.test(key))
             || value !== null && typeof value !== 'string') throw new HostError('HOST_CONFIG_INVALID', 'supersedes-entry')
           if (value !== null) parseSessionEventId(value as string)
           supersedes[key] = value as SessionEventId | null
         }
       }
-      await write({ protocolVersion, kind: 'recovery', members: await recoverHost(spec, { predecessorStopped: true,
+      const members = await recoverHost(spec, { predecessorStopped: true,
         ...(protocolVersion === 1 ? { supersedes } : { domainSupersedes: supersedes }),
         maxRecoveryWrites: integerOption(args, '--max-recovery-writes'),
-        maxJournalConflicts: integerOption(args, '--max-journal-conflicts') }) })
-      return 0
+        maxJournalConflicts: integerOption(args, '--max-journal-conflicts') })
+      await write({ protocolVersion, kind: 'recovery', members })
+      return protocolVersion === 3 && members.some(item => 'pending' in item.result && item.result.pending.length > 0) ? 10 : 0
     }
     case 'run':
     case 'serve':

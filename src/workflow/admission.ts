@@ -60,7 +60,7 @@ export class WorkflowAdmission {
   constructor(readonly coordinator: SessionHandle, readonly capacity: ProtocolCapacity, readonly clock: Clock) {}
 
   retire(assignment: SessionEventId, member: SessionHandle, peers: readonly SessionHandle[] = []): void {
-    if (!workflowAssignmentClosed(this.coordinator, member, assignment, peers)) blocked('assignment-still-open')
+    if (!workflowAssignmentClosed(this.coordinator.snapshot(), member.snapshot(), assignment, peers.map(peer => peer.snapshot()))) blocked('assignment-still-open')
     const lease = this.#leases.get(assignment)
     if (lease !== undefined) { this.capacity.retire(lease); this.#leases.delete(assignment) }
   }

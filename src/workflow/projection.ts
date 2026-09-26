@@ -28,8 +28,12 @@ import { retryAfterFailure, retryRequestFailure, nextWorkflowAttempt, workflowRe
 import type { WorkflowRetry } from './retry.js'
 import { sameWorkflowValue as same } from './work-binding.js'
 import { validateProductionAssignment } from './assignment-projection.js'
+import { workflowRecoveryRequestedEvent, workflowRecoverySettledEvent } from './recovery-events.js'
+import { projectCoordinatorRecoveries } from './recovery-projection.js'
+import type { CoordinatorRecoveryState } from './recovery-projection.js'
 
 export interface WorkflowSnapshot extends WorkflowStopState {
+  readonly recoveries: readonly Readonly<CoordinatorRecoveryState>[]
   readonly definition: { readonly stored: StoredSessionEvent; readonly payload: WorkflowDefinition } | null
   readonly ready: readonly string[]
   readonly resolved: readonly WorkflowNodeResolved[]
@@ -66,6 +70,7 @@ export function projectWorkflowSession(snapshot: SessionSnapshot): WorkflowSnaps
   const interactions: { admitted: WorkflowSnapshot['interactions'][number]['admitted']; settled: WorkflowSnapshot['interactions'][number]['settled'] }[] = []
   const upstream = new Map<string, WorkflowUpstreamState>()
   const sources = new Map<SessionEventId, CommittedSessionEvent>()
+  let recoveries: CoordinatorRecoveryState[] = []
   let reservedBudget: AgentBudget = emptyAgentBudget
   const recordFailure = (work: WorkflowSnapshot['assignments'][number], event: CommittedSessionEvent, outcome: 'failed' | 'cancelled' | 'result-unknown'): void => {
     if (assignments.filter(item => item.payload.kind === 'production' && item.payload.nodeKey === work.payload.nodeKey).at(-1)?.stored.eventId !== work.stored.eventId) return
@@ -78,6 +83,13 @@ export function projectWorkflowSession(snapshot: SessionSnapshot): WorkflowSnaps
   }
   for (const record of local.events) {
     if (record.kind !== 'known') continue
+    if ([workflowRecoveryRequestedEvent.type, workflowRecoverySettledEvent.type].includes(record.stored.type)) {
+      if (record.stored.payloadVersion !== 1 || record.stored.ignorable || definition === null) invalidHistory('coordinator-recovery-version')
+      recoveries = projectCoordinatorRecoveries([...sources.values(), record])
+      if (recoveries.at(-1)!.requested.payload.definition !== definition.stored.eventId) invalidHistory('coordinator-recovery-definition')
+      if (record.stored.type === workflowRecoverySettledEvent.type && controls.some(item => item.settled === null)) invalidHistory('coordinator-recovery-control-open')
+    } else if (recoveries.some(item => item.settled === null && item.supersededBy === null)
+      && [workflowAssignmentCommittedEvent.type, workflowInteractionAdmittedEvent.type, workflowDecisionCommittedEvent.type].includes(record.stored.type)) invalidHistory('coordinator-recovery-open')
     if (record.stored.type === inboxAcceptedEvent.type) {
       const envelope = inboxAcceptedEvent.decode(record.payload).envelope
       if (envelope.type === workflowProgressMessage.type) {
@@ -227,7 +239,7 @@ export function projectWorkflowSession(snapshot: SessionSnapshot): WorkflowSnaps
     if (record.stored.type === workflowProtocolRecordedEvent.type) validateWorkflowProtocol(sources, record)
     sources.set(record.stored.eventId, record)
   }
-  return Object.freeze({ definition, ...lifecycle, retries: Object.freeze(retries.map(item => Object.freeze(item))),
+  return Object.freeze({ definition, recoveries: Object.freeze(recoveries.map(item => Object.freeze(item))), ...lifecycle, retries: Object.freeze(retries.map(item => Object.freeze(item))),
     ready: definition?.payload.nodes.filter(node => resolveWorkflowNode(node, upstream, definition!.payload).kind === 'ready' && !resolved.has(node.nodeKey)
       && nextWorkflowAttempt({ assignments, retries, controls }, node.nodeKey) !== undefined).map(node => node.nodeKey) ?? [],
     controls: Object.freeze(controls), desired, proposals: Object.freeze(proposals), reviews: Object.freeze(reviews), decisions: Object.freeze(decisions), progress: Object.freeze(progress), upstream: Object.freeze([...upstream].map(([nodeKey, state]) => Object.freeze({ nodeKey, state }))),

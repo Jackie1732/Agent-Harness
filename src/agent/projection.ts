@@ -36,6 +36,8 @@ import * as events from './session-events.js'
 import type { AgentSessionSnapshot } from './state.js'
 import { equal, record } from './validation.js'
 import { applySubagentEvent } from '../subagent/projection.js'
+import { workRecoveryRequestedEvent, workRecoverySettledEvent } from '../workflow/recovery-events.js'
+import { applyWorkRecoveryEvent, projectWorkRecoveries } from '../workflow/recovery-projection.js'
 
 function applyInput(state: AgentProjectionState, event: CommittedSessionEvent): void {
   const p = events.agentInputAcceptedEvent.decode(event.payload)
@@ -153,10 +155,12 @@ export function foldAgentSession(snapshot: SessionSnapshot): AgentProjectionStat
       continue
     }
     if (event.stored.type.startsWith('agent/')) {
+      if (event.stored.type === 'agent/run-started' && projectWorkRecoveries(state.sources.values()).some(item => item.settled === null && item.supersededBy === null)) invalidAgent('work-recovery-open')
       const definition = events.agentSessionEventDefinitions.find(item => item.type === event.stored.type && item.payloadVersion === event.stored.payloadVersion)
       if (definition === undefined || !equal(definition.decode(event.payload), event.payload) || !equal(event.payload, event.stored.payload)) invalidAgent('noncanonical-agent-event')
       applyAgentEvent(state, event)
     }
+    else if ([workRecoveryRequestedEvent.type, workRecoverySettledEvent.type].includes(event.stored.type)) applyWorkRecoveryEvent(state, event)
     else if (event.stored.type === workAssignmentAcceptedEvent.type) applyWorkAssignmentAccepted(state, event)
     else if (event.stored.type === workAssignmentSettledEvent.type) applyWorkAssignmentSettled(state, event)
     else if ([workStopReceivedEvent.type, workStopSettledEvent.type, workAssignmentRejectedEvent.type].includes(event.stored.type)) applyWorkStop(state, event)

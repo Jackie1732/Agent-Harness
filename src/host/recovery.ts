@@ -16,6 +16,7 @@ import { hostRuntimeEventCatalog } from './initialization.js'
 import { acquireHostStorageLock } from './storage-lock.js'
 import { scanHostInventory } from './inventory.js'
 import { discoverHostWorkflows } from './workflow-discovery.js'
+import { validateWorkflowCausality } from '../workflow/causality.js'
 
 export interface RecoverHostOptions {
   readonly predecessorStopped: true
@@ -36,8 +37,13 @@ export async function recoverHost(spec: ResolvedHostSpec, options: RecoverHostOp
   const repository = new SessionRepository({ backend, catalog: hostRuntimeEventCatalog,
     maxLineageDepth: spec.storage.maxLineageDepth, clock })
   try {
-    if (spec.schemaVersion === 3) discoverHostWorkflows(spec, await scanHostInventory(spec, repository))
-    if (spec.schemaVersion !== 1) return await recoverHostDelegations(spec, repository, options, clock)
+    if (spec.schemaVersion === 3) {
+      const inventory = await scanHostInventory(spec, repository)
+      discoverHostWorkflows(spec, inventory, true)
+      validateWorkflowCausality(inventory)
+      return await recoverHostDelegations(spec, repository, options, clock, inventory)
+    }
+    if (spec.schemaVersion === 2) return await recoverHostDelegations(spec, repository, options, clock)
     await discoverHostDelegations(spec, repository)
     const results = []
     for (const member of spec.members.filter(isLocalHostMember)) {

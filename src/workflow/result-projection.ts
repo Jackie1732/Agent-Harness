@@ -7,6 +7,7 @@ import { invalidHistory } from './errors.js'
 import { deriveWorkDelivery } from './delivery.js'
 import { workAssignmentAcceptedEvent, sameWorkflowValue } from './work-binding.js'
 import {  artifactPublishedEvent, workExecutionReleasedEvent, workProposalRecordedEvent , workReviewRecordedEvent } from './result-events.js'
+import { projectWorkRecoveries } from './recovery-projection.js'
 
 /** Validate output publication against preceding local business and release evidence. */
 export function applyWorkResultEvent(state: AgentProjectionState, event: CommittedSessionEvent): void {
@@ -15,11 +16,16 @@ export function applyWorkResultEvent(state: AgentProjectionState, event: Committ
     const p = workExecutionReleasedEvent.decode(event.payload)
     const binding = source(state, p.accepted, workAssignmentAcceptedEvent)
     const root = state.roots.get(p.root)
+    const previous = sources.filter(item => item.stored.type === workExecutionReleasedEvent.type && workExecutionReleasedEvent.decode(item.payload).accepted === p.accepted)
+    if ('recovery' in p) {
+      const recovery = projectWorkRecoveries(sources).find(item => item.requested.stored.eventId === p.recovery)
+      if (recovery === undefined || recovery.supersededBy !== null || recovery.requested.payload.accepted !== p.accepted
+        || previous.some(item => workExecutionReleasedEvent.decode(item.payload).outcome === 'released')) invalidHistory('work-release-recovery-source')
+    } else if (previous.length > 0) invalidHistory('work-release-duplicate')
     if (state.openRun !== null || state.openTurn !== null || state.openRecovery !== null || root?.outcome == null
       || root.source.kind !== 'workflow' || !sameWorkflowValue(root.source.assignment, p.assignment)
       || !sameWorkflowValue(binding.payload.assignment, p.assignment)
-      || !sessionDelegationsClosed(state, sources)
-      || sources.some(item => item.stored.type === event.stored.type && workExecutionReleasedEvent.decode(item.payload).accepted === p.accepted)) invalidHistory('work-release-source')
+      || !sessionDelegationsClosed(state, sources)) invalidHistory('work-release-source')
     return
   }
   const proposal = [workProposalRecordedEvent.type, workReviewRecordedEvent.type].includes(event.stored.type)

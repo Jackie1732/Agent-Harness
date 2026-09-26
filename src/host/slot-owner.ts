@@ -11,6 +11,7 @@ export class HostSlotOwner<T extends { dispose(): Promise<void> } = HostSlot> {
   #state: 'offline-clean' | 'starting' | 'online' | 'stopping' | 'cleanup-incomplete' = 'offline-clean'
   #failure: unknown
   #dispose: Promise<void> | undefined
+  #current: { dispose(): Promise<void> } | undefined
 
   constructor(agentKey: string, acquire: () => Promise<T>) {
     this.#effects = new EffectOwner(`host-slot:${agentKey}`)
@@ -36,6 +37,7 @@ export class HostSlotOwner<T extends { dispose(): Promise<void> } = HostSlot> {
         }
       }))
       this.#state = 'online'
+      this.#current = lease
       return Object.freeze({ ...lease.value, dispose: () => lease.dispose() })
     } catch (cause) {
       if (cause instanceof HostError && cause.code === 'HOST_CLEANUP_FAILED') {
@@ -44,6 +46,9 @@ export class HostSlotOwner<T extends { dispose(): Promise<void> } = HostSlot> {
       throw cause
     }
   }
+
+  /** Release the current generation through its owner even when the published execution view was replaced. */
+  async release(): Promise<void> { await this.#current?.dispose() }
 
   dispose(): Promise<void> {
     this.#dispose ??= Promise.resolve().then(async () => {

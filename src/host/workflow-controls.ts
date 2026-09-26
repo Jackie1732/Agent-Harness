@@ -3,6 +3,9 @@ import { clockTimestamp } from '../foundation/clock.js'
 import type { SerialGate } from '../foundation/serial-gate.js'
 import type { SessionEventId } from '../session/ids.js'
 import { projectAgentSession } from '../agent/projection.js'
+import { AgentJournal } from '../agent/journal.js'
+import { agentControlRequestedEvent } from '../agent/session-events.js'
+import { agentStopAction } from '../agent/stop-maintenance.js'
 import { projectWorkflowSession } from '../workflow/projection.js'
 import { workflowControlRequestedEvent, workflowControlSettledEvent } from '../workflow/control-events.js'
 import type { WorkflowRetryRequest } from '../workflow/control-events.js'
@@ -85,22 +88,33 @@ export class HostWorkflowControls {
     return this.options.gate.run(async () => {
       const results = await Promise.allSettled([...this.options.entries].map(async ([key, entry]) => {
         const state = projectWorkflowSession(entry.slot.session.snapshot())
-        if (state.terminal === null && (state.assignments.length > 0 || this.#active.has(key))) {
-          await this.#applyControl(key, entry, 'cancel', { requestKey: 'host-shutdown:' + this.options.owner, reason: 'host-cancelled' })
-        }
-        for (const work of state.assignments) {
+        const control = state.terminal === null && (state.assignments.length > 0 || this.#active.has(key))
+          ? this.#applyControl(key, entry, 'cancel', { requestKey: 'host-shutdown:' + this.options.owner, reason: 'host-cancelled' }) : Promise.resolve()
+        const roots = state.assignments.map(async work => {
           const member = assignmentMember(this.options.slots, work.payload)
           const root = projectAgentSession(member.session.snapshot()).roots.find(root => root.source.kind === 'workflow' && root.source.assignment.eventId === work.stored.eventId)
-          if (root === undefined) continue
+          if (root === undefined) return
           const stopped = await Promise.allSettled([this.options.children.cancel(member.member.agentKey, root.id),
-            ...(root.outcome === null ? [member.agent.cancel(root.id, 'host-cancelled-workflow')] : [])])
+            ...(root.outcome === null ? [this.#cancelRoot(member, root)] : [])])
           const failures = stopped.filter(item => item.status === 'rejected').map(item => item.reason)
           if (failures.length > 0) throw new AggregateError(failures, 'workflow-root-stop-incomplete')
-        }
+        })
+        const stopped = await Promise.allSettled([control, ...roots])
+        const failures = stopped.filter(item => item.status === 'rejected').map(item => item.reason)
+        if (failures.length > 0) throw new AggregateError(failures, 'workflow-stop-incomplete')
       }))
       const failures = results.filter(item => item.status === 'rejected').map(item => item.reason)
       if (failures.length > 0) throw new AggregateError(failures, 'workflow-shutdown-stop-incomplete')
     })
+  }
+
+  async #cancelRoot(member: HostSlot, root: ReturnType<typeof projectAgentSession>['roots'][number]): Promise<void> {
+    if (member.agent.status === 'accepting') { await member.agent.cancel(root.id, 'host-cancelled-workflow'); return }
+    const journal = new AgentJournal(member.session, member.member.spec.limits.maxJournalConflicts, this.options.clock)
+    if (root.stopControl === null) await journal.append(agentControlRequestedEvent,
+      () => ({ kind: 'cancel-work' as const, root: root.id, reason: 'host-cancelled-workflow' }))
+    let stop
+    while ((stop = agentStopAction(member.session, journal, this.options.clock)) !== undefined) await stop()
   }
 
   retry(key: string, input: WorkflowRetryRequest) {
@@ -115,8 +129,8 @@ export class HostWorkflowControls {
         if (this.#stopping.has(key) || reason !== undefined) throw new HostError('HOST_NOT_READY', reason ?? 'workflow-stopping')
         const previous = state.assignments.filter(item => item.stored.eventId === input.failedAssignment.eventId
           || item.payload.kind === 'review' && item.payload.reviewOf.assignment.eventId === input.failedAssignment.eventId)
-        if (previous.some(item => !this.options.retired.has(item.stored.eventId) || !workflowAssignmentClosed(entry.slot.session,
-          assignmentMember(this.options.slots, item.payload).session, item.stored.eventId, this.options.slots.map(slot => slot.session)))) throw new HostError('HOST_NOT_READY', 'workflow-retry-still-closing')
+        if (previous.some(item => !this.options.retired.has(item.stored.eventId) || !workflowAssignmentClosed(entry.slot.session.snapshot(),
+          assignmentMember(this.options.slots, item.payload).session.snapshot(), item.stored.eventId, this.options.slots.map(slot => slot.session.snapshot())))) throw new HostError('HOST_NOT_READY', 'workflow-retry-still-closing')
       }
       const requested = prior?.requested ?? await entry.journal.append(workflowControlRequestedEvent, () => payload)
       const settled = prior?.settled ?? await entry.journal.append(workflowControlSettledEvent, () => ({ request: requested.stored.eventId,

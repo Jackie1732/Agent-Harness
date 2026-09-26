@@ -4,6 +4,7 @@ import type { JsonObject } from '../foundation/json.js'
 import type { ResolvedHostSpec } from './config.js'
 import { HostError } from './errors.js'
 import { hasWorkflowBinding, projectHostWorkflowSession } from './workflow-binding.js'
+import { projectWorkflowSession } from '../workflow/projection.js'
 
 export interface HostWorkflowInventoryEntry {
   readonly workflowKey: string
@@ -29,7 +30,7 @@ export function collectHostWorkflowInventory(snapshots: readonly SessionSnapshot
 }
 
 /** Match every durable coordinator to the current v3 recipe or require recovery. */
-export function discoverHostWorkflows(spec: ResolvedHostSpec, snapshots: readonly SessionSnapshot[]): void {
+export function discoverHostWorkflows(spec: ResolvedHostSpec, snapshots: readonly SessionSnapshot[], recovering = false): void {
   const configured = spec.schemaVersion === 3 && spec.workflows.kind === 'enabled' ? spec.workflows.definitions : []
   const found = new Set<string>()
   for (const snapshot of snapshots) {
@@ -39,6 +40,7 @@ export function discoverHostWorkflows(spec: ResolvedHostSpec, snapshots: readonl
     const entry = configured.find(item => item.sessionId === snapshot.header.sessionId)
     if (entry === undefined) throw new HostError('HOST_RECOVERY_REQUIRED', 'workflow-config-removed')
     if (binding.ready === null) throw new HostError('HOST_RECOVERY_REQUIRED', 'workflow-initialization-incomplete')
+    if (!recovering && projectWorkflowSession(snapshot).recoveries.some(item => item.settled === null && item.supersededBy === null)) throw new HostError('HOST_RECOVERY_REQUIRED', 'workflow-recovery-open')
     if (binding.definition === null || Buffer.compare(canonicalJsonBytes(binding.definition.payload as unknown as JsonObject),
       canonicalJsonBytes(entry.definition as unknown as JsonObject)) !== 0) {
       throw new HostError('HOST_BINDING_CONFLICT', 'workflow-config-changed')

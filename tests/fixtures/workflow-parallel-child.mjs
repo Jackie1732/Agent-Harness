@@ -6,6 +6,8 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import * as h from '../../dist/index.js'
 import { workflowConfig, resolveWorkflowConfig } from '../../examples/workflow-fixture.mjs'
+import { captureFileCommits } from '../helpers/subagent-prefixes.mjs'
+import { verifyParallelRecovery } from '../helpers/workflow-parallel-recovery.mjs'
 
 const directory = await mkdtemp(join(tmpdir(), 'workflow-parallel-'))
 const bodies = [], pending = []
@@ -58,6 +60,7 @@ try {
   }
   const spec = resolveWorkflowConfig(raw)
   const now = Date.now(), clock = { now: () => now }
+  const frames = await captureFileCommits(async () => {
   await h.initializeHost(spec, { clock })
   host = await h.openHost(spec, { clock, credentials: { 'local-fixture': 'local-only' } })
   await host.workflow('research').resume({ requestKey: 'start' })
@@ -86,6 +89,11 @@ try {
     assert.ok(JSON.stringify(bodies[1]).includes('reviewer'))
     assert.ok(JSON.stringify(bodies[2]).includes('ordinary-only-input'))
     assert.ok(!JSON.stringify(bodies[0]).includes('ordinary-only-input'))
+  }
+  })
+  if (mode === 'complete') {
+    await verifyParallelRecovery(raw, frames, clock)
+    assert.equal(bodies.length, 3, 'recovery emitted a model request')
   }
   const repository = new h.SessionRepository({ backend: new h.FileSessionBackend(spec.storage), catalog: h.hostRuntimeEventCatalog, maxLineageDepth: 4 })
   try {

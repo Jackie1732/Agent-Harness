@@ -38,7 +38,7 @@ export function nextWorkflowStop(coordinator: HostProtocolSlot, members: readonl
       || state.assignments.some(work => !retired.has(work.stored.eventId))) return undefined
     if (state.assignments.every(work => {
       const member = members.find(slot => slot.session.header.address === work.payload.memberAddress)
-      return member !== undefined && workflowAssignmentClosed(coordinator.session, member.session, work.stored.eventId, members.map(slot => slot.session))
+      return member !== undefined && workflowAssignmentClosed(coordinator.session.snapshot(), member.session.snapshot(), work.stored.eventId, members.map(slot => slot.session.snapshot()))
     })) return () => journal.append(workflowClosedEvent, () => ({ terminal: state.terminal!.stored.eventId, observedAt }))
     return undefined
   }
@@ -77,7 +77,7 @@ export function nextWorkflowStop(coordinator: HostProtocolSlot, members: readonl
     const source = state.stop?.stored.eventId ?? rejected?.stored.eventId ?? (observedAt >= work.payload.deadline ? work.stored.eventId : undefined)
     if (source === undefined) continue
     const member = members.find(slot => slot.session.header.address === work.payload.memberAddress)
-    if (member === undefined || workflowAssignmentClosed(coordinator.session, member.session, work.stored.eventId, members.map(slot => slot.session))) continue
+    if (member === undefined || workflowAssignmentClosed(coordinator.session.snapshot(), member.session.snapshot(), work.stored.eventId, members.map(slot => slot.session.snapshot()))) continue
     return () => journal.append(workflowAssignmentStopEvent,
       () => ({ assignment: { address: coordinator.session.header.address, eventId: work.stored.eventId }, source }))
   }

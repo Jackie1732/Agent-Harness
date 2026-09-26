@@ -1,11 +1,11 @@
 import { canonicalJsonBytes } from '../foundation/canonical-json.js'
 import type { JsonObject } from '../foundation/json.js'
-import { encodeStoredSessionEvent } from '../session/codec.js'
+import { encodeSessionHeader, encodeStoredSessionEvent } from '../session/codec.js'
 import { SessionError } from '../session/errors.js'
 import { formatSessionEventId, parseSessionAddress, sessionSequence } from '../session/ids.js'
 import type { SessionEventId } from '../session/ids.js'
 import type { SessionHandle } from '../session/session-handle.js'
-import type { StoredSessionEvent } from '../session/types.js'
+import type { SessionHeader, StoredSessionEvent } from '../session/types.js'
 import { SESSION_ENVELOPE_VERSION } from '../session/types.js'
 import type { SessionRepository } from '../session/repository.js'
 import { workflowDefinitionRecordedEvent } from '../workflow/session-events.js'
@@ -52,12 +52,18 @@ export function preflightWorkflowInitialization(hostKey: string, definition: Wor
 
 /** Create or resume one exact coordinator binding without starting business execution. */
 export async function initializeWorkflowCoordinator(repository: SessionRepository, hostKey: string,
-  definition: WorkflowDefinition, maximum: number, resume = false): Promise<HostWorkflowInitializationResult> {
+  definition: WorkflowDefinition, maximum: number, resume = false, adoptEmpty?: { readonly predecessorStopped: true; readonly expectedHeader: SessionHeader }): Promise<HostWorkflowInitializationResult> {
   preflightWorkflowInitialization(hostKey, definition, maximum)
   const sessionId = parseSessionAddress(definition.coordinator)
   let session: SessionHandle
   let created = false
-  try { session = await repository.create({ sessionId }); created = true }
+  if (adoptEmpty !== undefined) {
+    session = await repository.open(sessionId)
+    if (adoptEmpty.predecessorStopped !== true || session.snapshot().localPosition !== 0
+      || Buffer.compare(encodeSessionHeader(session.header), encodeSessionHeader(adoptEmpty.expectedHeader)) !== 0) {
+      await session.dispose(); throw new HostError('HOST_BOOTSTRAP_AMBIGUOUS', 'workflow-empty-header-mismatch')
+    }
+  } else try { session = await repository.create({ sessionId }); created = true }
   catch (cause) {
     if (!(cause instanceof SessionError) || cause.code !== 'SESSION_ALREADY_EXISTS') throw cause
     session = await repository.open(sessionId)
@@ -72,7 +78,7 @@ export async function initializeWorkflowCoordinator(repository: SessionRepositor
       return { kind: 'workflow', workflowKey: definition.workflowKey, sessionId, mode: 'existing', readyEventId: binding.ready.stored.eventId }
     }
     if (binding.planned === null) {
-      if (!created) throw new HostError('HOST_BOOTSTRAP_AMBIGUOUS', 'workflow-header-unbound')
+      if (!created && adoptEmpty === undefined) throw new HostError('HOST_BOOTSTRAP_AMBIGUOUS', 'workflow-header-unbound')
       await session.append(hostSessionPlannedV2Event, { hostKey, kind: 'workflow', workflowKey: definition.workflowKey,
         recipe, fingerprint })
       binding = projectHostWorkflowSession(session.snapshot())

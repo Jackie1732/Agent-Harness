@@ -1,4 +1,5 @@
 import { workflowControlEventDefinitions } from './control-events.js'
+import { workflowRecoveryEventDefinitions } from './recovery-events.js'
 import { workflowRetryExpiredEvent } from './retry.js'
 import { workflowStopEventDefinitions } from './stop-events.js'
 import { workStoppedMessageEvent } from './stopped-message.js'
@@ -17,4 +18,4 @@ export type { WorkflowDefinitionRecorded, WorkflowNodeResolved } from './definit
 export const workflowSessionEventDefinitions = Object.freeze([workflowDefinitionRecordedEvent, workflowNodeResolvedEvent,
   workflowAssignmentCommittedEvent, workAssignmentAcceptedEvent, ...workResultEventDefinitions, ...workflowCoordinatorEventDefinitions,
   workflowProtocolRecordedEvent, workProtocolRecordedEvent, ...workflowControlEventDefinitions, ...workflowStopEventDefinitions, workflowRetryExpiredEvent, workAssignmentSettledEvent,
-  ...workInteractionEventDefinitions, ...workGroupEventDefinitions, workInputUnadoptedEvent, workStoppedMessageEvent, workflowInteractionAdmittedEvent, workflowInteractionSettledEvent])
+  ...workInteractionEventDefinitions, ...workGroupEventDefinitions, ...workflowRecoveryEventDefinitions, workInputUnadoptedEvent, workStoppedMessageEvent, workflowInteractionAdmittedEvent, workflowInteractionSettledEvent])

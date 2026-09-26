@@ -1,4 +1,5 @@
 import { HostWorkflows } from './workflows.js'
+import { validateWorkflowCausality } from '../workflow/causality.js'
 import { SessionWorkActions } from '../workflow/actions.js'
 import { workflowMessageDefinitions } from '../workflow/messages.js'
 import { discoverHostDelegations } from './delegation-discovery.js'
@@ -72,6 +73,7 @@ export async function assembleHost(spec: ResolvedHostSpec, clock: Clock,
       }
       const inventory = await scanHostInventory(spec, repository)
       discoverHostWorkflows(spec, inventory)
+      if (spec.schemaVersion === 3) validateWorkflowCausality(inventory)
       const discovered = await discoverHostDelegations(spec, repository, inventory)
       const directory = await effect.apply('directory', () => createSessionDirectory(), value => release(value, true))
       const remote = new Map<string, MessageTransport>()
@@ -156,6 +158,7 @@ export async function assembleHost(spec: ResolvedHostSpec, clock: Clock,
             fingerprint256: peer.fingerprint256, senders: new Set(peer.sessionIds.map(id => formatSessionAddress(parseSessionId(id)))) })),
         }), value => release(value)) : undefined
       return { lock, directory, server, slots, protocolSlots, wakeup, local, catalog, subagents, workflows: workflowDomain,
+        release: (agentKey: string) => slotOwners.get(agentKey)!.release(),
         reopen: async (agentKey: string) => {
           const lifetime = slotOwners.get(agentKey)
           if (lifetime === undefined) throw new HostError('HOST_NOT_READY', 'slot-unavailable')

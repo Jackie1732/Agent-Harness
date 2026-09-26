@@ -31,7 +31,8 @@ import type { HostSlot, HostProtocolSlot } from './runtime-types.js'
 import { nextWorkflowInbox } from './workflow-inbox.js'
 import { assignmentMember, assertWorkflowMember, assertWorkflowParticipant, workflowMemberIdle } from './workflow-authority.js'
 import { resolveWorkflowReviews } from '../workflow/review.js'
-import { workflowReport } from './workflow-report.js'
+import { workflowReport, workflowReportSummary } from './workflow-report.js'
+import type { WorkflowReport, WorkflowReportSummary } from './workflow-report.js'
 import { prepareWorkWorkspace, workExecutionTools } from './workflow-workspace.js'
 import type { WorkspaceAuthority, WorkspaceLease } from '../subagent/workspace.js'
 import { nextWorkflowStop, nextWorkStop } from './workflow-stop.js'
@@ -41,6 +42,7 @@ import { nextWorkflowAttempt } from '../workflow/retry.js'
 import { isModelAdmissionPending } from './model-admission.js'
 import type { HostBusinessMode } from './business-lane.js'
 import { SubagentError } from '../subagent/errors.js'
+import { projectWorkRecoveries } from '../workflow/recovery-projection.js'
 
 interface WorkflowEntry { readonly slot: HostProtocolSlot; readonly journal: WorkflowJournal; readonly admission: WorkflowAdmission; protocolCursor: number }
 
@@ -66,7 +68,7 @@ export class HostWorkflows {
   async restore(): Promise<void> {
     for (const entry of this.#entries.values()) for (const assignment of projectWorkflowSession(entry.slot.session.snapshot()).assignments) {
       const member = assignmentMember(this.slots, assignment.payload)
-      if (workflowAssignmentClosed(entry.slot.session, member.session, assignment.stored.eventId, this.slots.map(slot => slot.session))) { this.#retired.add(assignment.stored.eventId); continue }
+      if (workflowAssignmentClosed(entry.slot.session.snapshot(), member.session.snapshot(), assignment.stored.eventId, this.slots.map(slot => slot.session.snapshot()))) { this.#retired.add(assignment.stored.eventId); continue }
       await entry.admission.restore({ kind: 'known', stored: assignment.stored, payload: assignment.payload as typeof assignment.payload & import('../foundation/json.js').JsonObject }, member.session)
       this.communication.workflowChannels.bind(entry.slot.session, assignment.stored.eventId, member.session)
       const root = projectAgentSession(member.session.snapshot()).roots.find(root => root.source.kind === 'workflow' && root.source.assignment.eventId === assignment.stored.eventId)
@@ -74,7 +76,9 @@ export class HostWorkflows {
     }
   }
 
-  report(key: string) { return workflowReport(this.#entry(key).slot.session, this.slots, this.controls.active(key)) }
+  report(key: string): WorkflowReport { return workflowReport(this.#entry(key).slot.session.snapshot(), this.slots.map(slot => slot.session.snapshot()), this.controls.active(key)) }
+
+  reportAll(maximum: number): WorkflowReportSummary { return workflowReportSummary([...this.#entries.keys()].map(key => this.report(key)), maximum) }
 
   readArtifact(key: string, reference: unknown) {
     const ref = workflowReference(reference)
@@ -132,10 +136,10 @@ export class HostWorkflows {
     for (const work of state.assignments) {
       if (this.#retired.has(work.stored.eventId)) continue
       const member = assignmentMember(this.slots, work.payload)
-      if (busy.has(member) || isModelAdmissionPending(member.session.snapshot())) continue
+      if (member.mailbox.status !== 'open' || busy.has(member) || isModelAdmissionPending(member.session.snapshot())) continue
       const settled = member.session.snapshot().history.at(-1)!.events.some(item => item.kind === 'known' && [workAssignmentSettledEvent, workStopSettledEvent].some(definition =>
         item.stored.type === definition.type && definition.decode(item.payload).assignment.eventId === work.stored.eventId))
-      if (settled && workflowAssignmentClosed(coordinator.session, member.session, work.stored.eventId, this.slots.map(slot => slot.session))) return async () => {
+      if (settled && workflowAssignmentClosed(coordinator.session.snapshot(), member.session.snapshot(), work.stored.eventId, this.slots.map(slot => slot.session.snapshot()))) return async () => {
         await this.#workspaces.get(work.stored.eventId)?.dispose()
         this.#workspaces.delete(work.stored.eventId)
         this.slots[this.slots.indexOf(member)] = await member.executions!.replace({ kind: 'ordinary' }, {})
@@ -176,9 +180,11 @@ export class HostWorkflows {
           let failure: unknown
           try { await member.executions!.release() }
           catch (cause) { outcome = 'unknown'; failure = cause }
+          const recovery = projectWorkRecoveries(sources.sources.values()).find(item => item.requested.payload.accepted === accepted.reference.eventId && item.settled !== null)
           await new AgentJournal(member.session, member.member.spec.limits.maxJournalConflicts, this.clock).append(workExecutionReleasedEvent,
             () => ({ assignment: accepted.work!.assignment, accepted: accepted.reference.eventId, root: root.id,
-              owner: this.owner, generation: member.executions!.generation, outcome }))
+              ...(recovery !== undefined && outcome === 'released' ? { recovery: recovery.requested.stored.eventId, outcome: 'released' as const }
+                : { owner: this.owner, generation: member.executions!.generation, outcome }) }))
           if (outcome === 'unknown') throw failure
         }
       }
@@ -199,7 +205,7 @@ export class HostWorkflows {
         for (const reviewer of work.payload.acceptance.reviewers) {
           if (state.assignments.some(item => item.payload.kind === 'review' && item.payload.reviewOf.assignment.eventId === work.stored.eventId && item.payload.memberKey === reviewer)) continue
           const peer = this.slots.find(slot => slot.member.agentKey === reviewer)
-          if (peer === undefined || busy.has(peer) || !workflowMemberIdle(peer) || !this.businessAllowed(peer)) continue
+          if (peer === undefined || peer.mailbox.status !== 'open' || busy.has(peer) || !workflowMemberIdle(peer) || !this.businessAllowed(peer)) continue
           return async () => {
             const authority = assertWorkflowParticipant(definition.payload, peer, reviewer)
             const actions = work.payload.reviewerReservations.find(item => item.memberKey === reviewer)!.grant.waits > 0
@@ -231,7 +237,7 @@ export class HostWorkflows {
         () => ({ definition: definition.stored.eventId, nodeKey: node.nodeKey, outcome: resolution.kind as 'skipped' | 'failed', reason: resolution.reason }))
       if (resolution.kind !== 'ready') continue
       const member = this.slots.find(slot => slot.member.agentKey === node.executor)
-      if (member === undefined || busy.has(member) || !workflowMemberIdle(member) || !this.businessAllowed(member)) continue
+      if (member === undefined || member.mailbox.status !== 'open' || busy.has(member) || !workflowMemberIdle(member) || !this.businessAllowed(member)) continue
       const workspace = node.attempts[number - 1]!.workspace
       if (workspace.kind !== 'none' && !this.workspaceAuthority.available(workspace)) continue
       return async () => {
@@ -265,7 +271,7 @@ export class HostWorkflows {
         ?? nextWorkflowInbox(coordinator.session, coordinator.mailbox, this.clock, 'coordinator')
         ?? nextWorkflowSend(coordinator.session, coordinator.mailbox, this.clock, 'coordinator')
         ?? nextWorkInteractionSettlement(coordinator.session, this.slots, this.clock),
-    ...members.map(member => () => isModelAdmissionPending(member.session.snapshot()) ? undefined
+    ...members.map(member => () => member.mailbox.status !== 'open' || isModelAdmissionPending(member.session.snapshot()) ? undefined
       : nextWorkflowInbox(member.session, member.mailbox, this.clock, 'member')
         ?? nextWorkStop(member, this.clock, this.children.notify)
         ?? nextWorkQuestionDecline(member.session, this.clock)

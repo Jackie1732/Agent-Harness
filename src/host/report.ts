@@ -1,6 +1,7 @@
 import type { Clock } from '../foundation/clock.js'
 import type { HostRunReport, HostSlot } from './runtime-types.js'
 import type { HostObservations } from './observation.js'
+import { projectAgentSession } from '../agent/projection.js'
 import { projectAgentReport } from '../agent/report.js'
 import { inspectAgentReadiness } from '../agent/readiness.js'
 import type { HostAssembly } from './assembly.js'
@@ -22,8 +23,9 @@ export function observeHostMembers(slots: readonly HostSlot[], paused: ReadonlyS
     counts.pendingInputs += agent.counts.pendingInputs
     counts.pendingWaits += agent.counts.pendingWaits
     counts.pendingOutbox += agent.counts.pendingOutbox
-    counts.failedRoots += agent.counts.failedRoots
-    counts.exhaustedRoots += agent.counts.exhaustedRoots
+    const ordinary = member.spec.protocolVersion === 3 ? projectAgentSession(session.snapshot()).roots.filter(root => root.source.kind === 'ordinary') : undefined
+    counts.failedRoots += ordinary === undefined ? agent.counts.failedRoots : ordinary.filter(root => root.outcome === 'failed' || root.outcome === 'result-unknown').length
+    counts.exhaustedRoots += ordinary === undefined ? agent.counts.exhaustedRoots : ordinary.filter(root => root.outcome === 'budget-exhausted').length
     counts.pendingMaintenance += readiness.counts.pendingMaintenance
     if (online && !paused.has(member.agentKey)) counts.runnableInputs += readiness.counts.runnableInputs
     counts.reviewRequiredInputs += readiness.counts.reviewRequiredInputs

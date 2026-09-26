@@ -47,3 +47,18 @@ export function resolveWorkflowConfig(raw) {
   }
   return h.resolveHostConfig(h.decodeHostConfig(raw, raw.storage.root))
 }
+
+/** Apply one explicit work grant and action set consistently to the example recipe and participating peers. */
+export function configureWorkGrant(raw, grant, actions = []) {
+  const definition = raw.workflows.definitions[0].definition
+  for (const member of raw.members) {
+    member.spec.budget = { ...grant }
+    member.spec.workflow.nativeActions = [...actions]
+    member.model.runnerLimits.maxToolCalls = actions.length === 0 ? 0 : 1
+  }
+  for (const member of definition.roster) member.budgetCeiling = { ...grant }
+  for (const node of definition.nodes) for (const attempt of node.attempts) {
+    attempt.workerGrant = { ...grant }; attempt.nativeActions = [...actions]
+  }
+  definition.budget = Object.fromEntries(Object.entries(grant).map(([key, value]) => [key, value * definition.nodes.length]))
+}

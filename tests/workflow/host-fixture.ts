@@ -4,7 +4,7 @@ import { workflowMemberFingerprints } from '../../src/host/workflow-authority.js
 import { twoMemberHostConfig } from '../host/fixtures.js'
 import { workflowFixture } from './fixtures.js'
 
-export function runnableWorkflowHost(root: string, firstText = '{"text":"accepted upstream"}') {
+export function runnableWorkflowConfig(root: string, firstText = '{"text":"accepted upstream"}') {
   const base = twoMemberHostConfig(root)
   const members = (base.members as readonly JsonObject[]).map(member => ({ ...member, workflowTools: { kind: 'none' },
     profile: { ...(member.profile as JsonObject), rendererVersion: 'context-neutral/v4' },
@@ -28,6 +28,10 @@ export function runnableWorkflowHost(root: string, firstText = '{"text":"accepte
   ] }, budget: { ...grant, models: 4, steps: 4, outputTokens: 1024 },
   limits: { ...recipe.limits, maxProtocolMessages: 12, maxQuestions: 0, maxIncomingQuestions: 0,
     maxGroups: 0, maxGroupRecipients: 0, maxIncomingGroupMessages: 0, maxProgress: 0 } }
-  return resolveHostConfig(decodeHostConfig({ ...configured, workflows: { kind: 'enabled', maxBusinessConcurrency: 1,
-    definitions: [{ sessionId: '87000000-0000-4000-8000-000000000001', definition }] } }, root))
+  return { ...configured, workflows: { kind: 'enabled', maxBusinessConcurrency: 1,
+    definitions: [{ sessionId: '87000000-0000-4000-8000-000000000001', definition }] } }
+}
+
+export function runnableWorkflowHost(root: string, firstText?: string) {
+  return resolveHostConfig(decodeHostConfig(runnableWorkflowConfig(root, firstText), root))
 }

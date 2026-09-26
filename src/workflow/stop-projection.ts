@@ -7,6 +7,7 @@ import { invalidHistory } from './errors.js'
 import { sameWorkflowValue, decodeWorkAssignmentMessage } from './work-binding.js'
 import { workStopReceivedEvent, workStopSettledEvent, workAssignmentRejectedEvent, workflowStopMessage } from './stop-events.js'
 import { workExecutionReleasedEvent } from './result-events.js'
+import { settleWorkRootInputs } from './input-disposition.js'
 
 /** A stop names one coordinator assignment; queued work is disposed without opening a root. */
 export function applyWorkStop(state: AgentProjectionState, event: CommittedSessionEvent): void {
@@ -47,7 +48,7 @@ export function applyWorkStop(state: AgentProjectionState, event: CommittedSessi
       || p.outcome !== (release.outcome === 'unknown' || root.outcome === 'result-unknown' ? 'result-unknown'
         : root.outcome === 'completed' ? 'completed' : root.outcome === 'cancelled' ? 'cancelled' : 'failed')) invalidHistory('work-stop-release')
     const input = state.inputs.get(inputKey(state.turns.get(root.id)!.started.payload.input))!
-    if (input.status === 'review-required') { input.status = 'not-adopted'; input.reason = 'workflow-stopped' }
+    settleWorkRootInputs(state, root.id, 'workflow-stopped')
     if (!['handled', 'abandoned', 'not-adopted'].includes(input.status)) invalidHistory('work-stop-root-input')
   }
 }

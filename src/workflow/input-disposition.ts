@@ -12,6 +12,16 @@ import { invalidHistory } from './errors.js'
 import { workStopReceivedEvent } from './stop-events.js'
 import { workProtocolClassifiedEvent } from './interaction-events.js'
 import { workGroupResultEvent } from './group-events.js'
+import type { SessionEventId } from '../session/ids.js'
+
+/** A durable work decision disposes every claimed continuation of its terminal root. */
+export function settleWorkRootInputs(state: AgentProjectionState, root: SessionEventId, reason: string): void {
+  for (const turn of state.turns.values()) {
+    if (turn.root !== root) continue
+    const input = state.inputs.get(inputKey(turn.started.payload.input))!
+    if (input.status === 'review-required') { input.status = 'not-adopted'; input.reason = reason }
+  }
+}
 
 export const workInputUnadoptedEvent = createDurableEventDefinition({ type: 'work/input-unadopted', payloadVersion: 1, ignorable: false,
   decode(value) {

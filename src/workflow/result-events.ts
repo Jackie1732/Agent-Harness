@@ -12,10 +12,8 @@ export type WorkExecutionReleased = {
   readonly assignment: WorkflowEventRef
   readonly accepted: SessionEventId
   readonly root: SessionEventId
-  readonly owner: string
-  readonly generation: number
-  readonly outcome: 'released' | 'unknown'
-}
+} & ({ readonly owner: string; readonly generation: number; readonly outcome: 'released' | 'unknown' }
+  | { readonly recovery: SessionEventId; readonly outcome: 'released' })
 
 export type ArtifactSource = { readonly kind: 'model-final'; readonly turn: SessionEventId; readonly settled: SessionEventId }
   | { readonly kind: 'json-text'; readonly turn: SessionEventId; readonly settled: SessionEventId; readonly path: readonly string[] }
@@ -54,8 +52,14 @@ export type WorkflowProposalMessage = {
 export const workExecutionReleasedEvent = createDurableEventDefinition<WorkExecutionReleased & JsonObject>({
   type: 'work/execution-released', payloadVersion: 1, ignorable: false,
   decode(value) {
-    const p = record(value); exact(p, ['assignment', 'accepted', 'root', 'owner', 'generation', 'outcome'])
-    return { assignment: workflowReference(p.assignment), accepted: eventId(p.accepted), root: eventId(p.root),
+    const p = record(value)
+    const common = { assignment: workflowReference(p.assignment), accepted: eventId(p.accepted), root: eventId(p.root) }
+    if ('recovery' in p) {
+      exact(p, ['assignment', 'accepted', 'root', 'recovery', 'outcome'])
+      return { ...common, recovery: eventId(p.recovery), outcome: choice(p.outcome, ['released']) }
+    }
+    exact(p, ['assignment', 'accepted', 'root', 'owner', 'generation', 'outcome'])
+    return { ...common,
       owner: text(p.owner, 128), generation: integer(p.generation, 1), outcome: choice(p.outcome, ['released', 'unknown']) }
   },
 })

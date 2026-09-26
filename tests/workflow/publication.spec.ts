@@ -52,7 +52,10 @@ it('publishes immutable text only after release and accepts the exact received c
       proposal: received.proposal, expectedOutputRevision: 0 as const, outcome: 'accepted' as const,
       value: received.value.value, artifacts: received.value.artifacts, reviews: [] }
     await expect(coordinator.append(workflowDecisionCommittedEvent, () => ({ ...decision, value: 'replaced' }))).rejects.toThrow('decision-source')
-    await coordinator.append(workflowDecisionCommittedEvent, () => decision)
+    const competing = await Promise.allSettled([coordinator.append(workflowDecisionCommittedEvent, () => decision),
+      new WorkflowJournal(f.coordinator, clock).append(workflowDecisionCommittedEvent, () => decision)])
+    expect(competing.filter(item => item.status === 'fulfilled')).toHaveLength(1)
+    expect(competing.filter(item => item.status === 'rejected')).toHaveLength(1)
     expect(projectWorkflowSession(f.coordinator.snapshot()).decisions).toHaveLength(1)
     await expect(coordinator.append(workflowDecisionCommittedEvent, () => decision)).rejects.toThrow('decision-source')
     await expect(f.journal.append(artifactPublishedEvent, () => ({ ...artifactPublishedEvent.decode(artifact.payload),
