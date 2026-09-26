@@ -68,7 +68,7 @@ export function projectWorkflowSession(snapshot: SessionSnapshot): WorkflowSnaps
         || !same(payload.workspace, attempt.workspace) || payload.workspace.kind !== 'none' || payload.workspaceBaseline !== null
         || !same(payload.protocolReserve, demand) || !same(payload.acceptance, node.acceptance)) invalidHistory('assignment-recipe-mismatch')
       const until = Math.min(Date.parse(recipe.deadline), Date.parse(record.stored.recordedAt) + attempt.durationMs)
-      if (Date.parse(payload.deadline) > until || Date.parse(payload.deadline) <= Date.parse(record.stored.recordedAt)) invalidHistory('assignment-deadline')
+      if (Date.parse(payload.deadline) > until) invalidHistory('assignment-deadline')
       let next: AgentBudget | null = reserveAgentBudget(reservedBudget, attempt.workerGrant, recipe.budget)
       for (const reviewer of attempt.reviewerGrants) {
         if (next === null) break

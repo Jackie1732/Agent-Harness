@@ -9,7 +9,7 @@ export interface MailboxReservation { readonly inbox: number; readonly outbox: n
 
 type HeldReservation = {
   readonly quotas: ReadonlyMap<string, MailboxReservation>
-  readonly matches: (envelope: MessageEnvelope) => boolean
+  readonly matches: (envelope: MessageEnvelope, address: string, direction: MailboxDirection) => boolean
 }
 
 /** Serializes ordinary writes and domain reservations against the same Mailbox limits. */
@@ -25,14 +25,14 @@ export class ProtocolCapacity {
 
   /** Call under run() before the domain's durable reservation commit. */
   check(quotas: ReadonlyMap<string, MailboxReservation>, handles: ReadonlyMap<string, SessionHandle>,
-    restoring?: (envelope: MessageEnvelope) => boolean): void {
+    restoring?: (envelope: MessageEnvelope, address: string, direction: MailboxDirection) => boolean): void {
     if (this.#closed) throw new CommunicationError('MESSAGE_SEND_FORBIDDEN', 'channel-admission-closed')
     for (const [address, quota] of quotas) for (const direction of ['inbox', 'outbox'] as const) {
       const held = [...this.#held.values()].reduce((sum, item) => sum + (item.quotas.get(address)?.[direction] ?? 0), 0)
       const handle = handles.get(address)
       const ordinary = handle === undefined ? 0 : projectCommunicationFacts(handle.snapshot())[direction]
-        .filter(item => item.status === 'pending' && this.#classify(item.envelope) === undefined
-          && !restoring?.(item.envelope)).length
+        .filter(item => item.status === 'pending' && this.#classify(item.envelope, address, direction) === undefined
+          && !restoring?.(item.envelope, address, direction)).length
       const maximum = direction === 'inbox' ? this.limits.maxPendingInbox : this.limits.maxPendingOutbox
       if (ordinary + held + quota[direction] > maximum) {
         throw new CommunicationError('MESSAGE_OUTBOX_FULL', 'protocol mailbox reservation exceeds capacity')
@@ -41,24 +41,26 @@ export class ProtocolCapacity {
   }
 
   /** Install only after the domain's commit has been confirmed. */
-  install(token: object, quotas: ReadonlyMap<string, MailboxReservation>, matches: (envelope: MessageEnvelope) => boolean): void {
+  install(token: object, quotas: ReadonlyMap<string, MailboxReservation>,
+    matches: (envelope: MessageEnvelope, address: string, direction: MailboxDirection) => boolean): void {
     this.#held.set(token, { quotas, matches })
   }
   retire(token: object): void { this.#held.delete(token) }
 
   hasCapacity(handle: SessionHandle, direction: MailboxDirection, envelope?: MessageEnvelope): boolean {
     const facts = projectCommunicationFacts(handle.snapshot())[direction]
-    const reservation = envelope === undefined ? undefined : this.#classify(envelope)
+    const address = handle.header.address
+    const reservation = envelope === undefined ? undefined : this.#classify(envelope, address, direction)
     if (reservation !== undefined) {
-      const used = facts.filter(item => this.#classify(item.envelope) === reservation).length
-      return used < (reservation.quotas.get(handle.header.address)?.[direction] ?? 0)
+      const used = facts.filter(item => this.#classify(item.envelope, address, direction) === reservation).length
+      return used < (reservation.quotas.get(address)?.[direction] ?? 0)
     }
-    const held = [...this.#held.values()].reduce((sum, item) => sum + (item.quotas.get(handle.header.address)?.[direction] ?? 0), 0)
-    const ordinary = facts.filter(item => item.status === 'pending' && this.#classify(item.envelope) === undefined).length
+    const held = [...this.#held.values()].reduce((sum, item) => sum + (item.quotas.get(address)?.[direction] ?? 0), 0)
+    const ordinary = facts.filter(item => item.status === 'pending' && this.#classify(item.envelope, address, direction) === undefined).length
     return ordinary + held < (direction === 'inbox' ? this.limits.maxPendingInbox : this.limits.maxPendingOutbox)
   }
 
-  #classify(envelope: MessageEnvelope): HeldReservation | undefined {
-    return [...this.#held.values()].find(item => item.matches(envelope))
+  #classify(envelope: MessageEnvelope, address: string, direction: MailboxDirection): HeldReservation | undefined {
+    return [...this.#held.values()].find(item => item.matches(envelope, address, direction))
   }
 }

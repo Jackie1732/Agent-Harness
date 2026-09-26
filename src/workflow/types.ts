@@ -2,6 +2,7 @@ import type { AgentBudget } from '../agent/contract.js'
 import type { JsonObject, JsonValue } from '../foundation/json.js'
 import type { SessionAddress, SessionEventId } from '../session/ids.js'
 import type { MailboxReservation } from '../communication/protocol-capacity.js'
+import type { ChannelId } from '../communication/ids.js'
 
 /** One event identity is meaningful only within its owning Session. */
 export interface WorkflowEventRef {
@@ -122,6 +123,7 @@ export interface WorkflowAssignment {
   readonly kind: 'production'
   readonly memberKey: string
   readonly memberAddress: SessionAddress
+  readonly channelId: ChannelId
   readonly inputs: JsonObject
   readonly sourceAccepted: readonly WorkflowEventRef[]
   readonly effectiveAllowance: AgentBudget

@@ -4,6 +4,7 @@ import type { JsonObject, JsonValue } from '../foundation/json.js'
 import { boundedJson, JsonBoundaryError } from '../schema/bounded-json.js'
 import { formatSessionAddress, formatSessionEventId, parseSessionAddress, parseSessionEventId } from '../session/ids.js'
 import { SessionError } from '../session/errors.js'
+import { parseChannelId } from '../communication/ids.js'
 import { DEFAULT_WORKFLOW_LIMITS } from './definition.js'
 import { invalidHistory } from './errors.js'
 import type { WorkflowAssignment, WorkflowEventRef } from './types.js'
@@ -50,7 +51,7 @@ export function decodeWorkflowAssignment(value: JsonValue): WorkflowAssignment &
 function decodeAssignment(value: JsonValue): WorkflowAssignment & JsonObject {
   const input = object(boundedJson(value, { maxBytes: DEFAULT_WORKFLOW_LIMITS.maxDefinitionBytes,
     maxDepth: DEFAULT_WORKFLOW_LIMITS.maxSchemaDepth + 8, maxNodes: DEFAULT_WORKFLOW_LIMITS.maxSchemaNodes }), 'assignment')
-  exact(input, ['definition', 'nodeKey', 'attempt', 'kind', 'memberKey', 'memberAddress', 'inputs', 'sourceAccepted',
+  exact(input, ['definition', 'nodeKey', 'attempt', 'kind', 'memberKey', 'memberAddress', 'channelId', 'inputs', 'sourceAccepted',
     'effectiveAllowance', 'reviewerReservations', 'toolNames', 'nativeActions', 'workspace', 'workspaceBaseline',
     'protocolReserve', 'deadline', 'acceptance'], 'assignment')
   if (input.kind !== 'production' || !Number.isSafeInteger(input.attempt) || (input.attempt as number) < 0) invalidHistory('assignment-kind-attempt')
@@ -68,6 +69,7 @@ function decodeAssignment(value: JsonValue): WorkflowAssignment & JsonObject {
     nodeKey: text(input.nodeKey, 'nodeKey'), attempt: input.attempt as number, kind: 'production',
     memberKey: text(input.memberKey, 'memberKey'),
     memberAddress: formatSessionAddress(parseSessionAddress(text(input.memberAddress, 'memberAddress'))),
+    channelId: parseChannelId(text(input.channelId, 'channelId')),
     inputs: object(input.inputs!, 'inputs'), sourceAccepted: list(input.sourceAccepted, 'sourceAccepted').map(reference),
     effectiveAllowance: decodeAgentBudget(input.effectiveAllowance), reviewerReservations,
     toolNames: list(input.toolNames, 'toolNames').map(item => text(item, 'toolName')),

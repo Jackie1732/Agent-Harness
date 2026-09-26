@@ -17,6 +17,7 @@ function rootAssignment(definition: WorkflowDefinition, definitionId: SessionEve
   const trial = node.attempts[0]!
   return snapshotJson({ definition: definitionId, nodeKey: node.nodeKey, attempt: 0, kind: 'production',
     memberKey: node.executor, memberAddress: definition.roster[0]!.address,
+    channelId: '71000000-0000-4000-8000-000000000101',
     inputs: {}, sourceAccepted: [], effectiveAllowance: trial.workerGrant,
     reviewerReservations: trial.reviewerGrants, toolNames: trial.toolNames, nativeActions: trial.nativeActions,
     workspace: trial.workspace, workspaceBaseline: null,
