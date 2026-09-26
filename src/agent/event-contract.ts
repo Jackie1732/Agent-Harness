@@ -28,7 +28,7 @@ export type AgentTurnStarted = {
 export type AgentStepOpened = { readonly turn: SessionEventId; readonly ordinal: number; readonly outputTokens: number; readonly observedAt: string }
 export type AgentActionIntent = {
   readonly source: ModelIntentReference
-  readonly route: 'tool' | 'send' | 'reply' | 'wait' | 'ask' | 'spawn' | 'await-subagent' | 'answer-subagent' | 'ask-parent' | 'progress' | 'work-progress' | 'work-ask' | 'work-receive' | 'work-answer' | 'invalid'
+  readonly route: 'tool' | 'send' | 'reply' | 'wait' | 'ask' | 'spawn' | 'await-subagent' | 'answer-subagent' | 'ask-parent' | 'progress' | 'work-progress' | 'work-ask' | 'work-receive' | 'work-answer' | 'work-group' | 'invalid'
 }
 export type AgentStepDecided = {
   readonly step: SessionEventId

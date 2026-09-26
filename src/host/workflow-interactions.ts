@@ -15,6 +15,7 @@ import { assertWorkflowMessageFits } from '../workflow/message-budget.js'
 import { inputKey } from '../agent/input-codec.js'
 import { invalidHistory } from '../workflow/errors.js'
 import { CommunicationError } from '../communication/errors.js'
+import { workGroupResultEvent } from '../workflow/group-events.js'
 
 /** Called under HostWorkflows' admission gate; coordinator records receive identities and quotas, not peer text. */
 export async function admitWorkQuestion(coordinator: SessionHandle, slots: readonly HostSlot[], clock: Clock,
@@ -40,6 +41,7 @@ export async function admitWorkQuestion(coordinator: SessionHandle, slots: reado
       interaction: { address: coordinator.header.address, eventId: formatSessionEventId(coordinator.header.sessionId, sessionSequence(Number.MAX_SAFE_INTEGER)) } } },
   { maxMessageBytes: own.payload.protocolLimits.maxMessageBytes, maxRecordBytes: Math.min(sender.session.maxRecordBytes, target.session.maxRecordBytes) })
   const committed = await new WorkflowJournal(coordinator, clock).append(workflowInteractionAdmittedEvent, () => chosen)
+  if (committed.payload.kind !== 'question') invalidHistory('question-admission-kind')
   return { outcome: 'admitted', admission: { address: coordinator.header.address, eventId: committed.stored.eventId }, value: committed.payload }
 }
 
@@ -51,6 +53,12 @@ export function nextWorkInteractionSettlement(coordinator: SessionHandle, slots:
     const request = interaction.admitted.payload.request
     const sender = slots.find(slot => slot.session.header.address === request.address)!
     const source = foldAgentSession(sender.session.snapshot())
+    if (interaction.admitted.payload.kind === 'group') {
+      const result = [...source.sources.values()].find(event => event.stored.type === workGroupResultEvent.type && workGroupResultEvent.decode(event.payload).request === request.eventId)
+      if (result === undefined) continue
+      return () => new WorkflowJournal(coordinator, clock).append(workflowInteractionSettledEvent, () => ({ interaction: interaction.admitted.stored.eventId,
+        outcome: workGroupResultEvent.decode(result.payload).outcome, source: { address: sender.session.header.address, eventId: result.stored.eventId } }))
+    }
     const question = workQuestionRequestedEvent.decode(source.sources.get(request.eventId)!.payload)
     const wait = [...source.waits.values()].find(wait => sameWorkflowValue(wait.reference, question.action))
     let outcome: 'answered' | 'declined' | 'timed-out' | 'cancelled' | 'interrupted'

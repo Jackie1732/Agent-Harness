@@ -3,8 +3,10 @@ import { toolRequestedEvent, toolSettledEvent } from '../tool/session-events.js'
 import type { CommittedSessionEvent } from '../session/types.js'
 import type { AgentActionIntent, AgentEventPayloads } from './event-contract.js'
 import { actionBudget, emptyAgentBudget, reserveAgentBudget } from './budget.js'
+import { groupMessageBudget } from '../workflow/group-budget.js'
 import { workProtocolRecordedEvent } from '../workflow/protocol.js'
 import { workQuestionRequestedEvent, workInteractionResolvedEvent } from '../workflow/interaction-events.js'
+import { workGroupRequestedEvent, workGroupResolvedEvent } from '../workflow/group-events.js'
 import { classifyAgentModel } from './decision.js'
 import { invalidAgent } from './errors.js'
 import { referenceKey } from './input-codec.js'
@@ -54,7 +56,7 @@ export function applyStepDecided(state: AgentProjectionState, event: CommittedSe
     const expected = classifyAgentModel(cp2.payload, spec, cp0.payload.submission.request.tools.map(tool => tool.name), { toolNames: root.allowedTools, nativeActions: root.allowedNativeActions })
     if (!equal(expected.actions, p.actions) || expected.classification !== p.classification || expected.reason !== p.reason) invalidAgent('model-decision-mismatch')
   }
-  const amount = p.admitted ? actionBudget(p.actions.map(action => action.route)) : emptyAgentBudget
+  const amount = p.admitted ? actionBudget(p.actions.map(action => action.route), groupMessageBudget(state, root.id, p.actions)) : emptyAgentBudget
   if (!equal(amount, p.reservation) || p.admitted && (p.classification !== 'actions' || p.reason === 'invalid-control-batch'
     || root.stopControl !== null || root.outcome !== null || p.observedAt >= root.deadline)) invalidAgent('action-admission')
   const budget = reserveAgentBudget(root.budget, amount, root.limit)
@@ -104,7 +106,7 @@ export function applyActionSettled(state: AgentProjectionState, event: Committed
       break
     }
     case 'wait': {
-      if (turn === null || intent === null || !['wait', 'ask', 'spawn', 'await-subagent', 'answer-subagent', 'ask-parent', 'work-ask', 'work-receive'].includes(intent.route)) invalidAgent('wait-route-mismatch')
+      if (turn === null || intent === null || !['wait', 'ask', 'spawn', 'await-subagent', 'answer-subagent', 'ask-parent', 'work-ask', 'work-receive', 'work-group'].includes(intent.route)) invalidAgent('wait-route-mismatch')
       const descriptor = result.descriptor
       const root = requireEntry(state.roots, turn.root, 'missing-root')
       if (descriptor.root !== turn.root || descriptor.deadline > root.deadline
@@ -127,6 +129,11 @@ export function applyActionSettled(state: AgentProjectionState, event: Committed
         const resolved = workInteractionResolvedEvent.decode(entry.payload)
         return resolved.outcome === 'admitted' && equal(workQuestionRequestedEvent.decode(state.sources.get(resolved.request)!.payload).action, event.payload.action)
       })) invalidAgent('not-started-has-work-admission')
+      if ([...state.sources.values()].some(entry => {
+        if (entry.stored.type !== workGroupResolvedEvent.type) return false
+        const resolved = workGroupResolvedEvent.decode(entry.payload)
+        return resolved.outcome === 'admitted' && equal(workGroupRequestedEvent.decode(state.sources.get(resolved.request)!.payload).action, event.payload.action)
+      })) invalidAgent('not-started-has-group-admission')
       if ([...state.sources.values()].some(entry => {
         if (entry.stored.type !== workProtocolRecordedEvent.type) return false
         const source = workProtocolRecordedEvent.decode(entry.payload).source

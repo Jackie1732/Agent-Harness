@@ -17,7 +17,7 @@ import type { WorkflowAcceptance, WorkflowAttempt, WorkflowCommunication, Workfl
 /** Deployment ceiling; a recorded definition may choose tighter limits. */
 export const DEFAULT_WORKFLOW_LIMITS: WorkflowLimits = Object.freeze({
   maxNodes: 64, maxEdges: 256, maxMembers: 16, maxAttemptsPerNode: 3, maxReviewersPerNode: 8,
-  maxActiveAssignments: 2, maxDefinitions: 16, maxArtifactsPerAttempt: 8,
+  maxActiveAssignments: 16, maxDefinitions: 16, maxArtifactsPerAttempt: 8,
   maxArtifactBytes: 16 * 1024, maxTotalArtifactBytes: 512 * 1024,
   maxDefinitionBytes: 128 * 1024, maxSchemaDepth: 16, maxSchemaNodes: 2_048,
   maxValueBytes: 32 * 1024, maxTextBytes: 16 * 1024,

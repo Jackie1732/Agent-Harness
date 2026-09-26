@@ -22,6 +22,9 @@ import type { WorkflowProtocolRecorded } from './protocol.js'
 import { workflowProgressMessage } from './progress.js'
 import { WorkflowError, invalidHistory } from './errors.js'
 import { assertWorkflowMessageFits } from './message-budget.js'
+import { executeWorkGroup, groupWaitResult } from './group-action.js'
+import type { WorkGroupAuthority } from './group-action.js'
+import { workGroupRequestedEvent, workGroupResolvedEvent } from './group-events.js'
 
 /** Derive optional protocol sends from the exact admitted action and its root's frozen authority. */
 export function workActionCommands(state: AgentProjectionState, source: Exclude<WorkflowProtocolRecorded['source'], string>): WorkflowProtocolRecorded & JsonObject {
@@ -73,6 +76,14 @@ export function validateWorkActionProtocol(state: AgentProjectionState, event: C
 
 export function validateWorkActionResult(state: AgentProjectionState, event: CommittedSessionEvent<AgentActionSettled>, intent: AgentActionIntent | null): void {
   const result = event.payload.result
+  if (result.kind === 'wait' && intent?.route === 'work-group') {
+    const request = [...state.sources.values()].find(item => item.stored.type === workGroupRequestedEvent.type
+      && sameWorkflowValue(workGroupRequestedEvent.decode(item.payload).action, event.payload.action))
+    const resolved = [...state.sources.values()].find(item => item.stored.type === workGroupResolvedEvent.type
+      && workGroupResolvedEvent.decode(item.payload).request === request?.stored.eventId)
+    if (resolved === undefined || !sameWorkflowValue(result, groupWaitResult(state, workGroupResolvedEvent.decode(resolved.payload)))) invalidHistory('work-group-wait-source')
+    return
+  }
   if (result.kind === 'wait' && intent?.route === 'work-receive') {
     if (!sameWorkflowValue(result.descriptor, workReceiveDescriptor(state, event.payload.action, result.descriptor.observedAt))) invalidHistory('work-receive-source')
     return
@@ -94,12 +105,16 @@ export function validateWorkActionResult(state: AgentProjectionState, event: Com
 
 /** The execution generation borrows its Session; durable sends remain owned by protocol maintenance. */
 export class SessionWorkActions implements AgentNativeActionExecutor {
-  constructor(readonly session: SessionHandle, readonly clock: Clock, readonly authority?: WorkInteractionAuthority) {}
+  constructor(readonly session: SessionHandle, readonly clock: Clock, readonly authority?: WorkInteractionAuthority & WorkGroupAuthority) {}
 
   async execute(_turn: SessionEventId, action: AgentActionReference, _intent: AgentActionIntent, _args: JsonObject, signal: AbortSignal): Promise<AgentActionResult> {
     if (signal.aborted) return { kind: 'not-started', reason: 'cancelled-before-work-action' }
     const state = foldAgentSession(this.session.snapshot())
     const source = { action, observedAt: clockTimestamp(this.clock) }
+    if (_intent.route === 'work-group') {
+      if (this.authority === undefined) blocked('work-interaction-authority-unavailable')
+      return executeWorkGroup(this.session, this.clock, action, this.authority)
+    }
     if (_intent.route === 'work-receive') return { kind: 'wait', descriptor: workReceiveDescriptor(state, action, source.observedAt) }
     if (_intent.route === 'work-ask') {
       if (this.authority === undefined) blocked('work-interaction-authority-unavailable')

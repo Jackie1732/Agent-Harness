@@ -1,5 +1,6 @@
 import { parseSessionAddress, parseSessionEventId } from '../session/index.js'
 import type { CommittedSessionEvent, SessionSnapshot } from '../session/index.js'
+import type { SessionAddress } from '../session/ids.js'
 import type { JsonValue } from '../foundation/json.js'
 import { messageEnvelopeDigest } from './canonical-json.js'
 import { keyedOutboxAcceptedEvent } from './keyed-event.js'
@@ -261,12 +262,17 @@ function applyInboxEvent(
 
 /** Reconstruct and validate one Session's locally owned communication state. */
 export function projectCommunicationFacts(snapshot: SessionSnapshot): CommunicationFacts {
+  const target = snapshot.history.find(segment => segment.header.sessionId === snapshot.header.sessionId)
+  if (target === undefined) invalid('Session snapshot does not contain its target segment')
+  return projectCommunicationEvents(snapshot.address, target.events)
+}
+
+/** Project an exact local prefix for consumers that prove cross-domain event sources. */
+export function projectCommunicationEvents(address: SessionAddress, records: SessionSnapshot['history'][number]['events']): CommunicationFacts {
   const outbox = new Map<string, MutableOutbox>()
   const inbox = new Map<string, MutableInbox>()
   const sequences = new Map<string, number>()
-  const target = snapshot.history.find(segment => segment.header.sessionId === snapshot.header.sessionId)
-  if (target === undefined) invalid('Session snapshot does not contain its target segment')
-  for (const record of target.events) {
+  for (const record of records) {
     if (record.kind === 'opaque') {
       if (record.stored.type.startsWith('communication/') && record.stored.ignorable !== true) {
         invalid('required communication event cannot be opaque')
@@ -285,8 +291,8 @@ export function projectCommunicationFacts(snapshot: SessionSnapshot): Communicat
           || payload.envelope.correlationId !== original.correlationId || payload.envelope.causationId !== original.messageId) invalid('reply command must inherit Inbox routing')
       }
     }
-    const handled = applyOutboxEvent(decoded, outbox, sequences, snapshot.address)
-      || applyInboxEvent(decoded, inbox, snapshot.address)
+    const handled = applyOutboxEvent(decoded, outbox, sequences, address)
+      || applyInboxEvent(decoded, inbox, address)
     if (!handled && record.stored.type.startsWith('communication/')) {
       if (record.stored.ignorable === true) continue
       invalid('unsupported communication event version', { type: record.stored.type, payloadVersion: record.stored.payloadVersion })
@@ -299,8 +305,8 @@ export function projectCommunicationFacts(snapshot: SessionSnapshot): Communicat
     .map(state => state.terminal ?? Object.freeze({ ...inboxBase(state), status: 'pending' as const }))
     .sort((left, right) => left.acceptedSequence - right.acceptedSequence)
   return Object.freeze({
-    sessionId: snapshot.header.sessionId,
-    address: snapshot.address,
+    sessionId: parseSessionAddress(address),
+    address,
     outbox: Object.freeze(outboxSnapshots),
     inbox: Object.freeze(inboxSnapshots),
   })

@@ -11,8 +11,11 @@ import type { AgentActionSettled, AgentCommandAccepted, AgentControlRequest, Age
 export type AgentInputState = {
   readonly protocol?: { readonly delegation: SessionEventId; readonly kind: SubagentMessageKind | 'failure'; readonly inbox: SessionEventId }
   readonly work?: import('../workflow/work-binding.js').WorkAssignmentAccepted
-  readonly workMessage?: { readonly assignment: import('../workflow/types.js').WorkflowEventRef; readonly kind: 'question' | 'answer';
-    readonly inbox: SessionEventId; readonly question: import('../workflow/types.js').WorkflowEventRef }
+  readonly workMessage?: { readonly assignment: import('../workflow/types.js').WorkflowEventRef; readonly inbox: SessionEventId } & (
+    { readonly kind: 'question' | 'answer'; readonly question: import('../workflow/types.js').WorkflowEventRef }
+    | { readonly kind: 'group'; readonly group: import('../workflow/types.js').WorkflowEventRef })
+  readonly workGroupResult?: { readonly assignment: import('../workflow/types.js').WorkflowEventRef; readonly request: SessionEventId;
+    readonly interaction: import('../workflow/types.js').WorkflowEventRef }
   readonly reference: AgentInputReference
   readonly input: AgentInput | null
   readonly message: MessageEnvelope | null

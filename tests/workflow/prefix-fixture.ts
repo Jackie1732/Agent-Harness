@@ -11,10 +11,7 @@ import { projectAgentSession } from '../../src/agent/projection.js'
 export async function recoverWorkPrefix(snapshot: SessionSnapshot, count: number, maxRecordBytes: number,
   interleave?: (session: SessionHandle) => Promise<void>) {
   const backend = new MemorySessionBackend({ maxRecordBytes })
-  await backend.create(snapshot.header)
-  const writer = await backend.openWriter(snapshot.header.sessionId)
-  for (const event of snapshot.history.at(-1)!.events.slice(0, count)) await writer.append(sessionLogPosition(event.stored.sequence - 1), event.stored)
-  await writer.dispose()
+  await seedWorkPrefix(backend, snapshot, count)
   const repository = new SessionRepository({ backend, catalog: hostRuntimeEventCatalog, maxLineageDepth: 4 })
   try {
     const session = await repository.open(snapshot.header.sessionId)
@@ -23,4 +20,12 @@ export async function recoverWorkPrefix(snapshot: SessionSnapshot, count: number
       maxRecoveryWrites: 16, maxJournalConflicts: 4, clock: { now: () => Date.now() } })
     return { result, state: projectAgentSession(session.snapshot()), added: session.snapshot().history.at(-1)!.events.slice(count) }
   } finally { await repository.dispose() }
+}
+
+/** Preserve real event identities when constructing a causally closed multi-Session cut. */
+export async function seedWorkPrefix(backend: MemorySessionBackend, snapshot: SessionSnapshot, count: number) {
+  await backend.create(snapshot.header)
+  const writer = await backend.openWriter(snapshot.header.sessionId)
+  for (const event of snapshot.history.at(-1)!.events.slice(0, count)) await writer.append(sessionLogPosition(event.stored.sequence - 1), event.stored)
+  await writer.dispose()
 }

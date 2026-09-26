@@ -4,6 +4,7 @@ import type { WorkflowControlRequested, WorkflowControlSettled } from './control
 import { workflowProgressMessage } from './progress.js'
 import { workflowInteractionAdmittedEvent, workflowInteractionSettledEvent } from './interaction-events.js'
 import { checkWorkflowInteraction } from './interactions.js'
+import { checkGroupAdmission } from './group-admission.js'
 import { validateWorkflowProtocol, workflowProtocolRecordedEvent } from './protocol.js'
 import { inboxAcceptedEvent } from '../communication/session-events.js'
 import { workflowDecisionCommittedEvent, workflowProposalReceivedEvent, workflowReviewReceivedEvent } from './coordinator-events.js'
@@ -186,7 +187,8 @@ export function projectWorkflowSession(snapshot: SessionSnapshot): WorkflowSnaps
     if (record.stored.type === workflowInteractionAdmittedEvent.type) {
       const value = workflowInteractionAdmittedEvent.decode(record.payload)
       if (definition === null || record.stored.payloadVersion !== 1 || record.stored.ignorable === true) invalidHistory('interaction-before-definition')
-      const blocked = checkWorkflowInteraction({ definition, assignments, decisions, interactions }, value)
+      const blocked = value.kind === 'question' ? checkWorkflowInteraction({ definition, assignments, decisions, interactions }, value)
+        : checkGroupAdmission({ definition, assignments, decisions, interactions }, value)
       if (blocked !== undefined) invalidHistory(blocked.reason)
       interactions.push({ admitted: { ...record, payload: value }, settled: null })
     } else if (record.stored.type === workflowInteractionSettledEvent.type) {

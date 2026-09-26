@@ -1,6 +1,7 @@
 import type { AgentRunSelection } from './contract.js'
 import { subagentMessageDefinitions } from '../subagent/messages.js'
 import { workflowQuestionMessage, workflowAnswerMessage } from '../workflow/interaction-events.js'
+import { workflowGroupMessage } from '../workflow/group-events.js'
 import type { MessageCatalog } from '../communication/message-catalog.js'
 import { projectCommunicationFacts } from '../communication/projection.js'
 import type { SessionSnapshot } from '../session/types.js'
@@ -46,7 +47,7 @@ export function inspectAgentReadiness(
     ? [[event.stored.eventId, event] as const] : []) ?? [])
   const controls = new Map(state.controls.map(control => [control.requested.stored.eventId, control]))
   const support = [...(state.spec?.payload.messages ?? []), ...(state.spec?.payload.protocolVersion !== 1 ? subagentMessageDefinitions : []),
-    ...(state.spec?.payload.protocolVersion === 3 ? [workflowQuestionMessage, workflowAnswerMessage] : [])]
+    ...(state.spec?.payload.protocolVersion === 3 ? [workflowQuestionMessage, workflowAnswerMessage, workflowGroupMessage] : [])]
     .filter(item => catalog.resolve(item.type, item.payloadVersion) !== undefined)
   const pendingControls = state.controls.filter(item => item.settled === null && item.supersededBy === null
     && ['cancel-work', 'expire-work'].includes(item.requested.payload.kind)).length

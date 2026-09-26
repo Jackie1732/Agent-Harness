@@ -108,6 +108,7 @@ it.each(['answer', 'decline', 'unanswered', 'cycle', 'automatic', 'timeout'] as 
       expect(state.interactions[0]?.settled?.payload.outcome).toBe(scenario === 'timeout' ? 'timed-out' : ['automatic', 'unanswered', 'decline'].includes(scenario) ? 'declined' : 'answered')
       if (scenario === 'answer') {
         const admitted = state.interactions[0]!.admitted.payload
+        if (admitted.kind !== 'question') throw new Error('question fixture')
         expect(checkWorkflowInteraction(state, admitted)?.reason).toBe('work-peer-unavailable')
         const open = { ...state, decisions: [] }
         expect(checkWorkflowInteraction(open, admitted)?.reason).toBe('work-question-quota')

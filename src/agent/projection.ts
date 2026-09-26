@@ -5,6 +5,10 @@ import { applyWorkProtocolClassified } from '../workflow/receive.js'
 import { validateWorkInteractionEvent } from '../workflow/question-action.js'
 import { workQuestionDeclinedEvent } from '../workflow/interaction-events.js'
 import { applyWorkQuestionDeclined } from '../workflow/question-decline.js'
+import { workGroupEventDefinitions, workGroupResultEvent } from '../workflow/group-events.js'
+import { validateGroupActionEvent } from '../workflow/group-action.js'
+import { applyWorkGroupResult } from '../workflow/group-result.js'
+import { workInputUnadoptedEvent, applyWorkInputUnadopted } from '../workflow/input-disposition.js'
 import { applyWorkResultEvent } from '../workflow/result-projection.js'
 import { workResultEventDefinitions } from '../workflow/result-events.js'
 import { applyWorkAssignmentAccepted, applyWorkAssignmentSettled } from '../workflow/work-projection.js'
@@ -152,6 +156,15 @@ export function foldAgentSession(snapshot: SessionSnapshot): AgentProjectionStat
     else if (event.stored.type === workAssignmentAcceptedEvent.type) applyWorkAssignmentAccepted(state, event)
     else if (event.stored.type === workAssignmentSettledEvent.type) applyWorkAssignmentSettled(state, event)
     else if (event.stored.type === workQuestionDeclinedEvent.type) applyWorkQuestionDeclined(state, event)
+    else if (event.stored.type === workInputUnadoptedEvent.type) {
+      if (event.stored.payloadVersion !== 1 || event.stored.ignorable) invalidAgent('work-input-version')
+      applyWorkInputUnadopted(state, event)
+    }
+    else if (workGroupEventDefinitions.some(definition => definition.type === event.stored.type)) {
+      if (event.stored.payloadVersion !== 1 || event.stored.ignorable) invalidAgent('work-group-version')
+      if (event.stored.type === workGroupResultEvent.type) applyWorkGroupResult(state, event)
+      else validateGroupActionEvent(state, event)
+    }
     else if ([workQuestionRequestedEvent.type, workInteractionResolvedEvent.type, workProtocolClassifiedEvent.type].includes(event.stored.type)) {
       if (event.stored.payloadVersion !== 1 || event.stored.ignorable) invalidAgent('work-interaction-version')
       if (event.stored.type === workProtocolClassifiedEvent.type) applyWorkProtocolClassified(state, event)

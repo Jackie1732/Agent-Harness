@@ -13,7 +13,7 @@ export function runnableAgentInputs(state: AgentSessionSnapshot, catalog: Messag
   return state.inputs.filter(input => {
     const waitRoot = input.reservedBy === null ? undefined : state.waits.find(wait => referenceKey(wait.reference) === referenceKey(input.reservedBy!))?.created.payload.result
     const root = waitRoot?.kind === 'wait' ? state.roots.find(root => root.id === waitRoot.descriptor.root) : undefined
-    const assignment = input.work?.assignment ?? input.workMessage?.assignment ?? (root?.source.kind === 'workflow' ? root.source.assignment : undefined)
+    const assignment = input.work?.assignment ?? input.workMessage?.assignment ?? input.workGroupResult?.assignment ?? (root?.source.kind === 'workflow' ? root.source.assignment : undefined)
     if (selection.kind === 'ordinary' ? assignment !== undefined : assignment === undefined || !sameWorkflowValue(assignment, selection.assignment)) return false
     if (selection.kind === 'ordinary' && (state.roots.some(item => item.source.kind === 'workflow' && item.outcome === null)
       || state.inputs.some(item => item.work !== undefined && item.status === 'queued'))) return false
@@ -21,7 +21,7 @@ export function runnableAgentInputs(state: AgentSessionSnapshot, catalog: Messag
     if (input.protocol?.kind === 'task' && (state.subagents.controls.length > 0 || state.roots.length > 0)) return false
     if (input.message !== null && (catalog.resolve(input.message.type, input.message.payloadVersion) === undefined
       || input.protocol === undefined && input.workMessage === undefined && !spec.messages.some(message => message.type === input.message!.type && message.payloadVersion === input.message!.payloadVersion))) return false
-    if (input.status === 'queued' && input.workMessage !== undefined) return false
+    if (input.status === 'queued' && (input.workMessage !== undefined || input.workGroupResult !== undefined)) return false
     if (input.status === 'queued') return input.protocol === undefined ? input.input?.kind !== 'answer' : input.protocol.kind === 'task'
     if (input.status !== 'reserved' || input.reservedBy === null) return false
     const wait = state.waits.find(wait => referenceKey(wait.reference) === referenceKey(input.reservedBy!))

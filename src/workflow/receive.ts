@@ -9,11 +9,14 @@ import { inputKey } from '../agent/input-codec.js'
 import { workProtocolClassifiedEvent, workQuestionRequestedEvent, workInteractionResolvedEvent, workflowQuestionMessage, workflowAnswerMessage } from './interaction-events.js'
 import { sameWorkflowValue, workAssignmentAcceptedEvent } from './work-binding.js'
 import { invalidHistory } from './errors.js'
+import { classifyGroupMessage, applyGroupInput } from './group-receive.js'
+import { workGroupRequestedEvent } from './group-events.js'
 
 /** Classification uses this Session's binding and Inbox; it does not claim a model input. */
 export function classifyWorkMessage(state: AgentProjectionState, inbox: SessionEventId) {
   const event = source(state, inbox, inboxAcceptedEvent)
   const envelope = event.payload.envelope
+  if (envelope.type === 'workflow/group') return classifyGroupMessage(state, inbox)
   const kind: 'question' | 'answer' = envelope.type === workflowQuestionMessage.type ? 'question' : 'answer'
   const value = kind === 'question' ? workflowQuestionMessage.decode(envelope.payload) : workflowAnswerMessage.decode(envelope.payload)
   const accepted = [...state.inputs.values()].find(input => input.work !== undefined && sameWorkflowValue(input.work.assignment, value.targetAssignment))
@@ -63,6 +66,7 @@ export function applyWorkProtocolClassified(state: AgentProjectionState, event: 
   if (!sameWorkflowValue(p, expected) || [...state.sources.values()].some(item => item.stored.type === event.stored.type
     && workProtocolClassifiedEvent.decode(item.payload).inbox === p.inbox)) invalidHistory('work-classification-source')
   if (p.classification !== 'eligible') return
+  if (p.kind === 'group') { applyGroupInput(state, event); return }
   const incoming = source(state, p.inbox, inboxAcceptedEvent)
   const message = incoming.payload.envelope
   const value = p.kind === 'question' ? workflowQuestionMessage.decode(message.payload) : workflowAnswerMessage.decode(message.payload)
@@ -72,9 +76,10 @@ export function applyWorkProtocolClassified(state: AgentProjectionState, event: 
     status: 'queued', claimedBy: null, reservedBy: null, everMatched: false, reason: null })
 }
 
-/** The question send is eligible only after the original action's wait checkpoint is durable. */
-export function workQuestionSendReady(state: AgentProjectionState, request: SessionEventId, observedAt?: string): boolean {
-  const question = workQuestionRequestedEvent.decode(state.sources.get(request)!.payload)
+/** Collaboration sends require the original action's durable wait checkpoint. */
+export function workInteractionSendReady(state: AgentProjectionState, request: SessionEventId, observedAt?: string): boolean {
+  const event = state.sources.get(request)!
+  const question = event.stored.type === workGroupRequestedEvent.type ? workGroupRequestedEvent.decode(event.payload) : workQuestionRequestedEvent.decode(event.payload)
   const wait = [...state.waits.values()].find(item => sameWorkflowValue(item.reference, question.action))
   const root = state.roots.get(question.root)!
   return root.outcome === null && root.stopControl === null && wait?.settled === null

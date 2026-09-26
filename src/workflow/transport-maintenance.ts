@@ -12,7 +12,7 @@ import { workAssignmentAcceptedEvent } from './work-binding.js'
 import {  workProposalRecordedEvent , workReviewRecordedEvent } from './result-events.js'
 import { workInteractionResolvedEvent, workQuestionDeclinedEvent } from './interaction-events.js'
 import { foldAgentSession } from '../agent/projection.js'
-import { workQuestionSendReady } from './receive.js'
+import { workInteractionSendReady } from './receive.js'
 
 /** One local command or one keyed Outbox write; actual delivery belongs to the Host delivery lane. */
 export function nextWorkflowSend(session: SessionHandle, mailbox: SessionMailbox, clock: Clock,
@@ -28,7 +28,7 @@ export function nextWorkflowSend(session: SessionHandle, mailbox: SessionMailbox
     const event = sources.get(id)!
     if (event.stored.type !== workInteractionResolvedEvent.type) return true
     const resolution = workInteractionResolvedEvent.decode(event.payload)
-    return resolution.outcome === 'admitted' && workQuestionSendReady(foldAgentSession(session.snapshot()), resolution.request, clockTimestamp(clock))
+    return resolution.outcome === 'admitted' && workInteractionSendReady(foldAgentSession(session.snapshot()), resolution.request, clockTimestamp(clock))
   }
   const missing = events.find(item => kinds.includes(item.stored.type) && canSend(item.stored.eventId)
     && !protocol.some(command => command.payload.source === item.stored.eventId))

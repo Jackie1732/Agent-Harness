@@ -17,7 +17,7 @@ export function workActionSource(state: AgentProjectionState, action: AgentActio
   const input = workAcceptanceForRoot(state, root.id)
   const binding = input.work!
   const names: Partial<Record<typeof intent.route, string>> = { 'work-progress': 'agent_report_work_progress',
-    'work-ask': 'agent_ask_work_peer', 'work-receive': 'agent_await_work_message', 'work-answer': 'agent_answer_work_peer' }
+    'work-ask': 'agent_ask_work_peer', 'work-receive': 'agent_await_work_message', 'work-answer': 'agent_answer_work_peer', 'work-group': 'agent_send_work_group' }
   const name = names[intent.route]
   if (binding.value.kind !== 'production' || name === undefined || !binding.value.nativeActions.includes(name)) invalidHistory('work-action-authority')
   return { intent, turn, root, binding, accepted: input.reference.eventId, args: originalAgentActionArguments(state, intent) }

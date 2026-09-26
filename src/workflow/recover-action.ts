@@ -6,6 +6,8 @@ import { sameWorkflowValue } from './work-binding.js'
 import { workQuestionRequestedEvent, workInteractionResolvedEvent } from './interaction-events.js'
 import { workQuestionResult } from './question-action.js'
 import { foldAgentSession } from '../agent/projection.js'
+import { workGroupRequestedEvent, workGroupResolvedEvent } from './group-events.js'
+import { groupWaitResult } from './group-action.js'
 
 /** Reuse a committed work action intent without invoking a Provider or sending a message. */
 export function recoverWorkAction(snapshot: SessionSnapshot, action: AgentActionReference): AgentActionResult | undefined {
@@ -16,6 +18,11 @@ export function recoverWorkAction(snapshot: SessionSnapshot, action: AgentAction
   })
   if (protocol !== undefined) return { kind: 'protocol-accepted', protocol: protocol.stored.eventId }
   const state = foldAgentSession(snapshot)
+  const group = [...state.sources.values()].find(event => event.stored.type === workGroupRequestedEvent.type
+    && sameWorkflowValue(workGroupRequestedEvent.decode(event.payload).action, action))
+  const groupResolution = [...state.sources.values()].find(event => event.stored.type === workGroupResolvedEvent.type
+    && workGroupResolvedEvent.decode(event.payload).request === group?.stored.eventId)
+  if (groupResolution !== undefined) return groupWaitResult(state, workGroupResolvedEvent.decode(groupResolution.payload))
   const request = [...state.sources.values()].find(event => event.stored.type === workQuestionRequestedEvent.type
     && sameWorkflowValue(workQuestionRequestedEvent.decode(event.payload).action, action))
   const resolved = [...state.sources.values()].find(event => event.stored.type === workInteractionResolvedEvent.type

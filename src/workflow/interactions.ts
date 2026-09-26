@@ -4,7 +4,7 @@ import { workflowInteractionAdmittedEvent, workQuestionRequestedEvent } from './
 import { sameWorkflowValue } from './work-binding.js'
 import type { WorkflowEventRef } from './types.js'
 
-export type InteractionAdmission = ReturnType<typeof workflowInteractionAdmittedEvent.decode>
+export type InteractionAdmission = Extract<ReturnType<typeof workflowInteractionAdmittedEvent.decode>, { kind: 'question' }>
 export type InteractionRejection = { readonly outcome: 'blocked'; readonly reason: string; readonly cycle: readonly WorkflowEventRef[] }
 
 /** All active question edges and both quota debits are evaluated against the same coordinator prefix. */
@@ -20,11 +20,12 @@ export function checkWorkflowInteraction(state: Pick<WorkflowSnapshot, 'definiti
     || state.decisions.some(item => [value.assignment.eventId, value.targetAssignment.eventId].includes(item.payload.assignment.eventId))) return blocked('work-peer-unavailable')
   if (!definition.payload.communication.ask.some(pair => pair.from === sender.payload.memberKey && pair.to === target.payload.memberKey)) return blocked('work-question-not-permitted')
   if (value.observedAt >= value.deadline || value.deadline > sender.payload.deadline || value.deadline > target.payload.deadline) return blocked('work-question-expired')
-  const outgoing = state.interactions.filter(item => sameWorkflowValue(item.admitted.payload.assignment, value.assignment))
-  const incoming = state.interactions.filter(item => sameWorkflowValue(item.admitted.payload.targetAssignment, value.targetAssignment))
+  const questions = state.interactions.filter(item => item.admitted.payload.kind === 'question')
+  const outgoing = questions.filter(item => sameWorkflowValue(item.admitted.payload.assignment, value.assignment))
+  const incoming = questions.filter(item => item.admitted.payload.kind === 'question' && sameWorkflowValue(item.admitted.payload.targetAssignment, value.targetAssignment))
   if (outgoing.length >= definition.payload.limits.maxQuestions || incoming.length >= definition.payload.limits.maxIncomingQuestions) return blocked('work-question-quota')
   if (state.interactions.some(item => sameWorkflowValue(item.admitted.payload.request, value.request))) return blocked('work-question-already-admitted')
-  const active = state.interactions.filter(item => item.settled === null).map(item => item.admitted.payload)
+  const active = state.interactions.filter(item => item.settled === null).map(item => item.admitted.payload).filter(item => item.kind === 'question')
   const visited = new Set<string>()
   const visit = (node: WorkflowEventRef, path: readonly WorkflowEventRef[]): readonly WorkflowEventRef[] | undefined => {
     if (sameWorkflowValue(node, value.assignment)) return path

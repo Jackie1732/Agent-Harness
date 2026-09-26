@@ -8,6 +8,7 @@ import type { AgentProjectionState } from './projection-state.js'
 import { requireEntry, requireSpec } from './projection-state.js'
 import { equal, record } from './validation.js'
 import { workflowQuestionMessage, workflowAnswerMessage } from '../workflow/interaction-events.js'
+import { workflowGroupMessage } from '../workflow/group-events.js'
 
 export function matchesAgentWait(wait: AgentWaitState, input: AgentInputState, state: Pick<AgentProjectionState, 'sources' | 'controls'>): boolean {
   const result = wait.created.payload.result
@@ -22,8 +23,10 @@ export function matchesAgentWait(wait: AgentWaitState, input: AgentInputState, s
       && equal(record(item.payload).sendKey, { eventId: descriptor.question, index: 0 }))
     return question !== undefined && input.message.replyTo === record(record(question.payload).envelope).messageId
   }
-  if (descriptor.kind === 'work-message') return input.workMessage?.kind === 'question' && descriptor.receive !== 'group'
+  if (descriptor.kind === 'work-message') return input.workMessage !== undefined && input.workMessage.kind !== 'answer'
+    && (descriptor.receive === 'either' || descriptor.receive === input.workMessage.kind)
     && equal(input.workMessage.assignment, descriptor.assignment)
+  if (descriptor.kind === 'work-group') return input.workGroupResult?.request === descriptor.request && equal(input.workGroupResult.interaction, descriptor.interaction)
   if (descriptor.kind === 'work-answer') {
     if (input.workMessage?.kind !== 'answer' || input.message === null || input.workMessage.question.eventId !== descriptor.request) return false
     const answer = workflowAnswerMessage.decode(input.message.payload)
@@ -51,7 +54,7 @@ export function applyWaitSettled(state: AgentProjectionState, event: CommittedSe
   if (new Set(p.supportedMessages.map(item => `${item.type}@${item.payloadVersion}`)).size !== p.supportedMessages.length
     || p.supportedMessages.some(item => !requireSpec(state).payload.messages.some(kind => kind.type === item.type && kind.payloadVersion === item.payloadVersion)
       && !(requireSpec(state).payload.protocolVersion !== 1 && item.payloadVersion === 1 && ['task', 'question', 'answer', 'progress', 'result'].some(kind => item.type === `subagent/${kind}`))
-      && !(requireSpec(state).payload.protocolVersion === 3 && item.payloadVersion === 1 && [workflowQuestionMessage.type, workflowAnswerMessage.type].includes(item.type)))) invalidAgent('wait-support-observation')
+      && !(requireSpec(state).payload.protocolVersion === 3 && item.payloadVersion === 1 && [workflowQuestionMessage.type, workflowAnswerMessage.type, workflowGroupMessage.type].includes(item.type)))) invalidAgent('wait-support-observation')
   const eligible = [...state.inputs.values()].filter(input => matchesAgentWait(wait, input, state) && (input.message === null
     || p.supportedMessages.some(kind => kind.type === input.message!.type && kind.payloadVersion === input.message!.payloadVersion)))
   if (p.outcome !== 'unavailable' && p.outboxTerminal !== null) invalidAgent('unexpected-outbox-terminal')

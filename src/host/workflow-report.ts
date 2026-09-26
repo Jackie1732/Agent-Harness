@@ -27,7 +27,10 @@ export function workflowReport(session: SessionHandle, slots: readonly HostSlot[
       accepted: state.decisions.filter(item => item.payload.outcome === 'accepted' && state.assignments.some(work => work.stored.eventId === item.payload.assignment.eventId && work.payload.kind === 'production')).length,
       failed: state.decisions.filter(item => item.payload.outcome === 'rejected' && state.assignments.some(work => work.stored.eventId === item.payload.assignment.eventId && work.payload.kind === 'production')).length,
       pendingInbox: communication.inbox.filter(item => item.status === 'pending').length,
-      questions: state.interactions.length, pendingQuestions: state.interactions.filter(item => item.settled === null).length,
+      questions: state.interactions.filter(item => item.admitted.payload.kind === 'question').length,
+      pendingQuestions: state.interactions.filter(item => item.admitted.payload.kind === 'question' && item.settled === null).length,
+      groups: state.interactions.filter(item => item.admitted.payload.kind === 'group').length,
+      pendingGroups: state.interactions.filter(item => item.admitted.payload.kind === 'group' && item.settled === null).length,
       pendingOutbox: communication.outbox.filter(item => item.status === 'pending').length },
     progress: Object.freeze(state.progress.slice(0, maximum)),
     nodes: Object.freeze(nodes.slice(0, maximum)), assignments: Object.freeze(state.assignments.slice(0, maximum).map(item => ({

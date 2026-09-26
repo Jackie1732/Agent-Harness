@@ -2,6 +2,9 @@ import { WorkflowError } from '../workflow/errors.js'
 import { SessionWorkActions } from '../workflow/actions.js'
 import { admitWorkQuestion, nextWorkInteractionSettlement } from './workflow-interactions.js'
 import { nextWorkQuestionDecline } from '../workflow/question-decline.js'
+import { nextWorkGroupAction } from '../workflow/group-maintenance.js'
+import { admitWorkGroup } from './workflow-groups.js'
+import { nextWorkInputDisposition } from '../workflow/input-disposition.js'
 import { randomUUID } from 'node:crypto'
 import { SerialGate } from '../foundation/serial-gate.js'
 import type { Clock } from '../foundation/clock.js'
@@ -126,6 +129,8 @@ export class HostWorkflows {
     for (const member of this.slots.filter(member => definition.payload.roster.some(peer => peer.address === member.session.header.address))) {
       const incoming = nextWorkflowInbox(member.session, member.mailbox, this.clock, 'member')
         ?? nextWorkQuestionDecline(member.session, this.clock)
+        ?? nextWorkInputDisposition(member.session, this.clock)
+        ?? nextWorkGroupAction(member.session, member.mailbox, this.clock)
         ?? nextWorkflowSend(member.session, member.mailbox, this.clock, 'member')
       if (incoming !== undefined) return incoming
     }
@@ -142,6 +147,9 @@ export class HostWorkflows {
           if (lease !== undefined) this.#workspaces.set(work.stored.eventId, lease)
           const replacement = await member.executions!.replace({ kind: 'workflow', assignment: accepted.work!.assignment }, {
             ...workExecutionTools(member.member, work.payload, lease), workActions: new SessionWorkActions(member.session, this.clock, {
+              admitGroup: request => this.#gate.run(async () => this.#closed || projectWorkflowSession(coordinator.session.snapshot()).desired !== 'running'
+                ? { outcome: 'blocked' as const, reason: 'workflow-admission-paused' }
+                : admitWorkGroup(coordinator.session, this.slots, this.clock, request)),
               admit: request => this.#gate.run(async () => this.#closed || projectWorkflowSession(coordinator.session.snapshot()).desired !== 'running'
                 ? { outcome: 'blocked' as const, reason: 'workflow-admission-paused', cycle: [] }
                 : admitWorkQuestion(coordinator.session, this.slots, this.clock, request)),

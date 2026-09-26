@@ -9,7 +9,8 @@ import { projectToolSession } from '../tool/projection.js'
 import { actionBudget, emptyAgentBudget, reserveAgentBudget } from './budget.js'
 import { classifyAgentModel } from './decision.js'
 import { executeAgentAction } from './action-driver.js'
-import { projectAgentSession } from './projection.js'
+import { projectAgentSession, foldAgentSession } from './projection.js'
+import { groupMessageBudget } from '../workflow/group-budget.js'
 import { settleAgentStops, synchronizeAgentReceipts } from './management.js'
 import type { AgentRuntime } from './runtime-contract.js'
 import type { AgentRootOutcome, AgentTurnOutcome } from './contract.js'
@@ -83,7 +84,8 @@ export async function driveAgentTurn(runtime: AgentRuntime, turnId: SessionEvent
       }
     }
     await expireAgentRoot(runtime, turn.root)
-    const amount = actionBudget(classification.actions.map(item => item.route))
+    const amount = actionBudget(classification.actions.map(item => item.route), classification.actions.some(item => item.route === 'work-group')
+      ? groupMessageBudget(foldAgentSession(runtime.session.snapshot()), turn.root, classification.actions) : 0)
     const decision = await runtime.journal.append(runtime.events.stepDecided, state => {
       const current = state.roots.find(item => item.id === turn.root)!
       const observedAt = clockTimestamp(runtime.clock)
