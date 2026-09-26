@@ -1,6 +1,7 @@
 import type { AgentBudget } from '../agent/contract.js'
 import type { JsonObject, JsonValue } from '../foundation/json.js'
 import type { SessionAddress, SessionEventId } from '../session/ids.js'
+import type { MailboxReservation } from '../communication/protocol-capacity.js'
 
 /** One event identity is meaningful only within its owning Session. */
 export interface WorkflowEventRef {
@@ -112,3 +113,24 @@ export type WorkflowNodeResolution = { readonly nodeKey: string; readonly outcom
 export type WorkflowDecision = { readonly nodeKey: string; readonly assignment: WorkflowEventRef;
   readonly outcome: 'accepted' | 'rejected'; readonly expectedRevision: 0;
   readonly value: JsonValue | null; readonly artifacts: readonly WorkflowEventRef[] }
+
+/** Complete production reservation fixed at the coordinator's CP-W. */
+export interface WorkflowAssignment {
+  readonly definition: SessionEventId
+  readonly nodeKey: string
+  readonly attempt: number
+  readonly kind: 'production'
+  readonly memberKey: string
+  readonly memberAddress: SessionAddress
+  readonly inputs: JsonObject
+  readonly sourceAccepted: readonly WorkflowEventRef[]
+  readonly effectiveAllowance: AgentBudget
+  readonly reviewerReservations: readonly { readonly memberKey: string; readonly grant: AgentBudget }[]
+  readonly toolNames: readonly string[]
+  readonly nativeActions: readonly string[]
+  readonly workspace: WorkflowWorkspace
+  readonly workspaceBaseline: JsonObject | null
+  readonly protocolReserve: { readonly coordinator: MailboxReservation; readonly member: MailboxReservation }
+  readonly deadline: string
+  readonly acceptance: WorkflowAcceptance
+}

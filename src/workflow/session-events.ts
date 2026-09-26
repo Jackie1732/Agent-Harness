@@ -5,6 +5,8 @@ import type { SessionEventId } from '../session/ids.js'
 import { decodeWorkflowDefinition } from './definition.js'
 import { invalidHistory } from './errors.js'
 import type { WorkflowDefinition } from './types.js'
+import { decodeWorkflowAssignment } from './assignment-codec.js'
+import type { WorkflowAssignment } from './types.js'
 
 /** The complete immutable run definition, owned by the coordinator Session. */
 export interface WorkflowDefinitionRecorded extends JsonObject {
@@ -48,4 +50,9 @@ export const workflowNodeResolvedEvent = createDurableEventDefinition<WorkflowNo
   type: 'workflow/node-resolved', payloadVersion: 1, ignorable: false, decode: decodeNodeResolved,
 })
 
-export const workflowSessionEventDefinitions = Object.freeze([workflowDefinitionRecordedEvent, workflowNodeResolvedEvent])
+export const workflowAssignmentCommittedEvent = createDurableEventDefinition<WorkflowAssignment & JsonObject>({
+  type: 'workflow/assignment-committed', payloadVersion: 1, ignorable: false, decode: decodeWorkflowAssignment,
+})
+
+export const workflowSessionEventDefinitions = Object.freeze([workflowDefinitionRecordedEvent, workflowNodeResolvedEvent,
+  workflowAssignmentCommittedEvent])
