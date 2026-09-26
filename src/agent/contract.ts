@@ -4,11 +4,12 @@ import type { SessionAddress, SessionEventId } from '../session/ids.js'
 import type { AgentSubagentRole } from '../subagent/contract.js'
 
 export const agentNativeActionNames = ['agent_send_message', 'agent_reply_message', 'agent_await_reply', 'agent_ask_user'] as const
-export const subagentNativeActionNames = ['agent_spawn_subagent', 'agent_await_subagent', 'agent_answer_subagent', 'agent_ask_parent', 'agent_report_progress'] as const
+export const parentSubagentNativeActionNames = ['agent_spawn_subagent', 'agent_await_subagent', 'agent_answer_subagent'] as const
+export const subagentNativeActionNames = [...parentSubagentNativeActionNames, 'agent_ask_parent', 'agent_report_progress'] as const
 export const workflowNativeActionNames = ['agent_ask_work_peer', 'agent_await_work_message', 'agent_answer_work_peer',
   'agent_report_work_progress', 'agent_send_work_group'] as const
 export type AgentNativeActionName = typeof agentNativeActionNames[number] | typeof subagentNativeActionNames[number]
-export type WorkflowNativeActionName = typeof workflowNativeActionNames[number] | 'agent_ask_user' | 'agent_spawn_subagent'
+export type WorkflowNativeActionName = typeof workflowNativeActionNames[number] | 'agent_ask_user' | typeof parentSubagentNativeActionNames[number]
 export type AgentActionReference = { readonly eventId: SessionEventId; readonly index: number }
 export type AgentInputReference = { readonly kind: 'user' | 'peer' | 'subagent' | 'workflow'; readonly eventId: SessionEventId }
 export type AgentInput =

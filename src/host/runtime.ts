@@ -63,6 +63,7 @@ class HostRuntime {
   #activity: Promise<HostRunReport> | undefined
   #command: Promise<unknown> | undefined
   #shutdownTask: Promise<void> | undefined
+  #workflowCancellation: Promise<void> | undefined
   #shutdownMode: HostShutdownMode | undefined
   #stoppingAt: number | undefined
 
@@ -104,14 +105,14 @@ class HostRuntime {
       })
     const control = (kind: 'pause' | 'resume' | 'cancel', input: { readonly requestKey: string; readonly reason?: string }) => this.#track(async () => {
       this.#assertReady()
-      const result = await domain.control(workflowKey, kind, input)
+      const result = await domain.controls.request(workflowKey, kind, input)
       this.#assembly.wakeup.notify()
       return result
     })
     return Object.freeze({ report: () => domain.report(workflowKey), readArtifact: (reference: unknown) => domain.readArtifact(workflowKey, reference), wait,
       retry: (input: WorkflowRetryRequest) => this.#track(async () => {
         this.#assertReady()
-        const result = await domain.retry(workflowKey, input)
+        const result = await domain.controls.retry(workflowKey, input)
         this.#assembly.wakeup.notify()
         return result
       }),
@@ -234,7 +235,12 @@ class HostRuntime {
       // Publish before any Abort listener or resource callback can reenter.
       this.#shutdownTask = hostTasks.run(closingChain, () => Promise.resolve().then(async () => {
         await Promise.allSettled([...this.#operations, ...(this.#activity === undefined ? [] : [this.#activity])])
-        try { await this.#assembly.dispose(); this.#status = 'stopped' }
+        try {
+          const cancellation = await Promise.allSettled([this.#workflowCancellation])
+          await this.#assembly.dispose()
+          if (cancellation[0]?.status === 'rejected') throw cancellation[0].reason
+          this.#status = 'stopped'
+        }
         catch (cause) {
           this.#status = 'failed'
           throw new HostError('HOST_CLEANUP_FAILED', 'host-resources-retained', {}, { cause })
@@ -246,7 +252,11 @@ class HostRuntime {
       this.#assembly.server?.stopAdmission()
       this.#wake.abort()
     }
-    if (mode === 'cancel' && this.#status === 'stopping') { this.#shutdownMode = 'cancel'; this.#lifetime.abort() }
+    if (mode === 'cancel' && this.#status === 'stopping') {
+      this.#shutdownMode = 'cancel'
+      if (this.#assembly.workflows !== undefined) this.#workflowCancellation ??= this.#track(() => this.#assembly.workflows!.controls.cancelOwned())
+      this.#lifetime.abort()
+    }
     if ([...hostTasks.getStore() ?? []].some(token => this.#tokens.has(token))) throw new HostError('HOST_REENTRANT_WAIT', 'host-task-cannot-join-shutdown')
     return this.#shutdownTask
   }

@@ -3,7 +3,7 @@ import { decodeProviderDescriptor } from '../model/submission.js'
 import { snapshotModelRequest } from '../model/request.js'
 import { parseSessionAddress } from '../session/ids.js'
 import type { AgentLimits, AgentSpec, AgentSpecV1, AgentSpecV2, AgentSpecV3, ChildAgentSpecTemplate } from './contract.js'
-import { agentNativeActionNames, subagentNativeActionNames, workflowNativeActionNames } from './contract.js'
+import { agentNativeActionNames, parentSubagentNativeActionNames, subagentNativeActionNames, workflowNativeActionNames } from './contract.js'
 import { decodeAgentSubagentRole } from '../subagent/role-codec.js'
 import { decodeAgentBudget } from './budget.js'
 import { AgentError } from './errors.js'
@@ -108,7 +108,7 @@ function decodeSpec(value: unknown, version: 1 | 2 | 3, childTemplate = false): 
       if (peers.length !== 0 || actions.some(name => name !== 'agent_ask_parent' && name !== 'agent_report_progress')) throw new Error('child-template-authority')
     } else if (version !== 1) {
       const role = decodeAgentSubagentRole(input.subagents)
-      const parentActions: readonly string[] = ['agent_spawn_subagent', 'agent_await_subagent', 'agent_answer_subagent']
+      const parentActions: readonly string[] = parentSubagentNativeActionNames
       const childActions: readonly string[] = ['agent_ask_parent', 'agent_report_progress']
       if (actions.some(name => parentActions.includes(name) && role.role !== 'parent'
         || childActions.includes(name) && role.role !== 'child')) throw new Error('role-action')
@@ -123,10 +123,10 @@ function decodeSpec(value: unknown, version: 1 | 2 | 3, childTemplate = false): 
         const workTools = names(workflow.toolNames)
         if (workTools.some(name => !/^[A-Za-z0-9_-]+$/.test(name) || reservedNames.includes(name))) throw new Error('workflow-tool-name')
         const workActions = names(workflow.nativeActions)
-        workActions.forEach(name => choice(name, [...workflowNativeActionNames, 'agent_ask_user', 'agent_spawn_subagent']))
+        workActions.forEach(name => choice(name, [...workflowNativeActionNames, 'agent_ask_user', ...parentSubagentNativeActionNames]))
         if (names(workflow.resourceIds).some(name => !/^[A-Za-z][A-Za-z0-9_.-]*$/.test(name))) throw new Error('workflow-resource-id')
         const role = decodeAgentSubagentRole(input.subagents).role
-        if (role === 'child' || workActions.includes('agent_spawn_subagent') && role !== 'parent') throw new Error('workflow-subagent-role')
+        if (role === 'child' || workActions.some(name => (parentSubagentNativeActionNames as readonly string[]).includes(name)) && role !== 'parent') throw new Error('workflow-subagent-role')
       }
     }
     return input as AgentSpec | AgentSpecV3

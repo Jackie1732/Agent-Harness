@@ -136,11 +136,11 @@ it('classifies an in-flight task arriving after its authorized stop without crea
     const assembly = await assembleHost(spec, systemClock, {}, {})
     try {
       const domain = assembly.workflows!, coordinator = assembly.protocolSlots.find(slot => slot.member.agentKey === 'workflow:research')!
-      await domain.control('research', 'resume', { requestKey: 'start' })
+      await domain.controls.request('research', 'resume', { requestKey: 'start' })
       for (let step = 0; step < 10 && !coordinator.mailbox.snapshot().outbox.some(item => item.envelope.type === 'workflow/assignment'); step++) await domain.nextAction()!()
       const task = coordinator.mailbox.snapshot().outbox.find(item => item.envelope.type === 'workflow/assignment')!
       expect(task.status).toBe('pending')
-      await domain.control('research', 'cancel', { requestKey: 'stop-before-receipt' })
+      await domain.controls.request('research', 'cancel', { requestKey: 'stop-before-receipt' })
       for (let step = 0; step < 15 && !coordinator.mailbox.snapshot().outbox.some(item => item.envelope.type === 'workflow/stop'); step++) await domain.nextAction()!()
       const cancel = coordinator.mailbox.snapshot().outbox.find(item => item.envelope.type === 'workflow/stop')!
       await coordinator.dispatcher.dispatch({ onlyMessageIds: new Set([cancel.messageId]) })

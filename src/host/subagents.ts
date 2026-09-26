@@ -14,6 +14,7 @@ import type { SessionHandle } from '../session/session-handle.js'
 import { projectAgentSession } from '../agent/projection.js'
 import { agentControlRequestedEvent } from '../agent/session-events.js'
 import { AgentError } from '../agent/errors.js'
+import { AgentJournal } from '../agent/journal.js'
 import type { CommunicationService } from '../communication/service.js'
 import type { MessageCatalog } from '../communication/message-catalog.js'
 import { SubagentAdmission } from '../subagent/admission.js'
@@ -66,7 +67,10 @@ export class HostSubagents {
   constructor(readonly options: HostSubagentOptions) {
     this.admission = new SubagentAdmission(options.config, options.communication, options.clock, options.workspaces)
   }
-  get suspendedParents(): readonly string[] { return [...new Set(this.admission.accepted.filter(item => this.#suspended.has(item.event.stored.eventId)).map(item => item.parentKey))] }
+  get suspendedParents(): readonly string[] {
+    return [...new Set(this.admission.accepted.filter(item => this.#suspended.has(item.event.stored.eventId)
+      && projectAgentSession(item.parent.snapshot()).roots.find(root => root.id === item.event.payload.parentRoot)!.source.kind !== 'workflow').map(item => item.parentKey))]
+  }
   async restore(discovered: readonly DiscoveredDelegation[], local: readonly { member: ResolvedHostLocalMember; session: SessionHandle }[]): Promise<void> {
     for (const item of discovered.filter(item => !item.closed)) {
       const parent = local.find(entry => entry.member.agentKey === item.parentKey)!.session
@@ -81,10 +85,11 @@ export class HostSubagents {
       this.#suspended.set(item.requested.stored.eventId, item.child === null ? null : await this.options.repository.open(item.child.header.sessionId))
     }
   }
-  resume(parentKey: string) {
-    this.#offlineParents.delete(parentKey); this.admission.resumeParent(parentKey)
+  resume(parentKey: string, parentRoot?: SessionEventId) {
+    if (parentRoot === undefined) { this.#offlineParents.delete(parentKey); this.admission.resumeParent(parentKey) }
     const result: { delegationId: SessionEventId; status: 'resumed' | 'blocked'; reasonCode: string }[] = []
-    for (const accepted of this.admission.accepted.filter(item => item.parentKey === parentKey && this.#suspended.has(item.event.stored.eventId))) {
+    for (const accepted of this.admission.accepted.filter(item => item.parentKey === parentKey
+      && (parentRoot === undefined || item.event.payload.parentRoot === parentRoot) && this.#suspended.has(item.event.stored.eventId))) {
       const session = this.#suspended.get(accepted.event.stored.eventId)!
       const state = session === null ? null : projectAgentSession(session.snapshot())
       const pending = state !== null && (state.openRun !== null || state.openRecovery !== null || state.subagents.resources.some(item => effectiveResourceRelease(item, state.subagents.recoveries)?.outcome !== 'released'))
@@ -143,6 +148,32 @@ export class HostSubagents {
       const childRoot = child?.slot?.agent.snapshot().roots[0]
       if (childRoot !== undefined) child?.slot?.agent.notifyStop(childRoot.id)
     }
+  }
+
+  /** Cancel only the children of one owning work root after closing new Host admissions. */
+  async cancelParentWork(parentKey: string, root: SessionEventId): Promise<void> {
+    this.notifyParentStop(parentKey, root)
+    await this.admission.drain()
+    const results = await Promise.allSettled(this.admission.accepted.filter(item => item.parentKey === parentKey
+      && item.event.payload.parentRoot === root && !this.#retired.has(item.event.stored.eventId)).map(async item => {
+      const id = item.event.stored.eventId
+      await this.cancel(parentKey, root, id, 'host-work-stop:' + id)
+      const child = this.#children.get(id)
+      const session = child?.session ?? this.#suspended.get(id) ?? this.#restored.get(id)
+      if (session === undefined || session === null) return
+      const state = projectAgentSession(session.snapshot()), childRoot = state.roots[0]
+      if (childRoot?.outcome !== null) return
+      if (child?.slot?.agent.status === 'accepting') await child.slot.agent.cancel(childRoot.id, 'host-cancelled-workflow')
+      else {
+        const journal = new AgentJournal(session, state.spec!.payload.limits.maxJournalConflicts, this.options.clock)
+        if (childRoot.stopControl === null) await journal.append(agentControlRequestedEvent,
+          () => ({ kind: 'cancel-work' as const, root: childRoot.id, reason: 'host-cancelled-workflow' }))
+        let stop
+        while ((stop = agentStopAction(session, journal, this.options.clock)) !== undefined) await stop()
+      }
+    }))
+    const failures = results.filter(item => item.status === 'rejected').map(item => item.reason)
+    if (failures.length > 0) throw new AggregateError(failures, 'work-child-stop-incomplete')
   }
 
   /** Select at most one bounded transition; round-robin persists across scheduler batches. */

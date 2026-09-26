@@ -50,7 +50,7 @@ it.each(['late-question', 'late-group', 'queued-question', 'queued-group'] as co
         throw new Error('maintenance did not settle within the fixed fixture budget')
       }
       const member = (key: string) => assembly.slots.find(slot => slot.member.agentKey === key)!
-      await domain.control('research', 'resume', { requestKey: 'start' }); await maintain()
+      await domain.controls.request('research', 'resume', { requestKey: 'start' }); await maintain()
       expect(domain.report('research').counts.assignments).toBe(4)
       const task = (key: string) => coordinator.mailbox.snapshot().outbox.find(item => item.envelope.type === 'workflow/assignment'
         && item.envelope.recipient === member(key).session.header.address)!
@@ -63,7 +63,7 @@ it.each(['late-question', 'late-group', 'queued-question', 'queued-group'] as co
         await member('writer').dispatcher.dispatch({ onlyMessageIds: new Set([outgoing.messageId]) }); await maintain()
         expect(projectAgentSession(member('reviewer').session.snapshot()).inputs.find(input => input.workMessage !== undefined)?.status).toBe('queued')
       }
-      await domain.control('research', 'cancel', { requestKey: 'stop' }); await maintain()
+      await domain.controls.request('research', 'cancel', { requestKey: 'stop' }); await maintain()
       const stop = coordinator.mailbox.snapshot().outbox.find(item => item.envelope.type === 'workflow/stop' && item.envelope.recipient === member('reviewer').session.header.address)!
       await coordinator.dispatcher.dispatch({ onlyMessageIds: new Set([stop.messageId]) }); await maintain()
       if (!queued) {

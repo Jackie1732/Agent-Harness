@@ -14,8 +14,10 @@ it('decodes separate v3 ordinary and Workflow capability ceilings', async () => 
     expect(decoded.workflow).toEqual(candidate.workflow)
     expect(decodeSubagentAgentSpec({ ...fixture.spec, protocolVersion: 2, subagents: { role: 'none' },
       toolNames: ['agent_ask_work_peer'] }).toolNames).toEqual(['agent_ask_work_peer'])
-    expect(() => decodeWorkflowAgentSpec({ ...candidate, workflow: { ...candidate.workflow,
-      nativeActions: [...candidate.workflow.nativeActions, 'agent_spawn_subagent'] } })).toThrow('invalid-agent-spec')
+    for (const name of ['agent_spawn_subagent', 'agent_await_subagent', 'agent_answer_subagent']) {
+      expect(() => decodeWorkflowAgentSpec({ ...candidate, workflow: { ...candidate.workflow,
+        nativeActions: [...candidate.workflow.nativeActions, name] } })).toThrow('invalid-agent-spec')
+    }
     expect(() => decodeWorkflowAgentSpec({ ...candidate, workflow: { ...candidate.workflow,
       toolNames: ['agent_ask_work_peer'] } })).toThrow('invalid-agent-spec')
     expect(() => decodeWorkflowAgentSpec({ ...candidate, workflow: { ...candidate.workflow,

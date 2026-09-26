@@ -57,16 +57,16 @@ it('rechecks pause before executing an already selected admission and does not r
     const assembly = await assembleHost(spec, systemClock, {}, {})
     try {
       const domain = assembly.workflows!
-      await domain.control('research', 'resume', { requestKey: 'first' })
+      await domain.controls.request('research', 'resume', { requestKey: 'first' })
       const selected = domain.nextAction()!
       expect(selected).toBeTypeOf('function')
-      await domain.control('research', 'pause', { requestKey: 'pause' })
+      await domain.controls.request('research', 'pause', { requestKey: 'pause' })
       await selected()
       expect(domain.report('research').counts.assignments).toBe(0)
       expect(assembly.slots.every(slot => slot.agent.status === 'accepting')).toBe(true)
-      await domain.control('research', 'resume', { requestKey: 'first' })
+      await domain.controls.request('research', 'resume', { requestKey: 'first' })
       expect(domain.nextAction()).toBeUndefined()
-      await domain.control('research', 'resume', { requestKey: 'new' })
+      await domain.controls.request('research', 'resume', { requestKey: 'new' })
       await domain.nextAction()!()
       expect(domain.report('research').counts.assignments).toBe(1)
     } finally { await assembly.dispose() }
