@@ -1,4 +1,5 @@
 import { DelegationChannels } from './delegation-channels.js'
+import { ProtocolCapacity } from './protocol-capacity.js'
 import type { DelegationChannelLease } from './delegation-channels.js'
 import type { MessageSendKey, MessageSendCommand } from './send-command.js'
 import { systemClock } from '../foundation/clock.js'
@@ -41,6 +42,7 @@ type ServiceStatus = 'active' | 'disposing' | 'disposed'
 
 /** Owns Session attachment, private receiver registration, and Dispatcher identity. */
 export class CommunicationService {
+  readonly protocolCapacity: ProtocolCapacity
   readonly delegationChannels: DelegationChannels
   readonly #directory: SessionDirectory
   readonly #transport: MessageTransport
@@ -59,7 +61,8 @@ export class CommunicationService {
     this.#directory = options.directory
     this.#transport = options.transport
     this.#limits = validateMailboxLimits(options.limits)
-    this.delegationChannels = new DelegationChannels(this.#limits)
+    this.protocolCapacity = new ProtocolCapacity(this.#limits)
+    this.delegationChannels = new DelegationChannels(this.#limits, this.protocolCapacity)
     this.#clock = options.clock ?? systemClock
     this.#identitySource = options.identitySource ?? systemCommunicationIdentitySource
   }

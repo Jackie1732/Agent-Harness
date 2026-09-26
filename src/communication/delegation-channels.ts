@@ -1,7 +1,7 @@
 import { projectAgentSession } from '../agent/projection.js'
 import { delegationClosure, sessionDelegationsClosed } from '../subagent/closure.js'
 import { effectiveResourceRelease } from '../subagent/resource-evidence.js'
-import { SerialGate } from '../foundation/serial-gate.js'
+import { ProtocolCapacity } from './protocol-capacity.js'
 import { canonicalJsonBytes } from '../foundation/canonical-json.js'
 import type { SessionHandle } from '../session/session-handle.js'
 import type { SessionAddress, SessionEventId } from '../session/ids.js'
@@ -24,20 +24,19 @@ type Reservation = {
   child?: SessionHandle
   revoked?: ReadonlyMap<SessionAddress, number>
 }
-type Direction = 'inbox' | 'outbox'
 
 /** Owns lifetime mailbox reservations and atomic admission with ordinary mailbox writes. */
 export class DelegationChannels {
-  readonly #gate = new SerialGate()
+  readonly #capacity: ProtocolCapacity
   readonly #reservations = new Map<SessionEventId, Reservation>()
   readonly #tokens = new WeakMap<DelegationChannelLease, Reservation>()
   #uncertain = false
   #closed = false
-  closeAdmission(): void { this.#closed = true }
-  drain(): Promise<void> { return this.#gate.run(async () => undefined) }
-  constructor(readonly limits: MailboxLimits) {}
+  closeAdmission(): void { this.#closed = true; this.#capacity.closeAdmission() }
+  drain(): Promise<void> { return this.#capacity.drain() }
+  constructor(readonly limits: MailboxLimits, capacity = new ProtocolCapacity(limits)) { this.#capacity = capacity }
 
-  run<T>(write: () => Promise<T>): Promise<T> { return this.#gate.run(write) }
+  run<T>(write: () => Promise<T>): Promise<T> { return this.#capacity.run(write) }
 
   /** The callback may perform a local CP-D commit only; it must not acquire live child resources. */
   admit(parent: SessionHandle, request: DelegationRequested,
@@ -81,7 +80,7 @@ export class DelegationChannels {
       const child = reservation.child.snapshot()
       if (!sessionDelegationsClosed(projectAgentSession(child), child.history.at(-1)!.events.filter(item => item.kind === 'known'))) invalid('child-protocol-still-open')
     }
-    this.#reservations.delete(reservation.event.stored.eventId); this.#tokens.delete(token)
+    this.#reservations.delete(reservation.event.stored.eventId); this.#tokens.delete(token); this.#capacity.retire(token)
   }
 
   bindChild(token: DelegationChannelLease, child: SessionHandle): void {
@@ -133,16 +132,9 @@ export class DelegationChannels {
   }
 
   /** Returns whether one fresh message fits; protocol messages consume their pre-reserved lifetime quota. */
-  hasCapacity(handle: SessionHandle, direction: Direction, envelope?: MessageEnvelope): boolean {
+  hasCapacity(handle: SessionHandle, direction: 'inbox' | 'outbox', envelope?: MessageEnvelope): boolean {
     this.#assertKnown()
-    const facts = projectCommunicationFacts(handle.snapshot())[direction]
-    const reservation = envelope === undefined ? undefined : this.#envelopeReservation(envelope)
-    if (reservation !== undefined) {
-      return facts.filter(item => this.#envelopeReservation(item.envelope) === reservation).length < this.#quota(reservation, handle.header.address, direction)
-    }
-    const held = [...this.#reservations.values()].reduce((sum, item) => sum + this.#quota(item, handle.header.address, direction), 0)
-    const ordinary = facts.filter(item => item.status === 'pending' && this.#envelopeReservation(item.envelope) === undefined).length
-    return ordinary + held < (direction === 'inbox' ? this.limits.maxPendingInbox : this.limits.maxPendingOutbox)
+    return this.#capacity.hasCapacity(handle, direction, envelope)
   }
 
   #install(parent: SessionHandle, event: CommittedSessionEvent<DelegationRequested>): DelegationChannelLease {
@@ -151,26 +143,19 @@ export class DelegationChannels {
     const token: DelegationChannelLease = Object.freeze({ [leaseBrand]: true as const })
     const reservation = { token, event, parent }
     this.#reservations.set(event.stored.eventId, reservation); this.#tokens.set(token, reservation)
+    this.#capacity.install(token, new Map([
+      [event.payload.parentAddress, event.payload.mailboxReserve.parent],
+      [event.payload.childAddress, event.payload.mailboxReserve.child],
+    ]), envelope => matches(envelope, event.payload, event.stored.eventId))
     return token
   }
   #checkReservation(parent: SessionHandle, request: DelegationRequested): void {
     if (request.parentAddress !== parent.header.address || [...this.#reservations.values()].some(item => item.event.payload.childAddress === request.childAddress)) invalid('delegation-address-conflict')
-    const facts = projectCommunicationFacts(parent.snapshot())
-    for (const direction of ['inbox', 'outbox'] as const) {
-      const held = [...this.#reservations.values()].reduce((sum, item) => sum + this.#quota(item, parent.header.address, direction), 0)
-      const restoring = findEventId(parent, request)
-      const ordinary = facts[direction].filter(item => item.status === 'pending' && this.#envelopeReservation(item.envelope) === undefined
-        && !(restoring !== undefined && matches(item.envelope, request, restoring))).length
-      const quota = request.mailboxReserve.parent[direction]
-      const childQuota = request.mailboxReserve.child[direction]
-      const maximum = direction === 'inbox' ? this.limits.maxPendingInbox : this.limits.maxPendingOutbox
-      if (ordinary + held + quota > maximum || childQuota > maximum) throw new CommunicationError('MESSAGE_OUTBOX_FULL', 'delegation mailbox reservation exceeds capacity')
-    }
-  }
-  #quota(reservation: Reservation, address: SessionAddress, direction: Direction): number {
-    const request = reservation.event.payload
-    return address === request.parentAddress ? request.mailboxReserve.parent[direction]
-      : address === request.childAddress ? request.mailboxReserve.child[direction] : 0
+    const restoring = findEventId(parent, request)
+    this.#capacity.check(new Map([
+      [request.parentAddress, request.mailboxReserve.parent],
+      [request.childAddress, request.mailboxReserve.child],
+    ]), new Map([[parent.header.address, parent]]), envelope => restoring !== undefined && matches(envelope, request, restoring))
   }
   #envelopeReservation(envelope: MessageEnvelope): Reservation | undefined {
     const kind = subagentMessageKind(envelope.type)

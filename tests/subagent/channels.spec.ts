@@ -1,6 +1,7 @@
 import { expect, it } from 'vitest'
 import { createMessageCatalog } from '../../src/communication/message-catalog.js'
 import { DelegationChannels } from '../../src/communication/delegation-channels.js'
+import { ProtocolCapacity } from '../../src/communication/protocol-capacity.js'
 import { subagentMessageDefinitions } from '../../src/subagent/messages.js'
 import * as events from '../../src/subagent/session-events.js'
 import { createCommunicationService, requestMessage, limits } from '../communication/fixtures.js'
@@ -51,5 +52,17 @@ it('rejects mailbox reservation exhaustion before the CP-D callback runs', async
     let committed = false
     await expect(channels.admit(f.parent.session, f.parent.requested, async () => { committed = true; return f.cp })).rejects.toThrow('reservation exceeds capacity')
     expect(committed).toBe(false)
+  } finally { await f.close() }
+})
+
+it('counts another protocol consumer against the same mailbox reservation gate', async () => {
+  const f = await childFixture(false)
+  try {
+    const capacity = new ProtocolCapacity({ ...limits, maxPendingOutbox: 4, maxPendingInbox: 4 })
+    const channels = new DelegationChannels(capacity.limits, capacity)
+    await channels.restore(f.parent.session, f.cp)
+    await expect(capacity.run(async () => capacity.check(new Map([[f.parent.session.header.address,
+      { inbox: 4, outbox: 4 }]]), new Map([[f.parent.session.header.address, f.parent.session]]))))
+      .rejects.toThrow('reservation exceeds capacity')
   } finally { await f.close() }
 })
