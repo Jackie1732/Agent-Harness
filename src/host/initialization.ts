@@ -1,6 +1,5 @@
 import { subagentSessionEventDefinitions } from '../subagent/session-events.js'
 import { workflowSessionEventDefinitions } from '../workflow/session-events.js'
-import type { WorkflowDefinition } from '../workflow/types.js'
 import { preflightWorkflowInitialization, initializeWorkflowCoordinator } from './workflow-initialization.js'
 import type { HostWorkflowInitializationResult } from './workflow-initialization.js'
 import { canonicalJsonBytes } from '../foundation/canonical-json.js'
@@ -112,8 +111,7 @@ export async function initializeHost(
   }
   if (spec.schemaVersion === 3 && spec.workflows.kind === 'enabled') {
     for (const entry of spec.workflows.definitions) {
-      if (entry.sessionId === null) throw new HostError('HOST_CONFIG_INVALID', 'unplanned-workflow-identity')
-      preflightWorkflowInitialization(spec.hostKey, entry.definition as unknown as WorkflowDefinition, spec.storage.maxRecordBytes)
+      preflightWorkflowInitialization(spec.hostKey, entry.definition, spec.storage.maxRecordBytes)
     }
   }
   const storageLock = await acquireHostStorageLock(spec.storage.root, spec.hostKey)
@@ -131,7 +129,7 @@ export async function initializeHost(
     if (spec.schemaVersion === 3 && spec.workflows.kind === 'enabled') {
       for (const entry of spec.workflows.definitions) {
         results.push(await initializeWorkflowCoordinator(repository, spec.hostKey,
-          entry.definition as unknown as WorkflowDefinition, spec.storage.maxRecordBytes, options.resume === true))
+          entry.definition, spec.storage.maxRecordBytes, options.resume === true))
       }
     }
     return Object.freeze(results)

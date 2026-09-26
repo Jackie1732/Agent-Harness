@@ -30,7 +30,7 @@ function config(root: string): JsonObject {
   ] } }
   return { ...host, schemaVersion: 3, subagents: { kind: 'disabled' }, workspaceResources: [],
     workflows: { kind: 'enabled', definitions: [{ sessionId: null, definition }],
-      maxBusinessConcurrency: 1, maxInventorySessions: 3 } }
+      maxBusinessConcurrency: 1 } }
 }
 
 describe('Host v3 workflow planning', () => {

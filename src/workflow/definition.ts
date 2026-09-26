@@ -18,11 +18,19 @@ import type { WorkflowAcceptance, WorkflowAttempt, WorkflowCommunication, Workfl
 /** Deployment ceiling; a recorded definition may choose tighter limits. */
 export const DEFAULT_WORKFLOW_LIMITS: WorkflowLimits = Object.freeze({
   maxNodes: 64, maxEdges: 256, maxMembers: 16, maxAttemptsPerNode: 3, maxReviewersPerNode: 8,
+  maxActiveAssignments: 2, maxDefinitions: 16, maxArtifactsPerAttempt: 8,
+  maxArtifactBytes: 16 * 1024, maxTotalArtifactBytes: 512 * 1024,
   maxDefinitionBytes: 128 * 1024, maxSchemaDepth: 16, maxSchemaNodes: 2_048,
   maxValueBytes: 32 * 1024, maxTextBytes: 16 * 1024,
+  maxProtocolMessages: 4096, maxQuestions: 4, maxIncomingQuestions: 4, maxGroups: 2,
+  maxGroupRecipients: 8, maxIncomingGroupMessages: 8, maxProgress: 4,
+  maxWaitMs: 60_000, maxCommitConflicts: 4, maxDiscoveryEntries: 4096,
+  maxRecoveryWrites: 128, maxReportEntries: 100,
 })
 
 const limitFields = Object.keys(DEFAULT_WORKFLOW_LIMITS) as (keyof WorkflowLimits)[]
+const zeroLimitFields = new Set<keyof WorkflowLimits>(['maxQuestions', 'maxIncomingQuestions', 'maxGroups',
+  'maxGroupRecipients', 'maxIncomingGroupMessages', 'maxProgress', 'maxCommitConflicts', 'maxRecoveryWrites'])
 const identifierPattern = /^[A-Za-z][A-Za-z0-9_.-]*$/
 const own = Object.hasOwn
 
@@ -103,7 +111,8 @@ function schema(value: JsonValue | undefined, limits: WorkflowLimits): JsonObjec
 function limits(value: JsonValue | undefined, ceiling: WorkflowLimits): WorkflowLimits {
   const input = object(value, 'limits')
   fields(input, limitFields)
-  const result = Object.fromEntries(limitFields.map(field => [field, integer(input[field], field, 1)])) as unknown as WorkflowLimits
+  const result = Object.fromEntries(limitFields.map(field => [field, integer(input[field], field,
+    zeroLimitFields.has(field) ? 0 : 1)])) as unknown as WorkflowLimits
   if (limitFields.some(field => result[field] > ceiling[field]) || result.maxSchemaDepth > 32) invalidDefinition('limits-ceiling')
   return result
 }
@@ -151,7 +160,7 @@ function output(value: JsonValue, limitsValue: WorkflowLimits): WorkflowOutput {
   if (input.kind === 'text') { fields(input, ['kind', 'name']); return { kind: 'text', name: key(input.name, 'output.name') } }
   if (input.kind !== 'json') invalidDefinition('output-kind')
   fields(input, ['kind', 'schema', 'artifacts'])
-  const artifacts = list(input.artifacts, 'artifacts', limitsValue.maxNodes).map(value => {
+  const artifacts = list(input.artifacts, 'artifacts', limitsValue.maxArtifactsPerAttempt).map(value => {
     const item = object(value, 'artifact'); fields(item, ['name', 'source'])
     const source = object(item.source, 'artifact.source')
     if (source.kind === 'json-text') { fields(source, ['kind', 'path']); return { name: key(item.name, 'artifact.name'),

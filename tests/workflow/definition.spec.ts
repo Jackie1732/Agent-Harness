@@ -83,4 +83,17 @@ describe('fixed workflow definition', () => {
       'read', { kind: 'accepted', value: { text: 'x'.repeat(128) } },
     ]]), definition)).toMatchObject({ kind: 'failed', reason: 'input-limit' })
   })
+
+  it('keeps protocol and artifact limits in the recorded definition', () => {
+    const base = workflowFixture()
+    const limits = { ...base.limits, maxQuestions: 0, maxGroups: 0, maxProgress: 0,
+      maxArtifactsPerAttempt: 1 }
+    expect(decodeWorkflowDefinition({ ...base, limits }).limits).toEqual(limits)
+    const read = base.nodes[0]!
+    const artifacts = [{ name: 'first', source: { kind: 'json-text', path: ['text'] } },
+      { name: 'second', source: { kind: 'json-text', path: ['text'] } }]
+    expect(() => decodeWorkflowDefinition({ ...base, limits, nodes: [
+      { ...read, output: { ...read.output, artifacts } }, base.nodes[1],
+    ] })).toThrow('artifacts-array')
+  })
 })

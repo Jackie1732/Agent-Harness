@@ -71,11 +71,28 @@ export interface WorkflowLimits {
   readonly maxMembers: number
   readonly maxAttemptsPerNode: number
   readonly maxReviewersPerNode: number
+  readonly maxActiveAssignments: number
+  readonly maxDefinitions: number
+  readonly maxArtifactsPerAttempt: number
+  readonly maxArtifactBytes: number
+  readonly maxTotalArtifactBytes: number
   readonly maxDefinitionBytes: number
   readonly maxSchemaDepth: number
   readonly maxSchemaNodes: number
   readonly maxValueBytes: number
   readonly maxTextBytes: number
+  readonly maxProtocolMessages: number
+  readonly maxQuestions: number
+  readonly maxIncomingQuestions: number
+  readonly maxGroups: number
+  readonly maxGroupRecipients: number
+  readonly maxIncomingGroupMessages: number
+  readonly maxProgress: number
+  readonly maxWaitMs: number
+  readonly maxCommitConflicts: number
+  readonly maxDiscoveryEntries: number
+  readonly maxRecoveryWrites: number
+  readonly maxReportEntries: number
 }
 export interface WorkflowDefinition {
   readonly version: 1

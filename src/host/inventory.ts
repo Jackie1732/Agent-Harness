@@ -10,7 +10,10 @@ import { HostError } from './errors.js'
 export async function scanHostInventory(spec: ResolvedHostSpec, repository: SessionRepository): Promise<readonly SessionSnapshot[]> {
   let maximum = spec.schemaVersion !== 1 && spec.subagents.kind === 'enabled'
     ? spec.subagents.limits.maxDiscoveryEntries : 10000
-  if (spec.schemaVersion === 3 && spec.workflows.kind === 'enabled') maximum = Math.min(maximum, spec.workflows.maxInventorySessions)
+  if (spec.schemaVersion === 3 && spec.workflows.kind === 'enabled') {
+    maximum = Math.min(maximum, ...spec.workflows.definitions.map(entry =>
+      entry.definition.limits.maxDiscoveryEntries))
+  }
   const snapshots: SessionSnapshot[] = []
   const directory = await opendir(join(spec.storage.root, 'sessions'))
   let entries = 0

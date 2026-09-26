@@ -40,12 +40,12 @@ export function discoverHostWorkflows(spec: ResolvedHostSpec, snapshots: readonl
     if (entry === undefined) throw new HostError('HOST_RECOVERY_REQUIRED', 'workflow-config-removed')
     if (binding.ready === null) throw new HostError('HOST_RECOVERY_REQUIRED', 'workflow-initialization-incomplete')
     if (binding.definition === null || Buffer.compare(canonicalJsonBytes(binding.definition.payload as unknown as JsonObject),
-      canonicalJsonBytes(entry.definition)) !== 0) {
+      canonicalJsonBytes(entry.definition as unknown as JsonObject)) !== 0) {
       throw new HostError('HOST_BINDING_CONFLICT', 'workflow-config-changed')
     }
     found.add(snapshot.header.sessionId)
   }
-  for (const entry of configured) if (!found.has(entry.sessionId!)) {
+  for (const entry of configured) if (!found.has(entry.sessionId)) {
     throw new HostError('HOST_NOT_READY', 'workflow-session-missing')
   }
 }

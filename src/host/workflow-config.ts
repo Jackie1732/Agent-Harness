@@ -2,13 +2,18 @@ import type { JsonObject, JsonValue } from '../foundation/json.js'
 import { snapshotJson } from '../foundation/json.js'
 import { formatSessionAddress, parseSessionId } from '../session/ids.js'
 import { decodeWorkflowDefinition } from '../workflow/definition.js'
+import type { WorkflowDefinition } from '../workflow/types.js'
 import { HostError } from './errors.js'
 
 export type HostWorkflowConfig = { readonly kind: 'disabled' } | {
   readonly kind: 'enabled'
   readonly definitions: readonly { readonly sessionId: string | null; readonly definition: JsonObject }[]
   readonly maxBusinessConcurrency: 1 | 2
-  readonly maxInventorySessions: number
+}
+export type ResolvedHostWorkflowConfig = { readonly kind: 'disabled' } | {
+  readonly kind: 'enabled'
+  readonly definitions: readonly { readonly sessionId: string; readonly definition: WorkflowDefinition }[]
+  readonly maxBusinessConcurrency: 1 | 2
 }
 
 const planningAddress = 'ah-session:00000000-0000-4000-8000-000000000000'
@@ -26,10 +31,8 @@ export function decodeHostWorkflows(value: unknown): HostWorkflowConfig {
   const input = object(value, 'workflows')
   if (input.kind === 'disabled') { exact(input, ['kind'], 'workflows'); return { kind: 'disabled' } }
   if (input.kind !== 'enabled') invalid('workflows-kind')
-  exact(input, ['kind', 'definitions', 'maxBusinessConcurrency', 'maxInventorySessions'], 'workflows')
+  exact(input, ['kind', 'definitions', 'maxBusinessConcurrency'], 'workflows')
   if (input.maxBusinessConcurrency !== 1 && input.maxBusinessConcurrency !== 2) invalid('workflow-concurrency')
-  if (!Number.isSafeInteger(input.maxInventorySessions) || (input.maxInventorySessions as number) < 1
-    || (input.maxInventorySessions as number) > 4096) invalid('workflow-inventory-limit')
   if (!Array.isArray(input.definitions) || input.definitions.length === 0 || input.definitions.length > 64) {
     invalid('workflow-definitions')
   }
@@ -45,6 +48,5 @@ export function decodeHostWorkflows(value: unknown): HostWorkflowConfig {
   if (new Set(definitions.map(item => item.definition.workflowKey)).size !== definitions.length
     || new Set(definitions.flatMap(item => item.sessionId === null ? [] : [item.sessionId])).size
       !== definitions.filter(item => item.sessionId !== null).length) invalid('workflow-identity-duplicate')
-  return { kind: 'enabled', definitions, maxBusinessConcurrency: input.maxBusinessConcurrency,
-    maxInventorySessions: input.maxInventorySessions as number }
+  return { kind: 'enabled', definitions, maxBusinessConcurrency: input.maxBusinessConcurrency }
 }

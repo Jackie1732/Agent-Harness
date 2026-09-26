@@ -1,5 +1,5 @@
 import type { HostSubagentConfig, HostSubagentConfigV3, HostWorkspaceResource } from './subagent-config.js'
-import type { HostWorkflowConfig } from './workflow-config.js'
+import type { HostWorkflowConfig, ResolvedHostWorkflowConfig } from './workflow-config.js'
 import type { AgentSpec, AgentSpecV1, AgentSpecV2 } from '../agent/contract.js'
 import type { MailboxLimits } from '../communication/types.js'
 import type { ChannelId } from '../communication/ids.js'
@@ -169,7 +169,7 @@ export type HostConfigV3 = Omit<HostConfigV1, 'schemaVersion'> & {
 export type HostConfig = HostConfigV1 | HostConfigV2 | HostConfigV3
 export type ResolvedHostSpec = (Omit<HostConfigV1, 'members' | 'channels' | 'routes'>
   | Omit<HostConfigV2, 'members' | 'channels' | 'routes'>
-  | Omit<HostConfigV3, 'members' | 'channels' | 'routes'>) & {
+  | (Omit<HostConfigV3, 'members' | 'channels' | 'routes' | 'workflows'> & { readonly workflows: ResolvedHostWorkflowConfig })) & {
   readonly members: readonly ResolvedHostMember[]
   readonly channels: readonly { readonly channelKey: string; readonly channelId: string }[]
   readonly routes: readonly ResolvedHostRoute[]

@@ -18,6 +18,7 @@ import type { ToolInvocationLimits, ToolSchemaLimits } from '../tool/contract.js
 import { scriptedModelDescriptor } from '../model/providers/scripted.js'
 import { deepSeekModelDescriptor } from '../model/providers/deepseek.js'
 import { anthropicModelDescriptor } from '../model/providers/anthropic.js'
+import type { WorkflowDefinition } from '../workflow/types.js'
 import { HostError } from './errors.js'
 
 import type { HostIdentitySource, HostAgentSpecTemplate, HostModelConfig, HostToolConfig, HostMemberConfig, HostHttpsConfig, HostSchedulingConfig, HostCliConfig, HostConfig, ResolvedHostLocalMember, ResolvedHostMember, ResolvedHostSpec } from './config-types.js'
@@ -146,7 +147,11 @@ function decodeConfig(value: unknown, baseDirectory: string, limits: JsonValidat
       for (const peer of roster) if (!members.some(member => member.kind === 'local' && member.agentKey === peer.memberKey
         && member.sessionId !== null && formatSessionAddress(parseSessionId(member.sessionId)) === peer.address)) invalid('workflow-roster-member')
     }
-    if (workflows.maxInventorySessions < members.filter(member => member.kind === 'local').length + workflows.definitions.length) invalid('workflow-inventory-limit')
+    if (workflows.definitions.some(entry => {
+      const limits = entry.definition.limits as JsonObject
+      return (limits.maxDefinitions as number) < workflows.definitions.length
+        || (limits.maxDiscoveryEntries as number) < members.filter(member => member.kind === 'local').length + workflows.definitions.length
+    })) invalid('workflow-inventory-limit')
   }
   if (messages.some(message => message.type.startsWith('subagent/') || message.type.startsWith('workflow/'))) invalid('reserved-message-type')
   return snapshotJson({ schemaVersion: input.schemaVersion, ...(subagents === undefined ? {} : { subagents }),
@@ -344,7 +349,11 @@ export function resolveHostConfig(config: HostConfig): ResolvedHostSpec {
     return Object.freeze({ ...member, sessionId: parseSessionId(member.sessionId!), spec })
   })
   const routes = config.routes.map(route => ({ ...route, sessionId: members.get(route.memberKey)!.sessionId! }))
-  return snapshotJson({ ...config, members: resolved, routes,
+  const workflows = config.schemaVersion === 3 && config.workflows.kind === 'enabled' ? {
+    ...config.workflows, definitions: config.workflows.definitions.map(entry => ({ sessionId: entry.sessionId!,
+      definition: entry.definition as unknown as WorkflowDefinition })),
+  } : config.schemaVersion === 3 ? config.workflows : undefined
+  return snapshotJson({ ...config, ...(workflows === undefined ? {} : { workflows }), members: resolved, routes,
     channels: config.channels.map(channel => ({ channelKey: channel.channelKey, channelId: channel.channelId! })) }) as unknown as ResolvedHostSpec
 }
 

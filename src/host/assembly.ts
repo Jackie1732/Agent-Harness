@@ -82,7 +82,7 @@ export async function assembleHost(spec: ResolvedHostSpec, clock: Clock,
       }
       const childAddresses = new Set<string>()
       const workflows = spec.schemaVersion === 3 && spec.workflows.kind === 'enabled' ? spec.workflows.definitions : []
-      for (const entry of workflows) childAddresses.add(formatSessionAddress(parseSessionId(entry.sessionId!)))
+      for (const entry of workflows) childAddresses.add(formatSessionAddress(parseSessionId(entry.sessionId)))
       const routes = new Map(spec.routes.map(route => [formatSessionAddress(parseSessionId(route.sessionId)), route]))
       const transport = await effect.apply('router', () => createRoutedMessageTransport(directory, recipient => {
         if (childAddresses.has(recipient)) return { kind: 'local' }
@@ -111,7 +111,7 @@ export async function assembleHost(spec: ResolvedHostSpec, clock: Clock,
       }) : undefined
       for (const entry of workflows) {
         const session = await effect.apply('workflow session',
-          () => repository.open(parseSessionId(entry.sessionId!)), value => release(value, true))
+          () => repository.open(parseSessionId(entry.sessionId)), value => release(value, true))
         const binding = projectHostWorkflowSession(session.snapshot())
         if (binding.ready === null || binding.definition === null
           || binding.planned?.payload.hostKey !== spec.hostKey) throw new HostError('HOST_NOT_READY', 'workflow-binding-missing')
