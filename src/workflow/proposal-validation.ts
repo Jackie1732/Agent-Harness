@@ -18,6 +18,11 @@ export function validateWorkflowProposal(recipe: WorkflowDefinition, assignment:
     const source = parseSessionEventId(id)
     if (source.sessionId !== local.sessionId || source.sequence >= local.sequence) invalidHistory('proposal-local-source')
   }
+  if (proposal.outcome !== 'completed') {
+    if (proposal.reason === null || proposal.value !== null || message.artifacts.length !== 0) invalidHistory('proposal-failure-value')
+    return
+  }
+  if (proposal.reason !== null) invalidHistory('proposal-success-reason')
   validateWorkValue(proposal.value, recipe, node.nodeKey)
   const declarations = node.output.kind === 'text' ? [{ name: node.output.name, source: { kind: 'model-final' as const } }] : node.output.artifacts
   if (message.artifacts.length !== declarations.length || message.artifacts.length > recipe.limits.maxArtifactsPerAttempt

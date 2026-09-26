@@ -138,19 +138,23 @@ export class HostWorkflows {
       if (released === undefined) {
         if (!sessionDelegationsClosed(sources, [...sources.sources.values()])) continue
         return async () => {
-          await member.executions!.release()
+          let outcome: 'released' | 'unknown' = 'released'
+          let failure: unknown
+          try { await member.executions!.release() }
+          catch (cause) { outcome = 'unknown'; failure = cause }
           await new AgentJournal(member.session, member.member.spec.limits.maxJournalConflicts, this.clock).append(workExecutionReleasedEvent,
             () => ({ assignment: accepted.work!.assignment, accepted: accepted.reference.eventId, root: root.id,
-              owner: this.owner, generation: member.executions!.generation, outcome: 'released' as const }))
+              owner: this.owner, generation: member.executions!.generation, outcome }))
+          if (outcome === 'unknown') throw failure
         }
       }
       const publication = nextWorkPublication(member.session, this.clock)
       if (publication !== undefined) return publication
       const proposal = state.proposals.find(item => item.payload.message.assignment.eventId === work.stored.eventId)
       if (proposal !== undefined && !state.decisions.some(item => item.payload.assignment.eventId === work.stored.eventId)
-        && work.payload.acceptance.kind === 'schema-only') return () => entry.journal.append(workflowDecisionCommittedEvent, () => ({
+        && (work.payload.acceptance.kind === 'schema-only' || proposal.payload.message.value.outcome !== 'completed')) return () => entry.journal.append(workflowDecisionCommittedEvent, () => ({
         definition: definition.stored.eventId, assignment: proposal.payload.message.assignment, proposal: proposal.payload.message.proposal,
-        expectedOutputRevision: 0 as const, outcome: 'accepted' as const, value: proposal.payload.message.value.value,
+        expectedOutputRevision: 0 as const, outcome: proposal.payload.message.value.outcome === 'completed' ? 'accepted' as const : 'rejected' as const, value: proposal.payload.message.value.value,
         artifacts: proposal.payload.message.value.artifacts, reviews: [],
       }))
       if (workflowAssignmentClosed(coordinator.session, member.session, work.stored.eventId)) return async () => {

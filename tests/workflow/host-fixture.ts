@@ -4,12 +4,12 @@ import { workflowMemberFingerprints } from '../../src/host/workflow-authority.js
 import { twoMemberHostConfig } from '../host/fixtures.js'
 import { workflowFixture } from './fixtures.js'
 
-export function runnableWorkflowHost(root: string) {
+export function runnableWorkflowHost(root: string, firstText = '{"text":"accepted upstream"}') {
   const base = twoMemberHostConfig(root)
   const members = (base.members as readonly JsonObject[]).map(member => ({ ...member,
     profile: { ...(member.profile as JsonObject), rendererVersion: 'context-neutral/v4' },
     spec: { ...(member.spec as JsonObject), protocolVersion: 3, workflow: { kind: 'participant', toolNames: [], nativeActions: [], resourceIds: [] } },
-    model: { ...(member.model as JsonObject), text: member.agentKey === 'writer' ? '{"text":"accepted upstream"}' : 'final report' },
+    model: { ...(member.model as JsonObject), text: member.agentKey === 'writer' ? firstText : 'final report' },
   }))
   const configured = { ...base, members, schemaVersion: 3, subagents: { kind: 'disabled' }, workspaceResources: [], workflows: { kind: 'disabled' },
     communication: { ...(base.communication as JsonObject), maxMessageBytes: 128 * 1024 },

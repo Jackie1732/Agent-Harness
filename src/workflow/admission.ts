@@ -107,6 +107,7 @@ export class WorkflowAdmission {
             .map(item => ({ address: definition.payload.coordinator, eventId: item.stored.eventId })), effectiveAllowance: attempt.workerGrant,
           reviewerReservations: attempt.reviewerGrants, toolNames: attempt.toolNames,
           nativeActions: attempt.nativeActions, workspace: attempt.workspace, workspaceBaseline: null,
+          protocolLimits: { maxMessageBytes: this.capacity.limits.maxMessageBytes, maxRecordBytes: Math.min(this.coordinator.maxRecordBytes, member.maxRecordBytes) },
           protocolReserve: workflowAssignmentMailboxDemand(definition.payload, 'production'),
           deadline: new Date(deadlineMs).toISOString(), acceptance: node.acceptance,
         }))

@@ -1,3 +1,4 @@
+import { workProposalRecordedEvent } from '../workflow/result-events.js'
 import type { SessionHandle } from '../session/session-handle.js'
 import type { SessionMailbox } from '../communication/mailbox.js'
 import { projectAgentSession } from '../agent/projection.js'
@@ -47,8 +48,11 @@ export function nextWorkflowInbox(session: SessionHandle, mailbox: SessionMailbo
         const message = workflowDecisionMessage.decode(item.envelope.payload)
         const accepted = state.inputs.find(input => input.work !== undefined && sameWorkflowValue(input.work.assignment, message.assignment))
         if (accepted === undefined) invalidHistory('decision-before-acceptance')
+        const proposal = events.find(event => event.stored.type === workProposalRecordedEvent.type && workProposalRecordedEvent.decode(event.payload).accepted === accepted.reference.eventId)
+        if (proposal === undefined) invalidHistory('decision-before-proposal')
+        const outcome = workProposalRecordedEvent.decode(proposal.payload).outcome
         return () => journal.append(workAssignmentSettledEvent, () => ({ assignment: message.assignment,
-          accepted: accepted.reference.eventId, inbox: item.acceptedEventId, outcome: 'completed' as const }))
+          accepted: accepted.reference.eventId, inbox: item.acceptedEventId, outcome: outcome === 'completed' ? message.value.outcome === 'accepted' ? 'completed' as const : 'rejected' as const : outcome }))
       }
     }
   }

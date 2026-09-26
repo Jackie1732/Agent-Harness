@@ -4,7 +4,7 @@ import { sessionDelegationsClosed } from '../subagent/closure.js'
 import type { CommittedSessionEvent } from '../session/types.js'
 import { formatSessionAddress } from '../session/ids.js'
 import { invalidHistory } from './errors.js'
-import { deriveWorkOutput } from './result.js'
+import { deriveWorkDelivery } from './delivery.js'
 import { workAssignmentAcceptedEvent, sameWorkflowValue } from './work-binding.js'
 import { artifactPublishedEvent, workExecutionReleasedEvent, workProposalRecordedEvent } from './result-events.js'
 
@@ -25,10 +25,10 @@ export function applyWorkResultEvent(state: AgentProjectionState, event: Committ
   const proposal = event.stored.type === workProposalRecordedEvent.type
   const p = proposal ? workProposalRecordedEvent.decode(event.payload) : artifactPublishedEvent.decode(event.payload)
   const release = source(state, p.executionRelease, workExecutionReleasedEvent)
-  if (release.payload.outcome !== 'released' || release.payload.root !== p.root || release.payload.accepted !== p.accepted
+  if (release.payload.root !== p.root || release.payload.accepted !== p.accepted
     || !sameWorkflowValue(release.payload.assignment, p.assignment)) invalidHistory('work-result-release')
-  const derived = deriveWorkOutput(state, p.accepted)
-  if (derived.root !== p.root || !sameWorkflowValue(derived.binding.assignment, p.assignment)) invalidHistory('work-result-binding')
+  const derived = deriveWorkDelivery(state, p.accepted, p.executionRelease)
+  if (derived.proposal.root !== p.root || !sameWorkflowValue(derived.binding.assignment, p.assignment)) invalidHistory('work-result-binding')
   const artifacts = sources.filter(item => item.stored.type === artifactPublishedEvent.type)
     .map(item => ({ ...item, payload: artifactPublishedEvent.decode(item.payload) })).filter(item => item.payload.accepted === p.accepted)
   const proposals = sources.filter(item => item.stored.type === workProposalRecordedEvent.type)
@@ -37,12 +37,12 @@ export function applyWorkResultEvent(state: AgentProjectionState, event: Committ
   if (proposal) {
     const actual = workProposalRecordedEvent.decode(event.payload)
     const refs = artifacts.map(item => ({ address: formatSessionAddress(item.stored.sessionId), eventId: item.stored.eventId }))
-    if (artifacts.length !== derived.artifacts.length || actual.terminal !== derived.terminal
-      || !sameWorkflowValue(actual.value, derived.value) || !sameWorkflowValue(actual.artifacts, refs)) invalidHistory('work-proposal-source')
+    if (artifacts.length !== derived.artifacts.length || actual.terminal !== derived.proposal.terminal
+      || !sameWorkflowValue(actual.value, derived.proposal.value) || actual.outcome !== derived.proposal.outcome || actual.reason !== derived.proposal.reason || !sameWorkflowValue(actual.artifacts, refs)) invalidHistory('work-proposal-source')
   } else {
     const actual = artifactPublishedEvent.decode(event.payload)
     const expected = derived.artifacts[artifacts.length]
     if (expected === undefined || !sameWorkflowValue(actual, { ...expected, assignment: derived.binding.assignment,
-      accepted: p.accepted, root: derived.root, executionRelease: p.executionRelease })) invalidHistory('artifact-source-mismatch')
+      accepted: p.accepted, root: derived.proposal.root, executionRelease: p.executionRelease })) invalidHistory('artifact-source-mismatch')
   }
 }

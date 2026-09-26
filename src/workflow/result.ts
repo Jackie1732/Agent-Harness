@@ -60,6 +60,7 @@ export function deriveWorkOutput(state: AgentProjectionState, accepted: SessionE
   const modelSource = { turn: final.started.stored.eventId, settled: settled.stored.eventId }
   const artifacts: Omit<WorkArtifact, 'assignment' | 'accepted' | 'root' | 'executionRelease'>[] = []
   const add = (name: string, text: string, source: ArtifactSource) => {
+    if (Buffer.from(text, 'utf8').toString('utf8') !== text) invalid('artifact-utf8')
     const byteLength = Buffer.byteLength(text)
     if (byteLength > binding.recipe.limits.maxArtifactBytes) invalid('artifact-byte-limit')
     artifacts.push({ name, mediaType: 'text/plain', text, byteLength, sha256: createHash('sha256').update(text, 'utf8').digest('hex'), source })

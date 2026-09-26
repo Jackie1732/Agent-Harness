@@ -126,10 +126,11 @@ export function projectWorkflowSession(snapshot: SessionSnapshot): WorkflowSnaps
       if (assignment === undefined || received === undefined || payload.definition !== definition.stored.eventId
         || !same(received.payload.message.assignment, payload.assignment)
         || decisions.some(item => same(item.payload.assignment, payload.assignment))
-        || assignment.payload.acceptance.kind !== 'schema-only' || payload.outcome !== 'accepted' || payload.reviews.length !== 0
+        || (received.payload.message.value.outcome === 'completed' ? assignment.payload.acceptance.kind !== 'schema-only' || payload.outcome !== 'accepted' : payload.outcome !== 'rejected') || payload.reviews.length !== 0
         || !same(payload.value, received.payload.message.value.value) || !same(payload.artifacts, received.payload.message.value.artifacts)) invalidHistory('decision-source')
       decisions.push({ ...record, payload })
-      upstream.set(assignment.payload.nodeKey, { kind: 'accepted', value: payload.value })
+      upstream.set(assignment.payload.nodeKey, payload.outcome === 'accepted' ? { kind: 'accepted', value: payload.value }
+        : { kind: received.payload.message.value.outcome === 'result-unknown' ? 'result-unknown' : 'failed' })
     }
     if (record.stored.type === workflowControlRequestedEvent.type) {
       const payload = workflowControlRequestedEvent.decode(record.payload)

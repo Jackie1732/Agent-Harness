@@ -17,11 +17,14 @@ export function workflowReport(session: SessionHandle, slots: readonly HostSlot[
   })
   const completed = definition.requiredOutputs.every(key => state.upstream.find(item => item.nodeKey === key)?.state.kind === 'accepted')
     && nodes.every(node => ['accepted', 'skipped'].includes(node.status))
+  const failed = state.upstream.some(item => ['failed', 'result-unknown', 'cancelled'].includes(item.state.kind))
+    || definition.requiredOutputs.some(key => state.upstream.find(item => item.nodeKey === key)?.state.kind === 'skipped')
   const communication = projectCommunicationFacts(session.snapshot())
   return Object.freeze({ workflowKey: definition.workflowKey, desired: state.desired,
-    state: completed ? 'completed' as const : state.desired === 'paused' ? 'paused' as const : resumed ? 'running' as const : 'suspended' as const,
-    settled: completed, closed: completed && closed, budget: definition.budget, reservedBudget: state.reservedBudget,
-    counts: { nodes: nodes.length, assignments: state.assignments.length, proposals: state.proposals.length, accepted: state.decisions.length,
+    state: failed ? 'failed' as const : completed ? 'completed' as const : state.desired === 'paused' ? 'paused' as const : resumed ? 'running' as const : 'suspended' as const,
+    settled: completed || failed, closed: (completed || failed) && closed, budget: definition.budget, reservedBudget: state.reservedBudget,
+    counts: { nodes: nodes.length, assignments: state.assignments.length, proposals: state.proposals.length, accepted: state.decisions.filter(item => item.payload.outcome === 'accepted').length,
+      failed: state.decisions.filter(item => item.payload.outcome === 'rejected').length,
       pendingInbox: communication.inbox.filter(item => item.status === 'pending').length,
       pendingOutbox: communication.outbox.filter(item => item.status === 'pending').length },
     nodes: Object.freeze(nodes.slice(0, maximum)), assignments: Object.freeze(state.assignments.slice(0, maximum).map(item => ({

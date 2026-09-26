@@ -21,6 +21,7 @@ function rootAssignment(definition: WorkflowDefinition, definitionId: SessionEve
     inputs: {}, sourceAccepted: [], effectiveAllowance: trial.workerGrant,
     reviewerReservations: trial.reviewerGrants, toolNames: trial.toolNames, nativeActions: trial.nativeActions,
     workspace: trial.workspace, workspaceBaseline: null,
+    protocolLimits: { maxMessageBytes: 128 * 1024, maxRecordBytes: 256 * 1024 },
     protocolReserve: workflowAssignmentMailboxDemand(definition, 'production'),
     deadline: new Date(Date.now() + 30_000).toISOString(), acceptance: node.acceptance })
 }

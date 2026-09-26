@@ -34,6 +34,8 @@ export type WorkArtifact = {
   readonly source: ArtifactSource
 }
 export type WorkProposal = {
+  readonly outcome: 'completed' | 'failed' | 'cancelled' | 'result-unknown'
+  readonly reason: string | null
   readonly assignment: WorkflowEventRef
   readonly accepted: SessionEventId
   readonly root: SessionEventId
@@ -88,8 +90,9 @@ export const artifactPublishedEvent = createDurableEventDefinition<WorkArtifact 
 export const workProposalRecordedEvent = createDurableEventDefinition<WorkProposal & JsonObject>({
   type: 'work/proposal-recorded', payloadVersion: 1, ignorable: false,
   decode(value) {
-    const p = record(value); exact(p, ['assignment', 'accepted', 'root', 'terminal', 'executionRelease', 'value', 'artifacts'])
+    const p = record(value); exact(p, ['assignment', 'accepted', 'root', 'terminal', 'executionRelease', 'value', 'artifacts', 'outcome', 'reason'])
     return { assignment: workflowReference(p.assignment), accepted: eventId(p.accepted), root: eventId(p.root),
+      outcome: choice(p.outcome, ['completed', 'failed', 'cancelled', 'result-unknown']), reason: p.reason === null ? null : text(p.reason, 1024),
       terminal: eventId(p.terminal), executionRelease: eventId(p.executionRelease), value: snapshotJson(p.value),
       artifacts: array(p.artifacts, 1024).map(workflowReference) }
   },

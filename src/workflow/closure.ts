@@ -1,3 +1,4 @@
+import { workExecutionReleasedEvent } from './result-events.js'
 import { projectCommunicationFacts } from '../communication/projection.js'
 import type { SessionHandle } from '../session/session-handle.js'
 import type { SessionEventId } from '../session/ids.js'
@@ -7,6 +8,8 @@ import { workAssignmentSettledEvent } from './settlement-events.js'
 export function workflowAssignmentClosed(coordinator: SessionHandle, member: SessionHandle, assignment: SessionEventId): boolean {
   if (!member.snapshot().history.at(-1)!.events.some(item => item.kind === 'known' && item.stored.type === workAssignmentSettledEvent.type
     && workAssignmentSettledEvent.decode(item.payload).assignment.eventId === assignment)) return false
+  if (!member.snapshot().history.at(-1)!.events.some(item => item.kind === 'known' && item.stored.type === workExecutionReleasedEvent.type
+    && workExecutionReleasedEvent.decode(item.payload).assignment.eventId === assignment && workExecutionReleasedEvent.decode(item.payload).outcome === 'released')) return false
   return [coordinator, member].every(session => {
     const facts = projectCommunicationFacts(session.snapshot())
     return [...facts.inbox, ...facts.outbox].every(item => {

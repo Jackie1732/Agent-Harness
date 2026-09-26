@@ -44,3 +44,20 @@ it('runs a paused-by-default DAG through independent roots and accepted output c
     } finally { await reopened.shutdown() }
   } finally { await rm(root, { recursive: true, force: true }) }
 }, 30000)
+
+it('settles invalid output as failed delivery without rewriting the completed model root or starting its dependent', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'host-workflow-invalid-'))
+  try {
+    const spec = runnableWorkflowHost(root, '```json\n{"text":"fenced"}\n```')
+    await initializeHost(spec)
+    const host = await openHost(spec)
+    try {
+      await host.workflow('research').resume({ requestKey: 'invalid-output' })
+      await host.run()
+      expect(host.workflow('research').report()).toMatchObject({ state: 'failed', closed: true,
+        counts: { assignments: 1, proposals: 1, accepted: 0, failed: 1, pendingInbox: 0, pendingOutbox: 0 } })
+      expect(host.report().members.find(member => member.agentKey === 'writer')?.agent.roots[0]?.outcome).toBe('completed')
+      expect(host.report().members.find(member => member.agentKey === 'reviewer')?.agent.roots).toEqual([])
+    } finally { await host.shutdown() }
+  } finally { await rm(root, { recursive: true, force: true }) }
+}, 30000)

@@ -1,3 +1,4 @@
+import { integer } from '../agent/validation.js'
 import { decodeAgentBudget } from '../agent/budget.js'
 import { AgentError } from '../agent/errors.js'
 import type { JsonObject, JsonValue } from '../foundation/json.js'
@@ -53,12 +54,13 @@ function decodeAssignment(value: JsonValue): WorkflowAssignment & JsonObject {
     maxDepth: DEFAULT_WORKFLOW_LIMITS.maxSchemaDepth + 8, maxNodes: DEFAULT_WORKFLOW_LIMITS.maxSchemaNodes }), 'assignment')
   exact(input, ['definition', 'nodeKey', 'attempt', 'kind', 'memberKey', 'memberAddress', 'channelId', 'inputs', 'sourceAccepted',
     'effectiveAllowance', 'reviewerReservations', 'toolNames', 'nativeActions', 'workspace', 'workspaceBaseline',
-    'protocolReserve', 'deadline', 'acceptance'], 'assignment')
+    'protocolReserve', 'protocolLimits', 'deadline', 'acceptance'], 'assignment')
   if (input.kind !== 'production' || !Number.isSafeInteger(input.attempt) || (input.attempt as number) < 1) invalidHistory('assignment-kind-attempt')
   const reviewerReservations = list(input.reviewerReservations, 'reviewerReservations').map(value => {
     const item = object(value, 'reviewerReservation'); exact(item, ['memberKey', 'grant'], 'reviewerReservation')
     return { memberKey: text(item.memberKey, 'reviewer.memberKey'), grant: decodeAgentBudget(item.grant) }
   })
+  const protocolLimits = object(input.protocolLimits!, 'protocolLimits'); exact(protocolLimits, ['maxMessageBytes', 'maxRecordBytes'], 'protocolLimits')
   const reserve = object(input.protocolReserve!, 'protocolReserve'); exact(reserve, ['coordinator', 'member'], 'protocolReserve')
   const deadline = text(input.deadline, 'deadline')
   if (!Number.isFinite(Date.parse(deadline)) || new Date(deadline).toISOString() !== deadline) invalidHistory('assignment-deadline')
@@ -75,6 +77,7 @@ function decodeAssignment(value: JsonValue): WorkflowAssignment & JsonObject {
     toolNames: list(input.toolNames, 'toolNames').map(item => text(item, 'toolName')),
     nativeActions: list(input.nativeActions, 'nativeActions').map(item => text(item, 'nativeAction')),
     workspace: object(input.workspace!, 'workspace') as unknown as WorkflowAssignment['workspace'], workspaceBaseline,
+    protocolLimits: { maxMessageBytes: integer(protocolLimits.maxMessageBytes, 1), maxRecordBytes: integer(protocolLimits.maxRecordBytes, 1) },
     protocolReserve: { coordinator: quota(reserve.coordinator!, 'coordinator'), member: quota(reserve.member!, 'member') },
     deadline, acceptance: object(input.acceptance!, 'acceptance') as unknown as WorkflowAssignment['acceptance'],
   } as unknown as WorkflowAssignment & JsonObject

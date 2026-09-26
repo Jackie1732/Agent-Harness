@@ -12,7 +12,7 @@ import { workflowProposalMessage } from '../../src/workflow/messages.js'
 import { clock } from '../agent/fixtures.js'
 import { workFixture } from './work-fixture.js'
 
-async function complete(f: Awaited<ReturnType<typeof workFixture>>) {
+async function complete(f: Awaited<ReturnType<typeof workFixture>>, outcome: 'released' | 'unknown' = 'released') {
   const accepted = await f.assign()
   await f.agent.start({ selection: { kind: 'workflow', assignment: accepted.payload.assignment } })
   expect(nextWorkPublication(f.session, clock)).toBeUndefined()
@@ -20,7 +20,7 @@ async function complete(f: Awaited<ReturnType<typeof workFixture>>) {
   await f.agent.dispose()
   await f.provider?.dispose()
   const release = await f.journal.append(workExecutionReleasedEvent, () => ({ assignment: accepted.payload.assignment,
-    accepted: accepted.stored.eventId, root: root.id, owner: 'test-host', generation: 1, outcome: 'released' as const }))
+    accepted: accepted.stored.eventId, root: root.id, owner: 'test-host', generation: 1, outcome }))
   return { accepted, root, release }
 }
 
@@ -62,6 +62,22 @@ it('publishes immutable text only after release and accepts the exact received c
   } finally { await f.close() }
 })
 
+it.each([
+  ['escaped message bytes', '\\"\n'.repeat(1800), 16384, 'released', 'workflow-message-bytes'],
+  ['unknown execution release', 'valid text', 128 * 1024, 'unknown', 'work-result-unknown'],
+] as const)('publishes bounded failure without partial artifacts for %s', async (_label, text, limit, outcome, reason) => {
+  const f = await workFixture(false, 2, { kind: 'text', name: 'result' }, text, limit)
+  try {
+    await complete(f, outcome)
+    await nextWorkPublication(f.session, clock)!()
+    const sources = [...foldAgentSession(f.session.snapshot()).sources.values()]
+    expect(sources.some(item => item.stored.type === artifactPublishedEvent.type)).toBe(false)
+    expect(sources.find(item => item.stored.type === workProposalRecordedEvent.type)?.payload).toMatchObject({
+      outcome: outcome === 'unknown' ? 'result-unknown' : 'failed', reason, value: null, artifacts: [],
+    })
+  } finally { await f.close() }
+})
+
 it('keeps an accepted JSON value and declared text artifacts exact, without repairing fenced output', async () => {
   const output = { kind: 'json' as const, schema: { type: 'object', properties: { text: { type: 'string' } }, required: ['text'], additionalProperties: false },
     artifacts: [{ name: 'summary', source: { kind: 'json-text' as const, path: ['text'] } }] }
@@ -77,7 +93,10 @@ it('keeps an accepted JSON value and declared text artifacts exact, without repa
   const invalid = await workFixture(false, 2, output, '```json\n{"text":"not accepted"}\n```')
   try {
     await complete(invalid)
-    expect(() => nextWorkPublication(invalid.session, clock)).toThrow('output-json')
+    await nextWorkPublication(invalid.session, clock)!()
+    const failure = [...foldAgentSession(invalid.session.snapshot()).sources.values()].find(item => item.stored.type === workProposalRecordedEvent.type)!
+    expect(failure.payload).toMatchObject({ outcome: 'failed', reason: 'output-json', value: null, artifacts: [] })
+    expect(invalid.agent.snapshot().roots[0]?.outcome).toBe('completed')
     expect([...foldAgentSession(invalid.session.snapshot()).sources.values()].some(item => item.stored.type === artifactPublishedEvent.type)).toBe(false)
   } finally { await invalid.close() }
 })

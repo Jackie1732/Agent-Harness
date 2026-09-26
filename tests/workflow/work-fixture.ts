@@ -15,7 +15,7 @@ import { repository, profile, runnerLimits } from '../context/fixtures.js'
 import { createCommunicationService } from '../communication/fixtures.js'
 import { workflowFixture } from './fixtures.js'
 
-export async function workFixture(actions = false, models = 2, output?: import('../../src/workflow/types.js').WorkflowOutput, finalText = '{"text":"work result"}') {
+export async function workFixture(actions = false, models = 2, output?: import('../../src/workflow/types.js').WorkflowOutput, finalText = '{"text":"work result"}', maxMessageBytes = 128 * 1024) {
   let calls = 0
   const provider = new ScriptedModelProvider({ providerId: 'work-model', maxConcurrentExchanges: 1,
     streamLimits: { maxFrameBytes: 16384, maxStreamBytes: 262144, maxFrames: 1000 },
@@ -43,7 +43,7 @@ export async function workFixture(actions = false, models = 2, output?: import('
     context: { history: { mode: 'completed-roots', maxRoots: 5 }, memory: { required: [], query: { requiredTags: [], queryTags: [], topK: 5 } }, compactions: [] },
     subagents: { role: 'none' }, workflow: { kind: 'participant', toolNames: [], nativeActions: ['agent_ask_user'], resourceIds: [] } }
   await installAgentSpec(session, spec, clock)
-  const { service, policy } = createCommunicationService({ maxMessageBytes: 128 * 1024, maxPendingInbox: 128, maxPendingOutbox: 128 })
+  const { service, policy } = createCommunicationService({ maxMessageBytes, maxPendingInbox: 128, maxPendingOutbox: 128 })
   const sender = await service.attach(coordinator, { catalog, policy })
   const receiver = await service.attach(session, { catalog, policy })
   const agent = new SessionAgent({ session, context, model: new SessionModelRunner({ session, provider, limits: runnerLimits }),

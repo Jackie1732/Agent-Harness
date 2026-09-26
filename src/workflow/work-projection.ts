@@ -61,7 +61,9 @@ export function applyWorkAssignmentSettled(state: AgentProjectionState, event: C
   if (event.stored.payloadVersion !== 1 || proposal === undefined || inbox.type !== workflowDecisionMessage.type || inbox.payloadVersion !== 1
     || inbox.sender !== binding.payload.assignment.address || inbox.recipient !== binding.payload.value.memberAddress
     || inbox.channelId !== binding.payload.value.channelId || !sameWorkflowValue(p.assignment, binding.payload.assignment)
-    || !sameWorkflowValue(decision.assignment, p.assignment) || decision.value.outcome !== 'accepted'
+    || !sameWorkflowValue(decision.assignment, p.assignment) || !sameWorkflowValue(decision.value.assignment, p.assignment)
+    || decision.value.definition !== binding.payload.definition.eventId
+    || p.outcome !== (workProposalRecordedEvent.decode(proposal.payload).outcome === 'completed' ? decision.value.outcome === 'accepted' ? 'completed' : 'rejected' : workProposalRecordedEvent.decode(proposal.payload).outcome)
     || decision.value.proposal.eventId !== proposal.stored.eventId
     || !sameWorkflowValue(decision.value.value, workProposalRecordedEvent.decode(proposal.payload).value)
     || !sameWorkflowValue(decision.value.artifacts, workProposalRecordedEvent.decode(proposal.payload).artifacts)
