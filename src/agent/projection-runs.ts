@@ -1,3 +1,5 @@
+import { sameWorkflowValue } from '../workflow/work-binding.js'
+import { workAcceptanceForRoot } from '../workflow/work-projection.js'
 import { delegationClosure } from '../subagent/closure.js'
 import { hasPendingAgentAbandon } from './input-ownership.js'
 import type { CommittedSessionEvent } from '../session/types.js'
@@ -12,6 +14,7 @@ import { equal, record } from './validation.js'
 import { requiresAgentReply, rootPeerInputs } from './obligations.js'
 
 export function applyRunStarted(state: AgentProjectionState, event: CommittedSessionEvent<AgentEventPayloads['run-started']>): void {
+  if (event.stored.payloadVersion !== (requireSpec(state).payload.protocolVersion === 3 ? 3 : 1)) invalidAgent('run-spec-version')
   if (state.openRun !== null || state.openRecovery !== null || state.closing !== null
     || [...state.controls.values()].some(control => control.settled === null && control.supersededBy === null)) invalidAgent('driver-already-owned')
   if (event.payload.spec !== requireSpec(state).stored.eventId) invalidAgent('run-spec-mismatch')
@@ -19,7 +22,7 @@ export function applyRunStarted(state: AgentProjectionState, event: CommittedSes
 }
 export function applyRunSettled(state: AgentProjectionState, event: CommittedSessionEvent<AgentEventPayloads['run-settled']>): void {
   const run = requireOpenRun(state, event.payload.run)
-  if (run.started.stored.payloadVersion !== 1) invalidAgent('run-version-mismatch')
+  if (run.started.stored.payloadVersion !== event.stored.payloadVersion) invalidAgent('run-version-mismatch')
   if (state.openTurn !== null) invalidAgent('run-has-open-turn')
   const commands = [...state.commands.values()].filter(command => command.payload.run === event.payload.run)
   if (commands.some(command => !state.actions.has(referenceKey({ eventId: command.stored.eventId, index: 0 })))) invalidAgent('run-has-open-command')
@@ -51,28 +54,45 @@ export function applyMaintenanceRunSettled(
 }
 export function applyTurnStarted(state: AgentProjectionState, event: CommittedSessionEvent<AgentEventPayloads['turn-started']>): void {
   const payload = event.payload
-  requireOpenRun(state, payload.run, 'drive')
+  const run = requireOpenRun(state, payload.run, 'drive')
   if (state.openTurn !== null || state.openRecovery !== null || state.closing !== null) invalidAgent('turn-not-admissible')
   const spec = requireSpec(state).payload
   const input = requireEntry(state.inputs, inputKey(payload.input), 'missing-turn-input')
-  if (spec.protocolVersion === 2 && payload.protocolSource !== (input.protocol?.inbox ?? null)) invalidAgent('turn-protocol-source')
+  if (spec.protocolVersion !== 1 && payload.protocolSource !== (input.protocol?.inbox ?? input.work?.inbox ?? null)) invalidAgent('turn-protocol-source')
+  const inherited = payload.root === null ? input : workAcceptanceForRoot(state, payload.root)
+  const work = inherited.work
+  if (spec.protocolVersion === 3) {
+    if (work === undefined && ([...state.roots.values()].some(root => root.source.kind === 'workflow' && root.outcome === null)
+      || [...state.inputs.values()].some(item => item.work !== undefined && item.status === 'queued'))) invalidAgent('ordinary-turn-during-work')
+    const selection = run.started.payload.kind === 'maintenance' ? undefined : run.started.payload.selection
+    if (work === undefined ? selection?.kind !== 'ordinary' || payload.work !== null
+      : selection?.kind !== 'workflow' || !sameWorkflowValue(selection.assignment, work.assignment)
+        || !sameWorkflowValue(payload.work, { accepted: inherited.reference.eventId, assignment: work.assignment, allowance: work.value.effectiveAllowance,
+          toolNames: work.value.toolNames, nativeActions: work.value.nativeActions })) invalidAgent('turn-work-selection')
+  }
   if (hasPendingAgentAbandon(state.controls.values(), input, 2)) invalidAgent('input-disposition-owned')
   if (input.lane !== payload.lane || payload.ordinal !== state.turns.size + 1) invalidAgent('turn-order')
-  if ([...state.turns.values()].filter(turn => turn.started.payload.run === payload.run).length >= spec.limits.maxTurnsPerRun) invalidAgent('run-turn-budget')
+  if ([...state.turns.values()].filter(turn => turn.started.payload.run === payload.run).length >= (spec.protocolVersion === 3 ? 1 : spec.limits.maxTurnsPerRun)) invalidAgent('run-turn-budget')
   if (payload.root === null) {
     if (payload.predecessor !== null || input.status !== 'queued' || input.input?.kind === 'answer') invalidAgent('root-input-not-queued')
-    const child = spec.protocolVersion === 2 && spec.subagents.role === 'child' ? spec.subagents : undefined
-    if (child === undefined && (payload.deadline !== null || input.protocol !== undefined)) invalidAgent('root-deadline-must-derive-from-acceptance')
+    const child = spec.protocolVersion !== 1 && spec.subagents.role === 'child' ? spec.subagents : undefined
+    if (child === undefined && work === undefined && (payload.deadline !== null || input.protocol !== undefined)) invalidAgent('root-deadline-must-derive-from-acceptance')
     if (child !== undefined && state.subagents.bound?.payload.requested.effectivePlan.workspace.kind !== 'none') {
       const execution = [...state.subagents.resources.values()].filter(item => item.opened.payload.component === 'execution').at(-1)
       if (execution === undefined || execution.released !== null || !state.subagents.baselines.has(execution.opened.stored.eventId)) invalidAgent('child-workspace-not-ready')
     }
     if (child !== undefined && (input.protocol?.kind !== 'task' || state.subagents.ready === null || state.subagents.controls.size > 0 || state.roots.size !== 0
       || payload.deadline !== child.deadline || payload.observedAt >= child.deadline)) invalidAgent('child-root-claim')
-    const deadline = child?.deadline ?? new Date(Date.parse(event.stored.recordedAt) + spec.rootDurationMs).toISOString()
+    const limit = work?.value.effectiveAllowance ?? spec.budget
+    const deadline = child?.deadline ?? new Date(Math.min(Date.parse(event.stored.recordedAt) + spec.rootDurationMs,
+      work === undefined ? Infinity : Date.parse(work.value.deadline))).toISOString()
+    if (work !== undefined && (payload.deadline !== work.value.deadline || payload.observedAt >= deadline
+      || [...state.roots.values()].some(root => root.source.kind === 'workflow' && sameWorkflowValue(root.source.assignment, work.assignment)))) invalidAgent('work-root-claim')
     const budget = child === undefined ? emptyAgentBudget : reserveAgentBudget(emptyAgentBudget, child.protocolReserve, spec.budget)
     if (budget === null) invalidAgent('child-protocol-budget')
-    state.roots.set(event.stored.eventId, { id: event.stored.eventId, deadline, budget,
+    state.roots.set(event.stored.eventId, { id: event.stored.eventId, deadline, budget, limit, allowedTools: work?.value.toolNames ?? spec.toolNames,
+      allowedNativeActions: (work?.value.nativeActions ?? spec.nativeActions) as import('./state.js').AgentRootState['allowedNativeActions'],
+      source: work === undefined ? { kind: 'ordinary' } : { kind: 'workflow', assignment: work.assignment },
       outcome: null, reason: null, stopControl: null })
   } else {
     const root = requireEntry(state.roots, payload.root, 'missing-root')

@@ -1,3 +1,4 @@
+import { workAssignmentAcceptedEvent } from './work-binding.js'
 import type { JsonObject, JsonValue } from '../foundation/json.js'
 import { createDurableEventDefinition } from '../session/event-catalog.js'
 import { parseSessionEventId } from '../session/ids.js'
@@ -55,4 +56,4 @@ export const workflowAssignmentCommittedEvent = createDurableEventDefinition<Wor
 })
 
 export const workflowSessionEventDefinitions = Object.freeze([workflowDefinitionRecordedEvent, workflowNodeResolvedEvent,
-  workflowAssignmentCommittedEvent])
+  workflowAssignmentCommittedEvent, workAssignmentAcceptedEvent])

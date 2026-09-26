@@ -10,7 +10,7 @@ export const workflowNativeActionNames = ['agent_ask_work_peer', 'agent_await_wo
 export type AgentNativeActionName = typeof agentNativeActionNames[number] | typeof subagentNativeActionNames[number]
 export type WorkflowNativeActionName = typeof workflowNativeActionNames[number] | 'agent_ask_user' | 'agent_spawn_subagent'
 export type AgentActionReference = { readonly eventId: SessionEventId; readonly index: number }
-export type AgentInputReference = { readonly kind: 'user' | 'peer' | 'subagent'; readonly eventId: SessionEventId }
+export type AgentInputReference = { readonly kind: 'user' | 'peer' | 'subagent' | 'workflow'; readonly eventId: SessionEventId }
 export type AgentInput =
   | { readonly kind: 'task'; readonly text: string; readonly originLabel: string }
   | { readonly kind: 'answer'; readonly wait: AgentActionReference; readonly text: string; readonly originLabel: string }
@@ -82,8 +82,10 @@ export type AgentSpecV3 = Omit<AgentSpecV2, 'protocolVersion'> & {
   readonly protocolVersion: 3
   readonly workflow: AgentWorkflowRole
 }
-export type AgentSpec = AgentSpecV1 | AgentSpecV2
+export type AgentSpec = AgentSpecV1 | AgentSpecV2 | AgentSpecV3
 export type ChildAgentSpecTemplate = Omit<AgentSpecV2, 'profileEventId' | 'subagents'>
+
+export type AgentRunSelection = { readonly kind: 'ordinary' } | { readonly kind: 'workflow'; readonly assignment: import('../workflow/types.js').WorkflowEventRef }
 
 export type AgentTurnOutcome = 'completed' | 'waiting' | 'failed' | 'cancelled' | 'budget-exhausted' | 'result-unknown' | 'interrupted'
 export type AgentRootOutcome = 'completed' | 'failed' | 'cancelled' | 'budget-exhausted' | 'result-unknown' | 'timed-out'

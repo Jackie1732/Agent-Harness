@@ -2,10 +2,10 @@ import { randomUUID } from 'node:crypto'
 import { isAbsolute, resolve } from 'node:path'
 import { decodeHostSubagents, decodeHostWorkspaceResources, parentSubagentRole } from './subagent-config.js'
 import { decodeHostWorkflows } from './workflow-config.js'
-import { decodeAgentSpec, decodeSubagentAgentSpec } from '../agent/spec-codec.js'
+import { decodeAgentSpec, decodeSubagentAgentSpec, decodeWorkflowAgentSpec } from '../agent/spec-codec.js'
 import type { MailboxLimits } from '../communication/types.js'
 import { parseChannelId } from '../communication/ids.js'
-import { decodeAgentContextProfile, decodeSubagentContextProfile } from '../context/profile.js'
+import { decodeAgentContextProfile, decodeSubagentContextProfile, decodeWorkflowContextProfile } from '../context/profile.js'
 import type { JsonObject, JsonValue } from '../foundation/json.js'
 import { snapshotJson } from '../foundation/json.js'
 import { formatSessionAddress, parseSessionId } from '../session/ids.js'
@@ -138,7 +138,7 @@ function decodeConfig(value: unknown, baseDirectory: string, limits: JsonValidat
       || member.kind === 'local' && route.origin !== null || member.kind === 'remote' && route.origin === null
   })) invalid('route-ownership')
   if (https.kind === 'disabled' && routes.some(route => route.origin !== null)) invalid('https-disabled-with-remote-route')
-  if (subagents?.kind === 'enabled' && subagents.parents.some(parent => !members.some(member => member.kind === 'local' && member.agentKey === parent.agentKey && member.spec.protocolVersion === 2))) invalid('subagent-parent-reference')
+  if (subagents?.kind === 'enabled' && subagents.parents.some(parent => !members.some(member => member.kind === 'local' && member.agentKey === parent.agentKey && member.spec.protocolVersion !== 1))) invalid('subagent-parent-reference')
   if (workflows?.kind === 'enabled') {
     const allIds = [...memberIds, ...workflows.definitions.flatMap(item => item.sessionId === null ? [] : [item.sessionId])]
     unique(allIds, 'sessionId')
@@ -228,8 +228,8 @@ function decodeMember(value: JsonValue, index: number, baseDirectory: string, ve
   const sessionId = member.sessionId === null ? null : parseSessionId(text(member.sessionId, 'member.sessionId'))
   if (mode === 'adopt' && sessionId === null) invalid('adopt-session-id')
   const specVersion = record(member.spec, 'spec').protocolVersion
-  if (specVersion !== 1 && specVersion !== 2 || version === 1 && specVersion !== 1) invalid('member-spec-version')
-  const profile = specVersion === 1 ? decodeAgentContextProfile(member.profile) : decodeSubagentContextProfile(member.profile)
+  if (![1, 2, 3].includes(specVersion as number) || version < (specVersion as number)) invalid('member-spec-version')
+  const profile = specVersion === 3 ? decodeWorkflowContextProfile(member.profile) : specVersion === 1 ? decodeAgentContextProfile(member.profile) : decodeSubagentContextProfile(member.profile)
   const model = record(member.model, 'model')
   if (model.kind !== 'scripted-fixed' && model.kind !== 'deepseek' && model.kind !== 'anthropic') invalid('model-kind')
   const modelKind: HostModelConfig['kind'] = model.kind
@@ -242,7 +242,7 @@ function decodeMember(value: JsonValue, index: number, baseDirectory: string, ve
     'runnerLimits', new Set(['maxToolCalls', 'maxJournalConflicts'])) as unknown as ModelRunnerLimits
   const spec = record(member.spec, 'spec') as unknown as HostAgentSpecTemplate
   const specKeys = ['protocolVersion', 'label', 'responsibility', 'nonGoals', 'target', 'toolNames', 'nativeActions', 'peers', 'messages', 'context', 'budget',
-    'rootDurationMs', 'maxDirectSendCommandsPerSession', 'limits', 'errorFeedback', 'usagePolicy', 'businessRefusalHandled']
+    'rootDurationMs', 'maxDirectSendCommandsPerSession', 'limits', 'errorFeedback', 'usagePolicy', 'businessRefusalHandled', ...(specVersion === 3 ? ['workflow'] : [])]
   keys(spec as unknown as Record<string, unknown>, specKeys, 'spec')
   const peerKeys: string[] = []
   for (const value of array(spec.peers, 'spec.peers')) {
@@ -356,7 +356,7 @@ export function resolveHostConfig(config: HostConfig): ResolvedHostSpec {
     const provisional = { ...member.spec, profileEventId: 'ah-event:00000000-0000-4000-8000-000000000000:1',
       target: { ...member.spec.target, provider: descriptor }, peers }
     const { profileEventId: _profileEventId, ...spec } = member.spec.protocolVersion === 1 ? decodeAgentSpec(provisional)
-      : decodeSubagentAgentSpec({ ...provisional, subagents: parentSubagentRole(config.schemaVersion === 1 ? undefined : config.subagents, member.agentKey) })
+      : (member.spec.protocolVersion === 3 ? decodeWorkflowAgentSpec : decodeSubagentAgentSpec)({ ...provisional, subagents: parentSubagentRole(config.schemaVersion === 1 ? undefined : config.subagents, member.agentKey) })
     return Object.freeze({ ...member, sessionId: parseSessionId(member.sessionId!), spec })
   })
   const routes = config.routes.map(route => ({ ...route, sessionId: members.get(route.memberKey)!.sessionId! }))

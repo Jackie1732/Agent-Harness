@@ -53,7 +53,7 @@ export function projectWorkflowSession(snapshot: SessionSnapshot): WorkflowSnaps
       const payload = workflowAssignmentCommittedEvent.decode(record.payload)
       const recipe = definition.payload
       const node = recipe.nodes.find(item => item.nodeKey === payload.nodeKey)
-      const attempt = node?.attempts[payload.attempt]
+      const attempt = node?.attempts[payload.attempt - 1]
       if (payload.definition !== definition.stored.eventId || node === undefined || attempt === undefined
         || resolved.has(payload.nodeKey) || assignments.some(item => item.payload.nodeKey === payload.nodeKey)
         || assignments.length >= recipe.limits.maxActiveAssignments) invalidHistory('assignment-not-admissible')

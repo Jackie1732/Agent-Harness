@@ -26,7 +26,7 @@ export class SessionSubagentActions implements SubagentActionExecutor {
     const spec = state.spec!.payload
     const turn = state.turns.find(item => item.started.stored.eventId === turnId)
     const root = state.roots.find(item => item.id === turn?.root)
-    if (spec.protocolVersion !== 2 || turn === undefined || state.openTurn !== turnId || root === undefined || root.outcome !== null || root.stopControl !== null || signal.aborted) invalid('subagent-action-not-active')
+    if (spec.protocolVersion === 1 || turn === undefined || state.openTurn !== turnId || root === undefined || root.outcome !== null || root.stopControl !== null || signal.aborted) invalid('subagent-action-not-active')
     let delegation: SessionEventId
     let request: DelegationRequested
     if (intent.route === 'spawn') {

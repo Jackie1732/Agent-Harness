@@ -48,6 +48,13 @@ export function decodeSubagentContextProfile(value: unknown): ContextProfile {
   return result
 }
 
+/** V4 supports root-scoped Workflow input without importing ordinary memory. */
+export function decodeWorkflowContextProfile(value: unknown): ContextProfile {
+  const result = decodeProfile(value, 'context-neutral/v4')
+  if (result.purpose !== 'generation' || result.historyScope !== 'local-only') invalidContext('agent-profile-purpose')
+  return result
+}
+
 function decodeProfile(value: unknown, renderer: ContextProfile['rendererVersion']): ContextProfile {
   const input = record(contextJson(value))
   exact(input, ['profileKey', 'purpose', 'previousEventId', 'sections', 'toolNames', 'rendererVersion', 'historyScope', 'tokenAccounting', 'budget'])

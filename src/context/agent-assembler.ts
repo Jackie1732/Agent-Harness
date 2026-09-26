@@ -18,7 +18,7 @@ import { retrieveSessionMemory } from './memory.js'
 import { memoryReferences } from './material-state.js'
 import { resolveSelectedCompactions } from './compaction-replay.js'
 import { prepareContextFacts } from './prepare.js'
-import { decodeAgentContextProfile, decodeSubagentContextProfile } from './profile.js'
+import { decodeAgentContextProfile, decodeSubagentContextProfile, decodeWorkflowContextProfile } from './profile.js'
 import { decodeCapturedFacts } from './surface-codec.js'
 import { digest, equalJson } from './validation.js'
 import { knownEvent, requireSourceIndex } from './sources.js'
@@ -35,19 +35,22 @@ export function assembleAgentContext(snapshot: SessionSnapshot, consumerInput: A
   if (spec?.stored.eventId !== consumer.spec || state.openRun !== consumer.run || state.openTurn !== consumer.turn
     || turn?.started.payload.run !== consumer.run || step?.opened.payload.turn !== consumer.turn || step.decided !== null) invalidSource('agent-context-consumer')
   const rawProfile = knownEvent(requireSourceIndex(snapshot), spec.payload.profileEventId, 'context/profile-recorded')
-  if (rawProfile.stored.payloadVersion !== (spec.payload.protocolVersion === 1 ? 2 : 3)) invalidSource('agent-profile-version')
-  const profile = spec.payload.protocolVersion === 1 ? decodeAgentContextProfile(rawProfile.payload) : decodeSubagentContextProfile(rawProfile.payload)
+  if (rawProfile.stored.payloadVersion !== (spec.payload.protocolVersion + 1)) invalidSource('agent-profile-version')
+  const profile = spec.payload.protocolVersion === 3 ? decodeWorkflowContextProfile(rawProfile.payload) : spec.payload.protocolVersion === 1 ? decodeAgentContextProfile(rawProfile.payload) : decodeSubagentContextProfile(rawProfile.payload)
   if (profile.tokenAccounting.mode === 'exact-required') return { kind: 'blocked', reason: 'estimator-unavailable', references: [] }
   if (profile.budget.outputReserveTokens < spec.payload.target.maxOutputTokens) invalidSource('agent-output-reserve')
   const facts = prepareContextFacts(snapshot, profile)
   if ('kind' in facts) return facts
+  const root = state.roots.find(item => item.id === turn.root)!
+  const isWork = root.source.kind === 'workflow'
+  const rootMemory = isWork ? { required: [], query: { requiredTags: [], queryTags: [], topK: 0 } } : spec.payload.context.memory
   const captured = decodeCapturedFacts(capturedInput)
-  if (!equalJson(captured.tools.map(tool => tool.definition.name), spec.payload.toolNames)) return { kind: 'blocked', reason: 'tool-unavailable', references: [] }
+  if (!equalJson(captured.tools.map(tool => tool.definition.name), root.allowedTools)) return { kind: 'blocked', reason: 'tool-unavailable', references: [] }
   const chain = state.turns.filter(item => item.root === turn.root)
   const required = [...agentTurnUnits(snapshot, state, chain), ...subagentObligationUnits(state, turn.root)]
   const optional: AgentContextUnit[][] = []
   const historyPolicy = spec.payload.context.history
-  const historyRoots = historyPolicy.mode === 'none' || historyPolicy.maxRoots === 0 ? []
+  const historyRoots = isWork || historyPolicy.mode === 'none' || historyPolicy.maxRoots === 0 ? []
     : state.roots.filter(root => root.outcome === 'completed' && root.id !== turn.root).slice(-historyPolicy.maxRoots).map(root => root.id)
   for (const id of historyRoots) {
     const root = state.roots.find(item => item.id === id)
@@ -67,21 +70,21 @@ export function assembleAgentContext(snapshot: SessionSnapshot, consumerInput: A
     if (entry === undefined || entry === null) return invalidSource('agent-memory-outside-selected-history')
     return { reference: { eventId: id, selector: 'memory' }, sourceEventIds: [id], messages: [agentDataMessage('memory', id, entry.payload)] }
   }
-  for (const ref of spec.payload.context.memory.required) memory.push(memoryUnit(ref.eventId))
-  const candidates = retrieveSessionMemory(safeMemory, spec.payload.context.memory.query)
+  for (const ref of rootMemory.required) memory.push(memoryUnit(ref.eventId))
+  const candidates = retrieveSessionMemory(safeMemory, rootMemory.query)
   if (candidates.length > profile.budget.maxMemoryCandidates) return { kind: 'resource-limit', limit: 'memory-candidates', maximum: profile.budget.maxMemoryCandidates }
   const comm = projectCommunicationFacts(snapshot)
-  const pendingWaits = state.waits.filter(wait => wait.settled === null).map(wait => ({ reference: wait.reference,
+  const pendingWaits = state.waits.filter(wait => wait.settled === null && (!isWork || wait.created.payload.result.kind === 'wait' && wait.created.payload.result.descriptor.root === root.id)).map(wait => ({ reference: wait.reference,
     kind: wait.created.payload.result.kind === 'wait' ? wait.created.payload.result.descriptor.kind : 'unavailable',
     root: wait.created.payload.result.kind === 'wait' ? wait.created.payload.result.descriptor.root : null,
     deadline: wait.created.payload.result.kind === 'wait' ? wait.created.payload.result.descriptor.deadline : null }))
-  const pendingOutbox = pendingOutboxContext(comm, snapshot)
+  const pendingOutbox = isWork ? [] : pendingOutboxContext(comm, snapshot)
   required.unshift({ reference: { eventId: step.opened.stored.eventId, selector: 'diagnostic' },
-    sourceEventIds: [spec.stored.eventId, step.opened.stored.eventId, ...pendingOutbox.map(item => item.acceptedEventId), ...state.waits.filter(wait => wait.settled === null).map(wait => wait.created.stored.eventId)],
+    sourceEventIds: [spec.stored.eventId, step.opened.stored.eventId, ...pendingOutbox.map(item => item.acceptedEventId), ...state.waits.filter(wait => wait.settled === null && (!isWork || wait.created.payload.result.kind === 'wait' && wait.created.payload.result.descriptor.root === root.id)).map(wait => wait.created.stored.eventId)],
     messages: [agentDataMessage('agent-runtime', { spec: spec.stored.eventId, step: step.opened.stored.eventId }, {
-      label: spec.payload.label, responsibility: spec.payload.responsibility, nonGoals: spec.payload.nonGoals, peers: spec.payload.peers, messageKinds: spec.payload.messages,
-      ...(spec.payload.protocolVersion === 2 ? { delegationAuthority: spec.payload.subagents } : {}),
-      root: turn.root, budgetUsed: state.roots.find(item => item.id === turn.root)!.budget, budgetLimits: spec.payload.budget, pendingWaits, pendingOutbox,
+      label: spec.payload.label, responsibility: spec.payload.responsibility, nonGoals: spec.payload.nonGoals, peers: isWork ? [] : spec.payload.peers, messageKinds: isWork ? [] : spec.payload.messages,
+      ...(spec.payload.protocolVersion !== 1 && (!isWork || root.allowedNativeActions.includes('agent_spawn_subagent')) ? { delegationAuthority: spec.payload.subagents } : {}),
+      root: turn.root, budgetUsed: state.roots.find(item => item.id === turn.root)!.budget, budgetLimits: root.limit, pendingWaits, pendingOutbox,
     })] })
   const selectedInputs = new Set(chain.map(item => inputKey(item.started.payload.input)))
   for (const input of state.inputs.filter(item => selectedInputs.has(inputKey(item.reference)) && item.message !== null)) {
@@ -90,7 +93,7 @@ export function assembleAgentContext(snapshot: SessionSnapshot, consumerInput: A
     }
   }
   const selection: ContextSelectionSpec = { profileEventId: spec.payload.profileEventId, target: spec.payload.target,
-    requiredInputs: [], observations: [], history: { mode: 'local-suffix', representation: 'raw' }, compactions: spec.payload.context.compactions, memory: spec.payload.context.memory,
+    requiredInputs: [], observations: [], history: { mode: 'local-suffix', representation: 'raw' }, compactions: isWork ? [] : spec.payload.context.compactions, memory: rootMemory,
     inbox: comm.inbox.filter(item => item.status === 'pending').map(item => ({ messageId: item.messageId,
       action: selectedInputs.has(inputKey({ kind: 'peer', eventId: item.acceptedEventId })) ? 'include-full' : 'defer' })), outboxPayloads: [], compactionSource: null }
   const base = spec.payload.target
@@ -102,7 +105,7 @@ export function assembleAgentContext(snapshot: SessionSnapshot, consumerInput: A
     optional.unshift([{ reference: item.unit.reference, sourceEventIds: item.unit.sourceEventIds, messages: item.unit.rawMessages }])
   }
   const render = (history: readonly AgentContextUnit[], memories: readonly AgentContextUnit[]): ModelRequest => snapshotModelRequest({
-    model: base.model, instructions: profile.sections.map(section => section.text), tools: [...captured.tools.map(tool => tool.model), ...agentNativeToolDefinitions(spec.payload.nativeActions)],
+    model: base.model, instructions: profile.sections.map(section => section.text), tools: [...captured.tools.map(tool => tool.model), ...agentNativeToolDefinitions(root.allowedNativeActions)],
     messages: [...history, ...memories, ...required].flatMap(unit => unit.messages), maxOutputTokens: base.maxOutputTokens,
     ...(base.temperature === undefined ? {} : { temperature: base.temperature }), ...(base.topP === undefined ? {} : { topP: base.topP }), ...(base.profile === undefined ? {} : { profile: base.profile }),
   })
@@ -160,5 +163,5 @@ export function assembleAgentContext(snapshot: SessionSnapshot, consumerInput: A
   for (const [limit, available] of [['assembly-bytes', profile.budget.maxAssemblyBytes], ['session-record-bytes', sessionMaxRecordBytes]] as const) {
     if (measuredAssembly.budget.assemblyEnvelopeUpperBoundBytes > available) return { kind: 'budget-exceeded', limit, required: measuredAssembly.budget.assemblyEnvelopeUpperBoundBytes, available, references: assembly.required }
   }
-  return { kind: 'ready', assembly: decodeAgentContextAssembly(measuredAssembly, spec.payload.protocolVersion === 1 ? 2 : 3), request }
+  return { kind: 'ready', assembly: decodeAgentContextAssembly(measuredAssembly, spec.payload.protocolVersion === 3 ? 4 : spec.payload.protocolVersion === 1 ? 2 : 3), request }
 }

@@ -3,7 +3,7 @@ import { decodeContextAssembly } from './assembly-codec.js'
 import { decodeContextCompaction } from './compaction-codec.js'
 import { decodeContextInput } from './input.js'
 import { decodeContextMemory, decodeMemoryRetraction } from './memory.js'
-import { decodeContextProfile, decodeAgentContextProfile, decodeSubagentContextProfile } from './profile.js'
+import { decodeContextProfile, decodeAgentContextProfile, decodeSubagentContextProfile, decodeWorkflowContextProfile } from './profile.js'
 import { decodeAgentContextAssembly } from './agent-codec.js'
 
 export const contextProfileRecordedEvent = createDurableEventDefinition({
@@ -38,6 +38,13 @@ export const subagentContextAssemblyCommittedEvent = createDurableEventDefinitio
   type: 'context/assembly-committed', payloadVersion: 3, ignorable: false, decode: value => decodeAgentContextAssembly(value, 3),
 })
 
+export const workflowContextProfileRecordedEvent = createDurableEventDefinition({
+  type: 'context/profile-recorded', payloadVersion: 4, ignorable: false, decode: decodeWorkflowContextProfile,
+})
+export const workflowContextAssemblyCommittedEvent = createDurableEventDefinition({
+  type: 'context/assembly-committed', payloadVersion: 4, ignorable: false, decode: value => decodeAgentContextAssembly(value, 4),
+})
+
 /** Exact identities composed into the Session Catalog; none of these facts is ignorable. */
 export const legacyContextSessionEventDefinitions = Object.freeze([
   contextProfileRecordedEvent, contextInputRecordedEvent, contextMemoryRecordedEvent,
@@ -45,4 +52,4 @@ export const legacyContextSessionEventDefinitions = Object.freeze([
   agentContextProfileRecordedEvent, agentContextAssemblyCommittedEvent,
 ])
 export const contextSessionEventDefinitions = Object.freeze([...legacyContextSessionEventDefinitions,
-  subagentContextProfileRecordedEvent, subagentContextAssemblyCommittedEvent])
+  subagentContextProfileRecordedEvent, subagentContextAssemblyCommittedEvent, workflowContextProfileRecordedEvent, workflowContextAssemblyCommittedEvent])

@@ -66,9 +66,10 @@ export async function recoverAgentSession(session: SessionHandle, options: Agent
     if (undecided !== undefined) {
       const candidate = models.invocations.find(item => item.prepared.stored.sequence > undecided.opened.stored.sequence)
       const assembly = candidate === undefined ? undefined : snapshot.history.at(-1)!.events[candidate.prepared.stored.sequence - 2]
-      const model = candidate?.state === 'settled' && assembly?.stored.type === 'context/assembly-committed' && assembly.stored.payloadVersion === (state.spec!.payload.protocolVersion === 1 ? 2 : 3)
+      const model = candidate?.state === 'settled' && assembly?.stored.type === 'context/assembly-committed' && assembly.stored.payloadVersion === (state.spec!.payload.protocolVersion + 1)
         ? { invocationId: candidate.invocationId, assembly: assembly.stored.eventId, settled: candidate.settled.stored.eventId } : null
-      const classified = model !== null && candidate?.state === 'settled' ? classifyAgentModel(candidate.settled.payload, state.spec!.payload, candidate.prepared.payload.submission.request.tools.map(tool => tool.name))
+      const root = state.roots.find(item => item.id === state.turns.find(turn => turn.started.stored.eventId === undecided.opened.payload.turn)!.root)!
+      const classified = model !== null && candidate?.state === 'settled' ? classifyAgentModel(candidate.settled.payload, state.spec!.payload, candidate.prepared.payload.submission.request.tools.map(tool => tool.name), { toolNames: root.allowedTools, nativeActions: root.allowedNativeActions })
         : { classification: 'not-issued' as const, reason: 'recovery-before-model', actions: [] }
       await journal.append(executionEvents.stepDecided, () => ({ step: undecided.opened.stored.eventId, model, ...classified, admitted: false,
         reservation: emptyAgentBudget, reassemblies: 0, observedAt: clockTimestamp(options.clock) })); writes++; continue
@@ -120,7 +121,7 @@ export async function recoverAgentSession(session: SessionHandle, options: Agent
     }
     if (state.openRun !== null) {
       const run = state.runs.find(item => item.started.stored.eventId === state.openRun)!
-      const definition = run.started.payload.kind === 'maintenance' ? events.agentMaintenanceRunSettledEvent : events.agentRunSettledEvent
+      const definition = run.started.payload.kind === 'maintenance' ? events.agentMaintenanceRunSettledEvent : events.agentBusinessEvents(state.spec!.payload.protocolVersion).settled
       await journal.append(definition, () => ({ run: state.openRun!, stoppedBy: 'interrupted' as const, reason: 'driver-interrupted' })); writes++; continue
     }
     const control = state.controls.find(item => item.requested.stored.eventId !== owner.stored.eventId && item.settled === null && item.supersededBy === null)

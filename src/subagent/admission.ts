@@ -71,7 +71,7 @@ export class SubagentAdmission {
       if (template.limits[key] > this.config.limits[key]) forbidden('resume-limit-reduced')
     }
     const spec = projectAgentSession(accepted.parent.snapshot()).spec!.payload
-    if (spec.protocolVersion !== 2 || spec.subagents.role !== 'parent') forbidden('resume-parent-role')
+    if (spec.protocolVersion === 1 || spec.subagents.role !== 'parent') forbidden('resume-parent-role')
     authorizeDelegation({ providerId: template.spec.target.provider.providerId, model: template.spec.target.model, tools: template.spec.toolNames }, request.effectivePlan.workspace,
       [spec.subagents.capabilities, template.capabilities, current.capabilities])
     if (!this.#active.has(accepted.event.stored.eventId) && this.#active.size >= this.config.limits.maxActiveChildren) throw new SubagentError('SUBAGENT_CAPACITY', 'active-child-limit')
@@ -87,7 +87,7 @@ export class SubagentAdmission {
     return this.#gate.run(async () => {
       const state = projectAgentSession(parent.snapshot())
       const current = this.config.parents.find(item => item.agentKey === parentKey)
-      if (current === undefined || state.spec?.payload.protocolVersion !== 2 || state.spec.payload.subagents.role !== 'parent') forbidden('parent-not-authorized')
+      if (current === undefined || state.spec === null || state.spec.payload.protocolVersion === 1 || state.spec.payload.subagents.role !== 'parent') forbidden('parent-not-authorized')
       const prior = state.subagents.delegations.find(item => item.payload.parentRoot === rootId && equal(item.payload.source, source))
       if (prior !== undefined) {
         if (!equal(prior.payload.request, request)) throw new SubagentError('SUBAGENT_REQUEST_CONFLICT', 'request-key-content-conflict')
@@ -115,7 +115,8 @@ export class SubagentAdmission {
       if (state.subagents.delegations.filter(item => item.payload.parentRoot === rootId).length >= current.maxDelegations) forbidden('current-delegation-limit')
       const observedAt = clockTimestamp(this.clock)
       const deadline = delegationDeadline(root.deadline, observedAt, template.spec.rootDurationMs, this.config.limits.maxChildDurationMs)
-      const reserved = reserveDelegationBudget({ parentUsed: root.budget, parentLimit: spec.budget, requested: request.requestedBudget,
+      if (root.source.kind === 'workflow' && (!root.allowedNativeActions.includes('agent_spawn_subagent') || request.workspace.kind !== 'none')) forbidden('work-delegation-authority')
+      const reserved = reserveDelegationBudget({ parentUsed: root.budget, parentLimit: root.limit, requested: request.requestedBudget,
         templateCap: template.spec.budget, parentGrantCap: current.maxGrant, parentMaxOutputTokens: spec.target.maxOutputTokens,
         childMaxOutputTokens: template.spec.target.maxOutputTokens, maxQuestions: template.maxQuestions, maxProgress: template.maxProgress })
       const childSessionId = parseSessionId(randomUUID())

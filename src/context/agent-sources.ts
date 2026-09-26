@@ -26,8 +26,8 @@ export function agentTurnUnits(snapshot: SessionSnapshot, state: AgentSessionSna
     if (input === undefined) invalidSource('agent-claim-source')
     const reference: ContextUnitReference = { eventId: input.reference.eventId, selector: input.reference.kind === 'user' ? 'user-input' : 'peer-message' }
     units.push({ reference, sourceEventIds: [input.reference.eventId, turn.started.stored.eventId, ...(input.protocol === undefined ? [] : [input.protocol.inbox])], messages: [agentDataMessage(
-      input.protocol === undefined ? input.message === null ? 'agent-user-input' : 'agent-peer-input' : `subagent-${input.protocol.kind}`,
-      input.reference, input.input ?? input.message ?? snapshot.history.at(-1)!.events.find(item => item.stored.eventId === input.reference.eventId)!.stored.payload)] })
+      input.work !== undefined ? 'workflow-task' : input.protocol === undefined ? input.message === null ? 'agent-user-input' : 'agent-peer-input' : `subagent-${input.protocol.kind}`,
+      input.reference, input.work === undefined ? input.input ?? input.message ?? snapshot.history.at(-1)!.events.find(item => item.stored.eventId === input.reference.eventId)!.stored.payload : { task: input.input!.text, assignment: input.work.assignment, inputs: input.work.value.inputs, output: input.work.recipe.nodes.find(node => node.nodeKey === input.work!.value.nodeKey)!.output })] })
     for (const step of state.steps.filter(item => item.opened.payload.turn === turn.started.stored.eventId)) {
       const decision = step.decided
       if (decision === null) continue

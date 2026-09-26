@@ -39,8 +39,8 @@ export function projectHostSession(snapshot: SessionSnapshot): HostSessionBindin
       } else throw new HostError('HOST_BINDING_CONFLICT', 'host-ready-version')
       if (payload.through !== record.stored.sequence - 1) throw new HostError('HOST_BINDING_CONFLICT', 'ready-cut')
       const profile = sources.get(payload.profile); const spec = sources.get(payload.spec)
-      if (profile?.stored.type !== 'context/profile-recorded' || profile.stored.payloadVersion !== (spec?.stored.payloadVersion === 2 ? 3 : 2)
-        || spec?.stored.type !== 'agent/spec-recorded' || ![1, 2].includes(spec.stored.payloadVersion)) throw new HostError('HOST_BINDING_CONFLICT', 'ready-source')
+      if (profile?.stored.type !== 'context/profile-recorded' || profile.stored.payloadVersion !== (spec === undefined ? 0 : spec.stored.payloadVersion + 1)
+        || spec?.stored.type !== 'agent/spec-recorded' || ![1, 2, 3].includes(spec.stored.payloadVersion)) throw new HostError('HOST_BINDING_CONFLICT', 'ready-source')
       if (parseSessionEventId(payload.profile).sessionId !== snapshot.header.sessionId
         || parseSessionEventId(payload.spec).sessionId !== snapshot.header.sessionId) throw new HostError('HOST_BINDING_CONFLICT', 'ready-foreign-source')
       if (payload.mode === 'initialized' && (planned === null || planned.stored.payloadVersion !== record.stored.payloadVersion

@@ -23,6 +23,7 @@ export {
   contextSessionEventDefinitions,
   agentContextProfileRecordedEvent,
   agentContextAssemblyCommittedEvent,
+  workflowContextProfileRecordedEvent, workflowContextAssemblyCommittedEvent,
 } from './session-events.js'
 export type {
   CommittedCompactionResult,

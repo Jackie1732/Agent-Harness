@@ -54,7 +54,7 @@ function decodeAssignment(value: JsonValue): WorkflowAssignment & JsonObject {
   exact(input, ['definition', 'nodeKey', 'attempt', 'kind', 'memberKey', 'memberAddress', 'channelId', 'inputs', 'sourceAccepted',
     'effectiveAllowance', 'reviewerReservations', 'toolNames', 'nativeActions', 'workspace', 'workspaceBaseline',
     'protocolReserve', 'deadline', 'acceptance'], 'assignment')
-  if (input.kind !== 'production' || !Number.isSafeInteger(input.attempt) || (input.attempt as number) < 0) invalidHistory('assignment-kind-attempt')
+  if (input.kind !== 'production' || !Number.isSafeInteger(input.attempt) || (input.attempt as number) < 1) invalidHistory('assignment-kind-attempt')
   const reviewerReservations = list(input.reviewerReservations, 'reviewerReservations').map(value => {
     const item = object(value, 'reviewerReservation'); exact(item, ['memberKey', 'grant'], 'reviewerReservation')
     return { memberKey: text(item.memberKey, 'reviewer.memberKey'), grant: decodeAgentBudget(item.grant) }

@@ -5,7 +5,7 @@ import { agentDataMessage } from './agent-sources.js'
 
 /** Required parent-local obligations remain present through compaction and history trimming. */
 export function subagentObligationUnits(state: AgentSessionSnapshot, root: SessionEventId): readonly AgentContextUnit[] {
-  if (state.spec?.payload.protocolVersion !== 2) return []
+  if (state.spec?.payload.protocolVersion === 1) return []
   return state.subagents.delegations.filter(item => item.payload.parentRoot === root).map(item => {
     const id = item.stored.eventId
     const observed = state.subagents.observations.filter(item => item.payload.delegation === id).at(-1)

@@ -42,12 +42,12 @@ export function applyWaitSettled(state: AgentProjectionState, event: CommittedSe
   if (root.outcome !== null) invalidAgent('wait-root-terminal')
   if (new Set(p.supportedMessages.map(item => `${item.type}@${item.payloadVersion}`)).size !== p.supportedMessages.length
     || p.supportedMessages.some(item => !requireSpec(state).payload.messages.some(kind => kind.type === item.type && kind.payloadVersion === item.payloadVersion)
-      && !(requireSpec(state).payload.protocolVersion === 2 && item.payloadVersion === 1 && ['task', 'question', 'answer', 'progress', 'result'].some(kind => item.type === `subagent/${kind}`)))) invalidAgent('wait-support-observation')
+      && !(requireSpec(state).payload.protocolVersion !== 1 && item.payloadVersion === 1 && ['task', 'question', 'answer', 'progress', 'result'].some(kind => item.type === `subagent/${kind}`)))) invalidAgent('wait-support-observation')
   const eligible = [...state.inputs.values()].filter(input => matchesAgentWait(wait, input, state) && (input.message === null
     || p.supportedMessages.some(kind => kind.type === input.message!.type && kind.payloadVersion === input.message!.payloadVersion)))
   if (p.outcome !== 'unavailable' && p.outboxTerminal !== null) invalidAgent('unexpected-outbox-terminal')
   if (p.outcome === 'matched') {
-    if (p.response === null || root.stopControl !== null || requireSpec(state).payload.protocolVersion === 2 && p.observedAt >= root.deadline) invalidAgent('match-stopped')
+    if (p.response === null || root.stopControl !== null || requireSpec(state).payload.protocolVersion !== 1 && p.observedAt >= root.deadline) invalidAgent('match-stopped')
     const input = requireEntry(state.inputs, inputKey(p.response), 'missing-response')
     if (!matchesAgentWait(wait, input, state) || eligible[0] !== input) invalidAgent('response-mismatch')
     input.status = 'reserved'; input.reservedBy = p.wait; input.everMatched = true

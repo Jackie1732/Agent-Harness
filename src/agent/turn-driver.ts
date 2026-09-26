@@ -49,7 +49,7 @@ export async function driveAgentTurn(runtime: AgentRuntime, turnId: SessionEvent
       await finish('cancelled', 'root-stopped', control?.requested.payload.kind === 'expire-work' ? 'timed-out' : 'cancelled'); return
     }
     if (agentRootUsageUnknown(runtime.session.snapshot(), view(), root.id)) { await finish('failed', 'model-usage-unknown', 'failed'); return }
-    if (reserveAgentBudget(root.budget, { ...emptyAgentBudget, models: 1, steps: 1, outputTokens: spec.payload.target.maxOutputTokens }, spec.payload.budget) === null) {
+    if (reserveAgentBudget(root.budget, { ...emptyAgentBudget, models: 1, steps: 1, outputTokens: spec.payload.target.maxOutputTokens }, root.limit) === null) {
       await finish('budget-exhausted', 'model-budget', 'budget-exhausted'); return
     }
     const step = await runtime.journal.append(events.agentStepOpenedEvent, state => ({ turn: turnId,
@@ -66,7 +66,7 @@ export async function driveAgentTurn(runtime: AgentRuntime, turnId: SessionEvent
         assemblyId = built.committed.stored.eventId
         const settled = await runtime.model.invoke(built.request, { signal, inputPrecondition: built.inputPrecondition })
         model = { invocationId: settled.payload.invocationId, assembly: built.committed.stored.eventId, settled: settled.stored.eventId }
-        classification = classifyAgentModel(settled.payload, spec.payload, built.request.tools.map(item => item.name)); break
+        classification = classifyAgentModel(settled.payload, spec.payload, built.request.tools.map(item => item.name), { toolNames: root.allowedTools, nativeActions: root.allowedNativeActions }); break
       } catch (error) {
         if (error instanceof ModelError && error.code === 'MODEL_INPUT_STALE' || error instanceof ContextError && error.code === 'CONTEXT_SOURCE_CHANGED') {
           classification = { classification: 'not-issued', reason: 'context-stale', actions: [] }; continue
@@ -74,7 +74,7 @@ export async function driveAgentTurn(runtime: AgentRuntime, turnId: SessionEvent
         const committed = projectModelSession(runtime.session.snapshot()).invocations.find(item => item.prepared.stored.sequence > step.stored.sequence)
         if (committed?.state === 'settled' && assemblyId !== null) {
           model = { invocationId: committed.invocationId, assembly: assemblyId, settled: committed.settled.stored.eventId }
-          classification = classifyAgentModel(committed.settled.payload, spec.payload, committed.prepared.payload.submission.request.tools.map(item => item.name)); break
+          classification = classifyAgentModel(committed.settled.payload, spec.payload, committed.prepared.payload.submission.request.tools.map(item => item.name), { toolNames: root.allowedTools, nativeActions: root.allowedNativeActions }); break
         }
         if (runtime.session.status !== 'open' || runtime.context.status === 'faulted' || runtime.model.status === 'faulted') throw error
         if (projectModelSession(runtime.session.snapshot()).pendingInvocationId !== null) throw error
@@ -89,7 +89,7 @@ export async function driveAgentTurn(runtime: AgentRuntime, turnId: SessionEvent
       const observedAt = clockTimestamp(runtime.clock)
       const admitted = classification.classification === 'actions' && classification.actions.length <= spec.payload.limits.maxActionsPerStep && classification.reason !== 'invalid-control-batch' && !signal.aborted
         && (amount.waits === 0 || state.waits.filter(wait => wait.settled === null).length < spec.payload.limits.maxPendingWaits)
-        && current.stopControl === null && observedAt < current.deadline && reserveAgentBudget(current.budget, amount, spec.payload.budget) !== null
+        && current.stopControl === null && observedAt < current.deadline && reserveAgentBudget(current.budget, amount, current.limit) !== null
       return { step: step.stored.eventId, model, ...classification, admitted, reservation: admitted ? amount : emptyAgentBudget,
         reassemblies: Math.min(reassemblies, spec.payload.limits.maxReassemblies), observedAt }
     })

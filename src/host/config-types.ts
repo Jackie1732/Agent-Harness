@@ -1,6 +1,6 @@
 import type { HostSubagentConfig, HostSubagentConfigV3, HostWorkspaceResource } from './subagent-config.js'
 import type { HostWorkflowConfig, ResolvedHostWorkflowConfig } from './workflow-config.js'
-import type { AgentSpec, AgentSpecV1, AgentSpecV2 } from '../agent/contract.js'
+import type { AgentSpec, AgentSpecV1, AgentSpecV2, AgentSpecV3 } from '../agent/contract.js'
 import type { MailboxLimits } from '../communication/types.js'
 import type { ChannelId } from '../communication/ids.js'
 import type { ContextModelTarget, ContextProfile } from '../context/contract.js'
@@ -20,8 +20,7 @@ export interface HostPeerConfig {
   readonly memberKey: string
   readonly channelKey: string
 }
-export interface HostAgentSpecTemplate {
-  readonly protocolVersion: 1 | 2
+interface HostAgentSpecTemplateFields {
   readonly label: string
   readonly responsibility: string
   readonly nonGoals: readonly string[]
@@ -39,6 +38,9 @@ export interface HostAgentSpecTemplate {
   readonly usagePolicy: AgentSpec['usagePolicy']
   readonly businessRefusalHandled: boolean
 }
+export type HostAgentSpecTemplate = HostAgentSpecTemplateFields & (
+  { readonly protocolVersion: 1 | 2 } | { readonly protocolVersion: 3; readonly workflow: AgentSpecV3['workflow'] }
+)
 export interface HostScriptedModelConfig extends JsonObject {
   readonly kind: 'scripted-fixed'
   readonly providerId: string
@@ -156,7 +158,7 @@ export interface HostConfigV1 {
 }
 export interface ResolvedHostLocalMember extends Omit<HostLocalMemberConfig, 'sessionId' | 'spec'> {
   readonly sessionId: string
-  readonly spec: Omit<AgentSpecV1, 'profileEventId'> | Omit<AgentSpecV2, 'profileEventId'>
+  readonly spec: Omit<AgentSpecV1, 'profileEventId'> | Omit<AgentSpecV2, 'profileEventId'> | Omit<AgentSpecV3, 'profileEventId'>
 }
 export type ResolvedHostMember = ResolvedHostLocalMember | HostRemoteMemberConfig
 export type HostConfigV2 = Omit<HostConfigV1, 'schemaVersion'> & { readonly schemaVersion: 2; readonly subagents: HostSubagentConfig }

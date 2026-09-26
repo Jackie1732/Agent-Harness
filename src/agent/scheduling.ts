@@ -1,3 +1,5 @@
+import type { AgentRunSelection } from './contract.js'
+import { sameWorkflowValue } from '../workflow/work-binding.js'
 import { hasPendingAgentAbandon } from './input-ownership.js'
 import type { MessageCatalog } from '../communication/message-catalog.js'
 import type { AgentSessionSnapshot } from './state.js'
@@ -5,10 +7,16 @@ import { AgentError } from './errors.js'
 import { referenceKey } from './input-codec.js'
 
 /** Filter actionable inputs using the same ownership, message support and wait rules as selection. */
-export function runnableAgentInputs(state: AgentSessionSnapshot, catalog: MessageCatalog) {
+export function runnableAgentInputs(state: AgentSessionSnapshot, catalog: MessageCatalog, selection: AgentRunSelection = { kind: 'ordinary' }) {
   const spec = state.spec?.payload
   if (spec === undefined) throw new AgentError('AGENT_STATE_INVALID', 'missing-spec')
   return state.inputs.filter(input => {
+    const waitRoot = input.reservedBy === null ? undefined : state.waits.find(wait => referenceKey(wait.reference) === referenceKey(input.reservedBy!))?.created.payload.result
+    const root = waitRoot?.kind === 'wait' ? state.roots.find(root => root.id === waitRoot.descriptor.root) : undefined
+    const assignment = input.work?.assignment ?? (root?.source.kind === 'workflow' ? root.source.assignment : undefined)
+    if (selection.kind === 'ordinary' ? assignment !== undefined : assignment === undefined || !sameWorkflowValue(assignment, selection.assignment)) return false
+    if (selection.kind === 'ordinary' && (state.roots.some(item => item.source.kind === 'workflow' && item.outcome === null)
+      || state.inputs.some(item => item.work !== undefined && item.status === 'queued'))) return false
     if (hasPendingAgentAbandon(state.controls, input)) return false
     if (input.protocol?.kind === 'task' && (state.subagents.controls.length > 0 || state.roots.length > 0)) return false
     if (input.message !== null && (catalog.resolve(input.message.type, input.message.payloadVersion) === undefined
@@ -18,14 +26,14 @@ export function runnableAgentInputs(state: AgentSessionSnapshot, catalog: Messag
     const wait = state.waits.find(wait => referenceKey(wait.reference) === referenceKey(input.reservedBy!))
     const result = wait?.created.payload.result
     if (result?.kind !== 'wait') return false
-    const root = state.roots.find(root => root.id === result.descriptor.root)
-    return root !== undefined && root.outcome === null && root.stopControl === null
+    const waitingRoot = state.roots.find(root => root.id === result.descriptor.root)
+    return waitingRoot !== undefined && waitingRoot.outcome === null && waitingRoot.stopControl === null
   })
 }
 
 /** Persistent lane cursors and accepted sequence define the complete ordering. */
-export function selectAgentInput(state: AgentSessionSnapshot, catalog: MessageCatalog) {
-  const candidates = runnableAgentInputs(state, catalog)
+export function selectAgentInput(state: AgentSessionSnapshot, catalog: MessageCatalog, selection: AgentRunSelection = { kind: 'ordinary' }) {
+  const candidates = runnableAgentInputs(state, catalog, selection)
   const spec = state.spec!.payload
   const lanes = new Map<string, typeof candidates[number]>()
   for (const input of candidates) {

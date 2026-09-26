@@ -36,6 +36,29 @@ function config(root: string): JsonObject {
 }
 
 describe('Host v3 workflow planning', () => {
+  it('initializes and reopens a v3 ordinary Agent with a version 4 Context profile', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'host-v3-agent-'))
+    try {
+      const base = twoMemberHostConfig(root)
+      const members = (base.members as readonly JsonObject[]).map(member => ({ ...member,
+        profile: { ...(member.profile as JsonObject), rendererVersion: 'context-neutral/v4' },
+        spec: { ...(member.spec as JsonObject), protocolVersion: 3, workflow: { kind: 'disabled' } },
+      }))
+      const spec = resolveHostConfig(decodeHostConfig({ ...base, members, schemaVersion: 3,
+        subagents: { kind: 'disabled' }, workspaceResources: [], workflows: { kind: 'disabled' } }, root))
+      await initializeHost(spec)
+      const host = await openHost(spec)
+      try {
+        await host.submitTask('writer', 'ordinary v3 task')
+        await host.run()
+        expect(host.report().members.find(member => member.agentKey === 'writer')?.agent.roots[0]?.source).toEqual({ kind: 'ordinary' })
+      } finally { await host.shutdown() }
+      const reopened = await openHost(spec)
+      await reopened.shutdown()
+      expect((await initializeHost(spec)).map(item => item.mode)).toEqual(['existing', 'existing'])
+    } finally { await rm(root, { recursive: true, force: true }) }
+  })
+
   it('plans a coordinator, initializes its Session, and opens a protocol-only slot', async () => {
     const root = await mkdtemp(join(tmpdir(), 'host-v3-workflow-'))
     try {

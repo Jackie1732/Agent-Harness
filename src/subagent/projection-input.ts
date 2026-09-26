@@ -15,7 +15,7 @@ export function applySubagentClassification(state: AgentProjectionState, event: 
   const p = event.payload
   const request = requireDelegationBinding(state.subagents, p)
   const spec = requireSpec(state).payload
-  if (spec.protocolVersion !== 2) invalid('classification-spec')
+  if (spec.protocolVersion === 1) invalid('classification-spec')
   const inbox = requireEntry(state.sources, p.inbox, 'missing-protocol-inbox')
   if (inbox.stored.type !== inboxAcceptedEvent.type || inbox.stored.payloadVersion !== 1
     || [...state.subagents.classifications.values()].some(item => item.payload.inbox === p.inbox)) invalid('classification-inbox-source')

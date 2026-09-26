@@ -13,8 +13,8 @@ import { buildCapturedContext } from './assembler.js'
 import { assembleAgentContext } from './agent-assembler.js'
 import { decodeAgentContextConsumer } from './agent-codec.js'
 import type { AgentContextConsumer } from './agent-contract.js'
-import { decodeAgentContextProfile, decodeSubagentContextProfile } from './profile.js'
-import { agentContextProfileRecordedEvent, agentContextAssemblyCommittedEvent, subagentContextProfileRecordedEvent, subagentContextAssemblyCommittedEvent } from './session-events.js'
+import { decodeAgentContextProfile, decodeSubagentContextProfile, decodeWorkflowContextProfile } from './profile.js'
+import { agentContextProfileRecordedEvent, agentContextAssemblyCommittedEvent, subagentContextProfileRecordedEvent, subagentContextAssemblyCommittedEvent, workflowContextProfileRecordedEvent, workflowContextAssemblyCommittedEvent } from './session-events.js'
 import { projectAgentSession } from '../agent/projection.js'
 import { subagentMessageDefinitions } from '../subagent/messages.js'
 import { describeToolForModel } from '../tool/model-bridge.js'
@@ -112,9 +112,9 @@ export class SessionContext {
   recordProfile(value: ContextProfile, options: ContextOperationOptions = {}): Promise<CommittedSessionEvent<ContextProfile>> {
     return this.#start(options, async assertNotCancelled => {
       const copied = record(contextJson(value))
-      const definition = copied.rendererVersion === 'context-neutral/v3' ? subagentContextProfileRecordedEvent
+      const definition = copied.rendererVersion === 'context-neutral/v4' ? workflowContextProfileRecordedEvent : copied.rendererVersion === 'context-neutral/v3' ? subagentContextProfileRecordedEvent
         : copied.rendererVersion === 'context-neutral/v2' ? agentContextProfileRecordedEvent : contextProfileRecordedEvent
-      const profile = definition === subagentContextProfileRecordedEvent ? decodeSubagentContextProfile(copied)
+      const profile = definition === workflowContextProfileRecordedEvent ? decodeWorkflowContextProfile(copied) : definition === subagentContextProfileRecordedEvent ? decodeSubagentContextProfile(copied)
         : definition === agentContextProfileRecordedEvent ? decodeAgentContextProfile(copied) : decodeContextProfile(copied)
       const snapshot = this.#session.snapshot()
       const state = projectContextSession(snapshot)
@@ -186,7 +186,10 @@ export class SessionContext {
       const state = projectAgentSession(snapshot)
       if (state.spec === null) invalidSource('agent-spec-missing')
       const registry = this.#toolRegistry?.snapshot() ?? []
-      const tools = state.spec.payload.toolNames.flatMap(name => {
+      const turn = state.turns.find(item => item.started.stored.eventId === consumer.turn)
+      const root = state.roots.find(item => item.id === turn?.root)
+      if (root === undefined) invalidSource('agent-context-root')
+      const tools = root.allowedTools.flatMap(name => {
         const item = registry.find(item => item.definition.name === name && item.status === 'active')
         return item === undefined ? [] : [{ definition: item.definition, provider: item.provider, model: describeToolForModel(item.definition) }]
       })
@@ -201,7 +204,7 @@ export class SessionContext {
       const built = assembleAgentContext(snapshot, consumer, { tools, messageSupport }, this.#session.maxRecordBytes)
       if (built.kind !== 'ready') return built
       assertNotCancelled()
-      const committed = await this.#append(snapshot.localPosition, state.spec.payload.protocolVersion === 1 ? agentContextAssemblyCommittedEvent : subagentContextAssemblyCommittedEvent, built.assembly, 'CONTEXT_SOURCE_CHANGED')
+      const committed = await this.#append(snapshot.localPosition, state.spec.payload.protocolVersion === 3 ? workflowContextAssemblyCommittedEvent : state.spec.payload.protocolVersion === 1 ? agentContextAssemblyCommittedEvent : subagentContextAssemblyCommittedEvent, built.assembly, 'CONTEXT_SOURCE_CHANGED')
       return { kind: 'ready', committed, request: built.request, inputPrecondition: snapshotInputPrecondition({ sessionId: snapshot.header.sessionId,
         expectedLocalPosition: committed.stored.sequence, expectedProviderDescriptor: built.assembly.selection.target.provider }),
         committedEnvelopeBytes: canonicalJsonBytes(committed.stored as unknown as JsonValue).byteLength }

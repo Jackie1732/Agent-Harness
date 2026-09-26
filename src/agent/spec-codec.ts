@@ -71,7 +71,7 @@ function decodeSpec(value: unknown, version: 1 | 2 | 3, childTemplate = false): 
       ...(version === 3 ? workflowNativeActionNames : [])]
     if (tools.some(name => !/^[A-Za-z0-9_-]+$/.test(name) || (version === 1 ? agentNativeActionNames as readonly string[] : reservedNames).includes(name))) throw new Error('tool-name')
     const actions = names(input.nativeActions)
-    actions.forEach(name => choice(name, version === 1 ? agentNativeActionNames : reservedNames))
+    actions.forEach(name => choice(name, version === 1 ? agentNativeActionNames : [...agentNativeActionNames, ...subagentNativeActionNames]))
     const peers = array(input.peers, 1000).map(item => {
       const peer = record(item); exact(peer, ['key', 'address', 'channelId'])
       text(peer.key, 128); parseSessionAddress(text(peer.address)); parseChannelId(text(peer.channelId))

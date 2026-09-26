@@ -5,7 +5,7 @@ import type { MailboxReservation } from '../communication/protocol-capacity.js'
 import type { ChannelId } from '../communication/ids.js'
 
 /** One event identity is meaningful only within its owning Session. */
-export interface WorkflowEventRef {
+export type WorkflowEventRef = {
   readonly address: SessionAddress
   readonly eventId: SessionEventId
 }

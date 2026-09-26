@@ -16,14 +16,7 @@ export async function agentFixture(overrides: Partial<AgentSpecV1> = {}, provide
   const context = new SessionContext({ session, messageCatalog })
   const provider = providerInput ?? scriptedModel()
   const p = await context.recordProfile(profile('generation', { rendererVersion: 'context-neutral/v2' }))
-  const spec: AgentSpecV1 = { protocolVersion: 1, label: 'test', responsibility: 'answer tasks', nonGoals: [], profileEventId: p.stored.eventId,
-    target: { model: 'fixture-model', maxOutputTokens: 256, provider: provider.descriptor }, toolNames: [], nativeActions: [], peers: [], messages: [],
-    context: { history: { mode: 'none', maxRoots: 0 }, memory: { required: [], query: { requiredTags: [], queryTags: [], topK: 0 } }, compactions: [] },
-    budget: { models: 5, steps: 5, tools: 5, messages: 5, waits: 5, outputTokens: 2048 }, rootDurationMs: 60_000,
-    maxDirectSendCommandsPerSession: 5, errorFeedback: 'new-step', usagePolicy: 'observe-only', businessRefusalHandled: false,
-    limits: { maxTurnsPerRun: 5, maxManagementPerRun: 20, maxDispatchRunsPerRun: 1, maxJournalConflicts: 4, maxReassemblies: 2,
-      maxPendingInputs: 20, maxPendingWaits: 5, maxLanes: 10, maxInputBytes: 4096, maxActionsPerStep: 8, maxActionBytes: 4096,
-      maxResultBytes: 16384, maxReportEntries: 100, maxWaitMs: 30_000 }, ...overrides }
+  const spec = agentSpec(p.stored.eventId, provider, overrides)
   const journal = new AgentJournal(session, 4, clock)
   const installed = await journal.append(events.agentSpecRecordedEvent, () => spec)
   return { repo, session, context, provider, spec, journal, installed,
@@ -41,4 +34,15 @@ export async function openStep(f: Awaited<ReturnType<typeof agentFixture>>, text
     lane: 'user', ordinal: state.turns.length + 1, root: null, predecessor: null, deadline: null, observedAt }))
   const step = await f.journal.append(events.agentStepOpenedEvent, () => ({ turn: turn.stored.eventId, ordinal: 1, outputTokens: f.spec.target.maxOutputTokens, observedAt }))
   return { input, run, turn, step, consumer: { spec: f.installed.stored.eventId, run: run.stored.eventId, turn: turn.stored.eventId, step: step.stored.eventId } }
+}
+
+export function agentSpec(profileEventId: AgentSpecV1['profileEventId'], provider: ModelProvider, overrides: Partial<AgentSpecV1> = {}): AgentSpecV1 {
+  return { protocolVersion: 1, label: 'test', responsibility: 'answer tasks', nonGoals: [], profileEventId: profileEventId,
+    target: { model: 'fixture-model', maxOutputTokens: 256, provider: provider.descriptor }, toolNames: [], nativeActions: [], peers: [], messages: [],
+    context: { history: { mode: 'none', maxRoots: 0 }, memory: { required: [], query: { requiredTags: [], queryTags: [], topK: 0 } }, compactions: [] },
+    budget: { models: 5, steps: 5, tools: 5, messages: 5, waits: 5, outputTokens: 2048 }, rootDurationMs: 60_000,
+    maxDirectSendCommandsPerSession: 5, errorFeedback: 'new-step', usagePolicy: 'observe-only', businessRefusalHandled: false,
+    limits: { maxTurnsPerRun: 5, maxManagementPerRun: 20, maxDispatchRunsPerRun: 1, maxJournalConflicts: 4, maxReassemblies: 2,
+      maxPendingInputs: 20, maxPendingWaits: 5, maxLanes: 10, maxInputBytes: 4096, maxActionsPerStep: 8, maxActionBytes: 4096,
+      maxResultBytes: 16384, maxReportEntries: 100, maxWaitMs: 30_000 }, ...overrides }
 }

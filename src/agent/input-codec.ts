@@ -7,8 +7,8 @@ export function actionReference(value: unknown): AgentActionReference {
   const input = record(value); exact(input, ['eventId', 'index']); eventId(input.eventId); integer(input.index, 0, 63)
   return input as AgentActionReference
 }
-export function inputReference(value: unknown, version: 1 | 2 = 1): AgentInputReference {
-  const input = record(agentJson(value)); exact(input, ['kind', 'eventId']); choice(input.kind, version === 1 ? ['user', 'peer'] : ['user', 'peer', 'subagent']); eventId(input.eventId)
+export function inputReference(value: unknown, version: 1 | 2 | 3 = 1): AgentInputReference {
+  const input = record(agentJson(value)); exact(input, ['kind', 'eventId']); choice(input.kind, version === 1 ? ['user', 'peer'] : version === 2 ? ['user', 'peer', 'subagent'] : ['user', 'peer', 'subagent', 'workflow']); eventId(input.eventId)
   return input as AgentInputReference
 }
 export function referenceKey(reference: AgentActionReference): string { return `${reference.eventId}#${reference.index}` }
@@ -35,7 +35,7 @@ export function decodeAgentCommand(value: unknown): AgentSendCommand {
   return input as AgentSendCommand
 }
 
-export function decodeWaitDescriptor(value: unknown, version: 1 | 2 = 1): AgentWaitDescriptor {
+export function decodeWaitDescriptor(value: unknown, version: 1 | 2 | 3 = 1): AgentWaitDescriptor {
   const input = record(value)
   const kind = choice(input.kind, version === 1 ? ['user', 'reply'] : ['user', 'reply', 'delegation', 'parent-answer'])
   const fields = kind === 'user' ? ['question'] : kind === 'reply' ? ['messageId', 'outboxEventId']

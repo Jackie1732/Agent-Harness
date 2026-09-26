@@ -10,6 +10,7 @@ import type { AgentActionSettled, AgentCommandAccepted, AgentControlRequest, Age
 
 export type AgentInputState = {
   readonly protocol?: { readonly delegation: SessionEventId; readonly kind: SubagentMessageKind | 'failure'; readonly inbox: SessionEventId }
+  readonly work?: import('../workflow/work-binding.js').WorkAssignmentAccepted
   readonly reference: AgentInputReference
   readonly input: AgentInput | null
   readonly message: MessageEnvelope | null
@@ -26,6 +27,10 @@ export type AgentRootState = {
   readonly id: SessionEventId
   readonly deadline: string
   readonly budget: AgentBudget
+  readonly limit: AgentBudget
+  readonly allowedTools: readonly string[]
+  readonly allowedNativeActions: readonly (import('./contract.js').AgentNativeActionName | import('./contract.js').WorkflowNativeActionName)[]
+  readonly source: import('./contract.js').AgentRunSelection
   readonly outcome: AgentRootOutcome | null
   readonly reason: string | null
   readonly stopControl: SessionEventId | null

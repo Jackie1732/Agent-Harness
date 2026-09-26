@@ -3,11 +3,13 @@ import { clockTimestamp } from '../foundation/clock.js'
 import { projectCommunicationFacts } from '../communication/projection.js'
 import type { SessionEventId } from '../session/ids.js'
 import { assertAgentExecutionQuiescent } from './execution-health.js'
-import type { AgentInput, AgentInputReference, AgentSendCommand, AgentSpec } from './contract.js'
+import type { AgentInput, AgentInputReference, AgentSendCommand, AgentSpec, AgentRunSelection } from './contract.js'
 import type { SessionAgentOptions, AgentRuntime, AgentTurnControl } from './runtime-contract.js'
+import { decodeRunSelection } from './event-codec.js'
+import { workAssignmentAcceptedEvent, sameWorkflowValue } from '../workflow/work-binding.js'
 import { AgentError } from './errors.js'
 import { AgentJournal } from './journal.js'
-import { decodeAgentSpec, decodeSubagentAgentSpec } from './spec-codec.js'
+import { decodeAgentSpec, decodeSubagentAgentSpec, decodeWorkflowAgentSpec } from './spec-codec.js'
 import { decodeAgentInput, decodeAgentCommand, referenceKey, inputReference } from './input-codec.js'
 import { projectAgentSession } from './projection.js'
 import { projectAgentReport } from './report.js'
@@ -20,7 +22,7 @@ import { inspectAgentReadiness } from './readiness.js'
 import { expireAgentRoot } from './root-policy.js'
 import * as events from './session-events.js'
 import { subagentSessionEventDefinitions } from '../subagent/session-events.js'
-import { subagentContextProfileRecordedEvent, subagentContextAssemblyCommittedEvent } from '../context/session-events.js'
+import { subagentContextProfileRecordedEvent, subagentContextAssemblyCommittedEvent, workflowContextProfileRecordedEvent, workflowContextAssemblyCommittedEvent } from '../context/session-events.js'
 
 const driverTask = new AsyncLocalStorage<ReadonlySet<symbol>>()
 
@@ -33,6 +35,7 @@ export class SessionAgent {
   #desired: 'continue' | 'pause' = 'continue'
   #task: Promise<AgentRunReport> | undefined
   #taskKind: 'drive' | 'command' | 'maintenance' | undefined
+  #selection: AgentRunSelection | undefined
   #ownedRun: SessionEventId | null = null
   #failure: AgentError | undefined
   #driveController: AbortController | undefined
@@ -53,8 +56,10 @@ export class SessionAgent {
       || options.mailbox !== undefined && options.mailbox.sessionId !== options.session.header.sessionId) throw new AgentError('AGENT_SOURCE_INVALID', 'borrowed-session-mismatch')
     const executionEvents = events.agentExecutionEvents(state.spec.payload.protocolVersion)
     if (Object.values(executionEvents).some(definition => !options.session.supportsEventDefinition(definition))) throw new AgentError('AGENT_CATALOG_INCOMPATIBLE', 'execution-events-required')
-    if (state.spec.payload.protocolVersion === 2 && [...subagentSessionEventDefinitions, subagentContextProfileRecordedEvent, subagentContextAssemblyCommittedEvent]
+    if (state.spec.payload.protocolVersion !== 1 && [...subagentSessionEventDefinitions, subagentContextProfileRecordedEvent, subagentContextAssemblyCommittedEvent]
       .some(definition => !options.session.supportsEventDefinition(definition))) throw new AgentError('AGENT_CATALOG_INCOMPATIBLE', 'delegation-events-required')
+    if (state.spec.payload.protocolVersion === 3 && [workflowContextProfileRecordedEvent, workflowContextAssemblyCommittedEvent, workAssignmentAcceptedEvent]
+      .some(definition => !options.session.supportsEventDefinition(definition))) throw new AgentError('AGENT_CATALOG_INCOMPATIBLE', 'workflow-events-required')
     this.#runtime = { ...options, events: executionEvents, journal: new AgentJournal(options.session, state.spec.payload.limits.maxJournalConflicts, options.clock) }
   }
   get status() { return this.#status }
@@ -73,18 +78,22 @@ export class SessionAgent {
   }
 
   /** Drive bounded work. Concurrent calls on this instance join its current drive, with no new cancellation authority. */
-  start(options: { readonly signal?: AbortSignal } = {}): Promise<AgentRunReport> {
+  start(options: { readonly signal?: AbortSignal; readonly selection?: AgentRunSelection } = {}): Promise<AgentRunReport> {
     this.#accepting()
     if (this.#isReentrant()) throw new AgentError('AGENT_REENTRANT_WAIT', 'driver-cannot-join-itself')
+    const selection = decodeRunSelection(options.selection ?? { kind: 'ordinary' })
+    if (selection.kind === 'workflow' && this.snapshot().spec!.payload.protocolVersion !== 3) throw new AgentError('AGENT_SPEC_INVALID', 'workflow-requires-v3')
     if (this.#task !== undefined) {
       if (this.#taskKind !== 'drive') throw new AgentError('AGENT_BUSY', 'command-active')
+      if (!sameWorkflowValue(this.#selection!, selection)) throw new AgentError('AGENT_BUSY', 'different-run-selection')
       return this.#task
     }
     if (options.signal?.aborted === true) throw new AgentError('AGENT_CANCELLED', 'run-cancelled-before-admission')
     this.#desired = 'continue'
     this.#driveController = new AbortController()
     const signals = [this.#driveController.signal, options.signal, this.#runtime.signal, this.#runtime.scope?.signal].filter((value): value is AbortSignal => value !== undefined)
-    return this.#launch('drive', () => this.#drive(AbortSignal.any(signals)))
+    this.#selection = selection
+    return this.#launch('drive', () => this.#drive(AbortSignal.any(signals), selection))
   }
   /** Stop claiming inputs after the current Turn reaches its durable checkpoint. */
   pause(): void { this.#accepting(); this.#desired = 'pause' }
@@ -186,22 +195,22 @@ export class SessionAgent {
     return this.#launch('command', async () => {
       let runtime = this.#runtime
       assertAgentExecutionQuiescent(runtime.session.snapshot())
-      const run = await runtime.journal.append(events.agentRunStartedEvent, state => {
+      const run = await runtime.journal.append(events.agentBusinessEvents(this.snapshot().spec!.payload.protocolVersion).started, state => {
         if (state.openRun !== null) throw new AgentError('AGENT_BUSY', 'driver-active')
-        return { spec: state.spec!.stored.eventId, kind: 'command' as const }
+        return { spec: state.spec!.stored.eventId, kind: 'command' as const, ...(state.spec!.payload.protocolVersion === 3 ? { selection: { kind: 'ordinary' as const } } : {}) }
       })
       this.#ownedRun = run.stored.eventId
       await this.#attachCommunication(run.stored.eventId)
       runtime = this.#runtime
       const state = this.snapshot()
       if (state.commands.length >= state.spec!.payload.maxDirectSendCommandsPerSession) {
-        await runtime.journal.append(events.agentRunSettledEvent, () => ({ run: run.stored.eventId, stoppedBy: 'command-budget' as const, reason: 'direct-send-budget' })); return this.report()
+        await runtime.journal.append(events.agentBusinessEvents(this.snapshot().spec!.payload.protocolVersion).settled, () => ({ run: run.stored.eventId, stoppedBy: 'command-budget' as const, reason: 'direct-send-budget' })); return this.report()
       }
       const accepted = await runtime.journal.append(events.agentCommandAcceptedEvent, state => ({ run: run.stored.eventId, spec: state.spec!.stored.eventId, root: null, command }))
       const action = { eventId: accepted.stored.eventId, index: 0 }
       const result = await executeAgentSend(runtime, action, command)
       await runtime.journal.append(runtime.events.actionSettled, () => ({ action, result }))
-      await runtime.journal.append(events.agentRunSettledEvent, () => ({ run: run.stored.eventId, stoppedBy: 'command-settled' as const, reason: result.kind }))
+      await runtime.journal.append(events.agentBusinessEvents(this.snapshot().spec!.payload.protocolVersion).settled, () => ({ run: run.stored.eventId, stoppedBy: 'command-settled' as const, reason: result.kind }))
       return this.report()
     })
   }
@@ -307,18 +316,18 @@ export class SessionAgent {
       this.#runtime = { ...this.#runtime, mailbox }
       this.#runtime = { ...this.#runtime, dispatcher: communication.service.createDispatcher(mailbox) }
     } catch {
-      await this.#runtime.journal.append(events.agentRunSettledEvent, () => ({ run, stoppedBy: 'faulted' as const, reason: 'mailbox-attach-failed' }))
+      await this.#runtime.journal.append(events.agentBusinessEvents(this.snapshot().spec!.payload.protocolVersion).settled, () => ({ run, stoppedBy: 'faulted' as const, reason: 'mailbox-attach-failed' }))
       throw new AgentError('AGENT_COMMUNICATION_UNAVAILABLE', 'mailbox-attach-failed')
     }
   }
-  async #drive(signal: AbortSignal): Promise<AgentRunReport> {
+  async #drive(signal: AbortSignal, selection: AgentRunSelection): Promise<AgentRunReport> {
     let runtime: AgentRuntime = { ...this.#runtime, signal, management: { remaining: this.snapshot().spec!.payload.limits.maxManagementPerRun } }
     assertAgentExecutionQuiescent(runtime.session.snapshot())
     if (this.snapshot().openRun === null && this.snapshot().openRecovery === null) await settleAgentStops(runtime)
     if (runtime.management!.remaining === 0) return this.report()
-    const run = await runtime.journal.append(events.agentRunStartedEvent, state => {
+    const run = await runtime.journal.append(events.agentBusinessEvents(this.snapshot().spec!.payload.protocolVersion).started, state => {
       if (state.openRun !== null) throw new AgentError('AGENT_BUSY', 'driver-active')
-      return { spec: state.spec!.stored.eventId, kind: 'drive' as const }
+      return { spec: state.spec!.stored.eventId, kind: 'drive' as const, ...(state.spec!.payload.protocolVersion === 3 ? { selection } : {}) }
     })
     this.#ownedRun = run.stored.eventId
     if (!signal.aborted) await this.#attachCommunication(run.stored.eventId)
@@ -326,7 +335,7 @@ export class SessionAgent {
     const spec = this.snapshot().spec!.payload
     let dispatches = 0
     let stoppedBy: import('./contract.js').AgentRunStop = 'idle'
-    for (let count = 0; count < spec.limits.maxTurnsPerRun; count++) {
+    for (let count = 0; count < (spec.protocolVersion === 3 ? 1 : spec.limits.maxTurnsPerRun); count++) {
       await manageAgentWaits(runtime)
       if (runtime.management!.remaining === 0) { stoppedBy = 'run-budget'; break }
       if (this.#desired === 'pause' || this.snapshot().closing !== null || this.#status !== 'accepting' || runtime.signal?.aborted === true) { stoppedBy = 'paused'; break }
@@ -334,7 +343,7 @@ export class SessionAgent {
         && dispatches < spec.limits.maxDispatchRunsPerRun) { await runtime.dispatcher.dispatch({ signal }); dispatches++; await manageAgentWaits(runtime) }
       if (runtime.management!.remaining === 0) { stoppedBy = 'run-budget'; break }
       let candidate
-      try { candidate = selectAgentInput(this.snapshot(), runtime.messageCatalog) }
+      try { candidate = selectAgentInput(this.snapshot(), runtime.messageCatalog, selection) }
       catch (error) {
         if (!(error instanceof AgentError) || error.code !== 'AGENT_LIMIT_EXCEEDED') throw error
         stoppedBy = 'run-budget'; break
@@ -342,14 +351,17 @@ export class SessionAgent {
       if (candidate === null) { stoppedBy = this.snapshot().waits.some(wait => wait.settled === null) ? 'waiting' : 'idle'; break }
       let turn
       try { turn = await runtime.journal.append(runtime.events.turnStarted, state => {
-        const selected = selectAgentInput(state, runtime.messageCatalog)
+        const selected = selectAgentInput(state, runtime.messageCatalog, selection)
         if (selected === null) throw new AgentError('AGENT_BUSY', 'input-selection-changed')
         const wait = selected.reservedBy === null ? undefined : state.waits.find(wait => referenceKey(wait.reference) === referenceKey(selected.reservedBy!))
         const descriptor = wait?.created.payload.result.kind === 'wait' ? wait.created.payload.result.descriptor : undefined
         const root = descriptor === undefined ? undefined : state.roots.find(root => root.id === descriptor.root)
-        return { ...(state.spec!.payload.protocolVersion === 2 ? { protocolSource: selected.reference.kind === 'subagent' ? selected.protocol?.inbox ?? selected.reference.eventId : null } : {}), run: run.stored.eventId, input: selected.reference, lane: selected.lane, ordinal: state.turns.length + 1,
+        const original = root === undefined ? selected : state.inputs.find(item => item.reference.eventId === state.turns.find(turn => turn.started.stored.eventId === root.id)!.started.payload.input.eventId)!
+        const work = original.work
+        return { ...(state.spec!.payload.protocolVersion === 3 ? { work: work === undefined ? null : { accepted: original.reference.eventId, assignment: work.assignment, allowance: work.value.effectiveAllowance, toolNames: work.value.toolNames, nativeActions: work.value.nativeActions } } : {}),
+          ...(state.spec!.payload.protocolVersion !== 1 ? { protocolSource: selected.protocol?.inbox ?? selected.work?.inbox ?? null } : {}), run: run.stored.eventId, input: selected.reference, lane: selected.lane, ordinal: state.turns.length + 1,
           root: root?.id ?? null, predecessor: selected.reservedBy,
-          deadline: root?.deadline ?? (state.spec!.payload.protocolVersion === 2 && state.spec!.payload.subagents.role === 'child' ? state.spec!.payload.subagents.deadline : null),
+          deadline: root?.deadline ?? work?.value.deadline ?? (state.spec!.payload.protocolVersion !== 1 && state.spec!.payload.subagents.role === 'child' ? state.spec!.payload.subagents.deadline : null),
           observedAt: clockTimestamp(runtime.clock) }
       }) } catch (error) {
         if (error instanceof AgentError && error.code === 'AGENT_BUSY' && error.message.includes('input-selection-changed')) { stoppedBy = 'idle'; break }
@@ -364,7 +376,7 @@ export class SessionAgent {
       stoppedBy = 'run-budget'
     }
     await settleAgentStops(runtime)
-    await runtime.journal.append(events.agentRunSettledEvent, () => ({ run: run.stored.eventId, stoppedBy, reason: stoppedBy }))
+    await runtime.journal.append(events.agentBusinessEvents(this.snapshot().spec!.payload.protocolVersion).settled, () => ({ run: run.stored.eventId, stoppedBy, reason: stoppedBy }))
     await settleAgentStops(runtime)
     return this.report()
   }
@@ -372,7 +384,7 @@ export class SessionAgent {
 
 /** Install a complete immutable Spec through the same compare-and-append admission as runtime events. */
 export function installAgentSpec(session: SessionAgentOptions['session'], value: AgentSpec, clock: SessionAgentOptions['clock']) {
-  const spec = value.protocolVersion === 2 ? decodeSubagentAgentSpec(value) : decodeAgentSpec(value)
+  const spec = value.protocolVersion === 3 ? decodeWorkflowAgentSpec(value) : value.protocolVersion === 2 ? decodeSubagentAgentSpec(value) : decodeAgentSpec(value)
   if (session.maxRecordBytes < 4096 || spec.limits.maxResultBytes + 4096 > session.maxRecordBytes) throw new AgentError('AGENT_LIMIT_EXCEEDED', 'minimum-settlement-budget')
-  return new AgentJournal(session, spec.limits.maxJournalConflicts, clock).append(spec.protocolVersion === 2 ? events.subagentAgentSpecRecordedEvent : events.agentSpecRecordedEvent, () => spec)
+  return new AgentJournal(session, spec.limits.maxJournalConflicts, clock).append(spec.protocolVersion === 3 ? events.workflowAgentSpecRecordedEvent : spec.protocolVersion === 2 ? events.subagentAgentSpecRecordedEvent : events.agentSpecRecordedEvent, () => spec)
 }

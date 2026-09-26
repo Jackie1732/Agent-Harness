@@ -91,7 +91,7 @@ export class WorkflowAdmission {
         const deadlineMs = Math.min(Date.parse(definition.payload.deadline), Date.parse(observedAt) + attempt.durationMs)
         if (deadlineMs <= Date.parse(observedAt)) blocked('workflow-deadline')
         const candidate = workflowAssignmentCommittedEvent.decode(snapshotJson({
-          definition: definition.stored.eventId, nodeKey, attempt: 0, kind: 'production',
+          definition: definition.stored.eventId, nodeKey, attempt: 1, kind: 'production',
           memberKey: node.executor, memberAddress: member.header.address, channelId,
           inputs: selected.inputs, sourceAccepted: [], effectiveAllowance: attempt.workerGrant,
           reviewerReservations: attempt.reviewerGrants, toolNames: attempt.toolNames,

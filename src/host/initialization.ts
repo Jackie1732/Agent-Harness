@@ -29,8 +29,8 @@ import type { SessionEventId } from '../session/ids.js'
 import type { SessionHandle } from '../session/session-handle.js'
 import type { SessionHeader } from '../session/types.js'
 import type { AgentSpec } from '../agent/contract.js'
-import { agentSpecRecordedEvent, subagentAgentSpecRecordedEvent } from '../agent/session-events.js'
-import { agentContextProfileRecordedEvent, subagentContextProfileRecordedEvent } from '../context/session-events.js'
+import { agentSpecRecordedEvent, subagentAgentSpecRecordedEvent, workflowAgentSpecRecordedEvent } from '../agent/session-events.js'
+import { agentContextProfileRecordedEvent, subagentContextProfileRecordedEvent, workflowContextProfileRecordedEvent } from '../context/session-events.js'
 import { SESSION_ENVELOPE_VERSION } from '../session/types.js'
 import type { StoredSessionEvent } from '../session/types.js'
 import { isLocalHostMember } from './config.js'
@@ -63,8 +63,8 @@ function preflightInitialization(hostKey: string, member: ResolvedHostLocalMembe
   const readyDefinition = hostVersion === 3 ? hostSessionReadyV2Event : hostSessionReadyEvent
   const planned = plannedDefinition.decode({ hostKey, ...(hostVersion === 3 ? { kind: 'agent' } : {}), agentKey: member.agentKey,
     recipe: recipeValue, fingerprint: fingerprintHostRecipe(recipeValue) })
-  const profileDefinition = member.spec.protocolVersion === 1 ? agentContextProfileRecordedEvent : subagentContextProfileRecordedEvent
-  const specDefinition = member.spec.protocolVersion === 1 ? agentSpecRecordedEvent : subagentAgentSpecRecordedEvent
+  const profileDefinition = member.spec.protocolVersion === 3 ? workflowContextProfileRecordedEvent : member.spec.protocolVersion === 1 ? agentContextProfileRecordedEvent : subagentContextProfileRecordedEvent
+  const specDefinition = member.spec.protocolVersion === 3 ? workflowAgentSpecRecordedEvent : member.spec.protocolVersion === 1 ? agentSpecRecordedEvent : subagentAgentSpecRecordedEvent
   const profile = profileDefinition.decode(member.profile)
   const spec = specDefinition.decode(installedSpec(member, eventId(2)))
   const ready = readyDefinition.decode({ hostKey, ...(hostVersion === 3 ? { kind: 'agent' } : {}),
@@ -97,7 +97,7 @@ function installedSpec(member: ResolvedHostLocalMember, profileEventId: SessionE
 }
 function profileEvent(session: SessionHandle, eventId: SessionEventId): CommittedSessionEvent<ContextProfile> | undefined {
   const event = session.snapshot().history.at(-1)?.events.find(item => item.kind === 'known' && item.stored.eventId === eventId)
-  if (event?.kind !== 'known' || event.stored.type !== 'context/profile-recorded' || ![2, 3].includes(event.stored.payloadVersion)) return undefined
+  if (event?.kind !== 'known' || event.stored.type !== 'context/profile-recorded' || ![2, 3, 4].includes(event.stored.payloadVersion)) return undefined
   return event as CommittedSessionEvent<ContextProfile>
 }
 

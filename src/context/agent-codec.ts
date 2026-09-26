@@ -10,12 +10,12 @@ export function decodeAgentContextConsumer(value: unknown): AgentContextConsumer
 }
 
 /** v2 keeps the v1 accounting vocabulary while carrying an explicit Agent claim. */
-export function decodeAgentContextAssembly(value: unknown, version: 2 | 3 = 2): AgentContextAssembly {
+export function decodeAgentContextAssembly(value: unknown, version: 2 | 3 | 4 = 2): AgentContextAssembly {
   const input = record(contextJson(value))
   const { consumer, claimedInput, requiredTurns, historyRoots, deferredInputs, ...base } = input
   decodeContextAssembly(base)
-  decodeAgentContextConsumer(consumer); inputReference(claimedInput, version === 2 ? 1 : 2)
+  decodeAgentContextConsumer(consumer); inputReference(claimedInput, version === 2 ? 1 : version === 3 ? 2 : 3)
   unique(array(requiredTurns).map(eventId)); unique(array(historyRoots).map(eventId))
-  unique(array(deferredInputs).map(item => { const ref = inputReference(item, version === 2 ? 1 : 2); return `${ref.kind}:${ref.eventId}` }))
+  unique(array(deferredInputs).map(item => { const ref = inputReference(item, version === 2 ? 1 : version === 3 ? 2 : 3); return `${ref.kind}:${ref.eventId}` }))
   return input as AgentContextAssembly
 }

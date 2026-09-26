@@ -6,7 +6,7 @@ import { invalidAgent } from './errors.js'
 
 export const rootOutcomes = ['completed', 'failed', 'cancelled', 'budget-exhausted', 'result-unknown', 'timed-out'] as const
 
-export function decodeControlRequest(value: unknown, version: 1 | 2 = 1): AgentControlRequest {
+export function decodeControlRequest(value: unknown, version: 1 | 2 | 3 = 1): AgentControlRequest {
   const input = record(agentJson(value))
   const kind = choice(input.kind, ['cancel-work', 'expire-work', 'abandon-input', 'close-session', 'recovery'])
   switch (kind) {

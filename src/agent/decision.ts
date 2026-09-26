@@ -5,6 +5,7 @@ import type { AgentActionIntent, AgentStepDecided } from './event-contract.js'
 /** Classify only the durable final model result; streamed fragments are not inputs. */
 export function classifyAgentModel(
   result: ModelSettlement, spec: AgentSpec, advertised: readonly string[],
+  authority: { readonly toolNames: readonly string[]; readonly nativeActions: readonly string[] } = spec,
 ): Pick<AgentStepDecided, 'classification' | 'reason' | 'actions'> {
   if (result.cleanup.status !== 'complete' || result.cleanup.failedResources !== 0) {
     return { classification: 'failed', reason: 'model-cleanup', actions: [] }
@@ -23,18 +24,18 @@ export function classifyAgentModel(
   const actions: AgentActionIntent[] = calls.map(block => {
     let route: AgentActionIntent['route'] = 'invalid'
     if (advertised.includes(block.name)) {
-      if (spec.toolNames.includes(block.name)) route = 'tool'
-      else if ((spec.nativeActions as readonly string[]).includes(block.name)) {
+      if (authority.toolNames.includes(block.name)) route = 'tool'
+      else if (authority.nativeActions.includes(block.name)) {
         switch (block.name) {
           case 'agent_send_message': route = 'send'; break
           case 'agent_reply_message': route = 'reply'; break
           case 'agent_await_reply': route = 'wait'; break
           case 'agent_ask_user': route = 'ask'; break
-          case 'agent_spawn_subagent': if (spec.protocolVersion === 2) route = 'spawn'; break
-          case 'agent_await_subagent': if (spec.protocolVersion === 2) route = 'await-subagent'; break
-          case 'agent_answer_subagent': if (spec.protocolVersion === 2) route = 'answer-subagent'; break
-          case 'agent_ask_parent': if (spec.protocolVersion === 2) route = 'ask-parent'; break
-          case 'agent_report_progress': if (spec.protocolVersion === 2) route = 'progress'; break
+          case 'agent_spawn_subagent': if (spec.protocolVersion !== 1) route = 'spawn'; break
+          case 'agent_await_subagent': if (spec.protocolVersion !== 1) route = 'await-subagent'; break
+          case 'agent_answer_subagent': if (spec.protocolVersion !== 1) route = 'answer-subagent'; break
+          case 'agent_ask_parent': if (spec.protocolVersion !== 1) route = 'ask-parent'; break
+          case 'agent_report_progress': if (spec.protocolVersion !== 1) route = 'progress'; break
         }
       }
     }

@@ -1,3 +1,5 @@
+import { applyWorkAssignmentAccepted } from '../workflow/work-projection.js'
+import { workAssignmentAcceptedEvent } from '../workflow/work-binding.js'
 import { sessionDelegationsClosed } from '../subagent/closure.js'
 import { isSessionEndedRecord } from '../session/history.js'
 import { inboxAcceptedEvent, inboxAbandonedEvent, inboxProcessedEvent } from '../communication/session-events.js'
@@ -21,7 +23,7 @@ import { applySubagentEvent } from '../subagent/projection.js'
 function applyInput(state: AgentProjectionState, event: CommittedSessionEvent): void {
   const p = events.agentInputAcceptedEvent.decode(event.payload)
   const spec = requireSpec(state)
-  if (spec.payload.protocolVersion === 2 && spec.payload.subagents.role === 'child') invalidAgent('child-input-requires-protocol')
+  if (spec.payload.protocolVersion !== 1 && spec.payload.subagents.role === 'child') invalidAgent('child-input-requires-protocol')
   if (p.spec !== spec.stored.eventId || state.openRecovery !== null || state.closing !== null) invalidAgent('input-not-admissible')
   if (Buffer.byteLength(p.input.text) > spec.payload.limits.maxInputBytes) invalidAgent('input-byte-limit')
   const pending = [...state.inputs.values()].filter(input => input.message === null && ['queued', 'reserved', 'claimed', 'review-required'].includes(input.status))
@@ -38,19 +40,16 @@ function applyInput(state: AgentProjectionState, event: CommittedSessionEvent): 
     sequence: event.stored.sequence, lane: 'user', status: 'queued', claimedBy: null, reservedBy: null, everMatched: false, reason: null })
 }
 function applyAgentEvent(state: AgentProjectionState, event: CommittedSessionEvent): void {
-  if (event.stored.payloadVersion !== 1 && !(event.stored.payloadVersion === 2
-    && ['agent/control-requested', 'agent/control-settled', 'agent/run-started', 'agent/run-settled', 'agent/spec-recorded', 'agent/turn-started', 'agent/turn-settled', 'agent/step-decided', 'agent/action-settled', 'agent/wait-settled'].includes(event.stored.type))
-    && !(event.stored.payloadVersion === 3 && event.stored.type === 'agent/control-requested')
-    || event.stored.ignorable === true) invalidAgent('unsupported-agent-event')
+  if (event.stored.ignorable === true) invalidAgent('unsupported-agent-event')
   const decoded = <T,>(decode: (value: JsonValue) => T) => ({ ...event, payload: decode(event.payload) })
   if (['agent/turn-started', 'agent/turn-settled', 'agent/step-decided', 'agent/action-settled', 'agent/wait-settled'].includes(event.stored.type)
     && event.stored.payloadVersion !== requireSpec(state).payload.protocolVersion) invalidAgent('agent-event-spec-version')
   switch (event.stored.type) {
     case 'agent/spec-recorded': {
       if (state.spec !== null) invalidAgent('spec-already-installed')
-      const spec = event.stored.payloadVersion === 2 ? events.subagentAgentSpecRecordedEvent.decode(event.payload) : events.agentSpecRecordedEvent.decode(event.payload)
+      const spec = event.stored.payloadVersion === 3 ? events.workflowAgentSpecRecordedEvent.decode(event.payload) : event.stored.payloadVersion === 2 ? events.subagentAgentSpecRecordedEvent.decode(event.payload) : events.agentSpecRecordedEvent.decode(event.payload)
       const profile = requireEntry(state.sources, spec.profileEventId, 'missing-spec-profile')
-      if (profile.stored.type !== 'context/profile-recorded' || profile.stored.payloadVersion !== (spec.protocolVersion === 1 ? 2 : 3)
+      if (profile.stored.type !== 'context/profile-recorded' || profile.stored.payloadVersion !== (spec.protocolVersion + 1)
         || record(profile.payload).purpose !== 'generation' || !equal(record(profile.payload).toolNames, spec.toolNames)) invalidAgent('spec-profile-mismatch')
       if (spec.protocolVersion === 2 && spec.subagents.role === 'child') {
         const bound = state.subagents.bound
@@ -63,21 +62,21 @@ function applyAgentEvent(state: AgentProjectionState, event: CommittedSessionEve
     case 'agent/input-accepted': applyInput(state, event); break
     case 'agent/run-started':
       if (event.stored.payloadVersion === 2) applyMaintenanceRunStarted(state, decoded(events.agentMaintenanceRunStartedEvent.decode))
-      else applyRunStarted(state, decoded(events.agentRunStartedEvent.decode))
+      else applyRunStarted(state, decoded(events.agentBusinessEvents(requireSpec(state).payload.protocolVersion).started.decode))
       break
     case 'agent/run-settled':
       if (event.stored.payloadVersion === 2) applyMaintenanceRunSettled(state, decoded(events.agentMaintenanceRunSettledEvent.decode))
-      else applyRunSettled(state, decoded(events.agentRunSettledEvent.decode))
+      else applyRunSettled(state, decoded(events.agentBusinessEvents(requireSpec(state).payload.protocolVersion).settled.decode))
       break
-    case 'agent/turn-started': applyTurnStarted(state, decoded(event.stored.payloadVersion === 1 ? events.agentTurnStartedEvent.decode : events.subagentTurnStartedEvent.decode)); break
+    case 'agent/turn-started': applyTurnStarted(state, decoded(events.agentExecutionEvents(requireSpec(state).payload.protocolVersion).turnStarted.decode)); break
     case 'agent/turn-settled': applyTurnSettled(state, decoded(events.agentTurnSettledEvent.decode)); break
     case 'agent/step-opened': applyStepOpened(state, decoded(events.agentStepOpenedEvent.decode)); break
-    case 'agent/step-decided': applyStepDecided(state, decoded(event.stored.payloadVersion === 1 ? events.agentStepDecidedEvent.decode : events.subagentStepDecidedEvent.decode)); break
-    case 'agent/action-settled': applyActionSettled(state, decoded(event.stored.payloadVersion === 1 ? events.agentActionSettledEvent.decode : events.subagentActionSettledEvent.decode)); break
-    case 'agent/wait-settled': applyWaitSettled(state, decoded(event.stored.payloadVersion === 1 ? events.agentWaitSettledEvent.decode : events.subagentWaitSettledEvent.decode)); break
+    case 'agent/step-decided': applyStepDecided(state, decoded(events.agentExecutionEvents(requireSpec(state).payload.protocolVersion).stepDecided.decode)); break
+    case 'agent/action-settled': applyActionSettled(state, decoded(events.agentExecutionEvents(requireSpec(state).payload.protocolVersion).actionSettled.decode)); break
+    case 'agent/wait-settled': applyWaitSettled(state, decoded(events.agentExecutionEvents(requireSpec(state).payload.protocolVersion).waitSettled.decode)); break
     case 'agent/control-requested':
-      if (event.stored.payloadVersion === 3 && requireSpec(state).payload.protocolVersion !== 2) invalidAgent('agent-event-spec-version')
-      applyControlRequested(state, decoded(event.stored.payloadVersion === 3 ? events.subagentInputAbandonRequestedEvent.decode : events.agentControlRequestedEvent.decode)); break
+      if (event.stored.payloadVersion >= 3 && event.stored.payloadVersion !== requireSpec(state).payload.protocolVersion + 1) invalidAgent('agent-event-spec-version')
+      applyControlRequested(state, decoded(event.stored.payloadVersion >= 3 ? events.agentExecutionEvents(requireSpec(state).payload.protocolVersion).abandonRequested.decode : events.agentControlRequestedEvent.decode)); break
     case 'agent/control-settled': applyControlSettled(state, decoded(events.agentControlSettledEvent.decode)); break
     case 'agent/command-accepted': {
       const command = decoded(events.agentCommandAcceptedEvent.decode)
@@ -94,15 +93,20 @@ function applyCommunicationInput(state: AgentProjectionState, event: CommittedSe
   if (event.stored.type === inboxAcceptedEvent.type) {
     const payload = inboxAcceptedEvent.decode(event.payload)
     const message = payload.envelope
-    if (state.spec?.payload.protocolVersion === 2 && message.type.startsWith('subagent/')) return
+    if (state.spec !== null && state.spec.payload.protocolVersion !== 1 && message.type.startsWith('subagent/')
+      || state.spec?.payload.protocolVersion === 3 && message.type.startsWith('workflow/')) return
     const reference = { kind: 'peer' as const, eventId: event.stored.eventId }
     state.inputs.set(inputKey(reference), { reference, input: null, message, acceptedAt: event.stored.recordedAt, sequence: event.stored.sequence,
       lane: `peer:${message.sender}:${message.channelId}`, status: 'queued', claimedBy: null, reservedBy: null, everMatched: false, reason: null })
   } else if (event.stored.type === inboxProcessedEvent.type || event.stored.type === inboxAbandonedEvent.type) {
     const messageId = record(event.payload).messageId
-    if (state.spec?.payload.protocolVersion === 2) {
+    if (state.spec !== null && state.spec.payload.protocolVersion !== 1) {
       const inbox = [...state.sources.values()].find(item => item.stored.type === inboxAcceptedEvent.type
         && record(record(item.payload).envelope).messageId === messageId)
+      if (inbox !== undefined && state.spec.payload.protocolVersion === 3 && String(record(record(inbox.payload).envelope).type).startsWith('workflow/')) {
+        if (![...state.inputs.values()].some(input => input.work?.inbox === inbox.stored.eventId)) invalidAgent('work-receipt-before-classification')
+        return
+      }
       if (inbox !== undefined && String(record(record(inbox.payload).envelope).type).startsWith('subagent/')) {
         if (![...state.subagents.classifications.values()].some(item => item.payload.inbox === inbox.stored.eventId)) invalidAgent('protocol-receipt-before-classification')
         return
@@ -133,6 +137,7 @@ export function foldAgentSession(snapshot: SessionSnapshot): AgentProjectionStat
       if (definition === undefined || !equal(definition.decode(event.payload), event.payload) || !equal(event.payload, event.stored.payload)) invalidAgent('noncanonical-agent-event')
       applyAgentEvent(state, event)
     }
+    else if (event.stored.type === workAssignmentAcceptedEvent.type) applyWorkAssignmentAccepted(state, event)
     else if (event.stored.type.startsWith('subagent/')) applySubagentEvent(state, event)
     else if (event.stored.type.startsWith('communication/')) applyCommunicationInput(state, event)
     else if (isSessionEndedRecord(event.stored)) {

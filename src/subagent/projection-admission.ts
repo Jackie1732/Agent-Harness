@@ -15,11 +15,12 @@ import { SubagentError } from './errors.js'
 export function applyDelegationRequested(state: AgentProjectionState, event: CommittedSessionEvent<DelegationRequested>): void {
   const p = event.payload
   const spec = requireSpec(state).payload
-  if (spec.protocolVersion !== 2 || spec.subagents.role !== 'parent') invalid('parent-authority')
+  if (spec.protocolVersion === 1 || spec.subagents.role !== 'parent') invalid('parent-authority')
   const authority = spec.subagents
   const root = requireEntry(state.roots, p.parentRoot, 'delegation-parent-root')
   if (p.parentAddress !== formatSessionAddress(event.stored.sessionId) || parseSessionEventId(root.id).sessionId !== event.stored.sessionId
     || root.stopControl !== null || root.outcome !== null || p.observedAt >= root.deadline || state.openRecovery !== null || state.closing !== null) invalid('parent-not-admissible')
+  if (root.source.kind === 'workflow' && (!root.allowedNativeActions.includes('agent_spawn_subagent') || p.request.workspace.kind !== 'none')) invalid('work-delegation-authority')
   const previous = [...state.subagents.delegations.values()].filter(item => item.payload.parentRoot === root.id)
   if (previous.length >= authority.maxDelegations) invalid('delegation-count')
   if (previous.some(item => !delegationClosure(state, item.stored.eventId, state.sources.values()).closed)) invalid('unresolved-delegation')
@@ -41,7 +42,7 @@ export function applyDelegationRequested(state: AgentProjectionState, event: Com
   if (!authority.templates.some(item => item.templateKey === template.templateKey && item.templateVersion === template.templateVersion)) invalid('template-not-delegable')
   authorizeDelegation({ providerId: template.spec.target.provider.providerId, model: template.spec.target.model, tools: template.spec.toolNames },
     p.request.workspace, [authority.capabilities, template.capabilities])
-  const reserved = reserveDelegationBudget({ parentUsed: root.budget, parentLimit: spec.budget,
+  const reserved = reserveDelegationBudget({ parentUsed: root.budget, parentLimit: root.limit,
     requested: p.grant, templateCap: template.spec.budget, parentGrantCap: authority.maxGrant,
     parentMaxOutputTokens: spec.target.maxOutputTokens, childMaxOutputTokens: template.spec.target.maxOutputTokens,
     maxQuestions: template.maxQuestions, maxProgress: template.maxProgress })

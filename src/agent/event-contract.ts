@@ -5,7 +5,7 @@ import type { AgentActionReference, AgentBudget, AgentInput, AgentInputDispositi
   AgentRunStop, AgentSendCommand, AgentSpec, AgentTurnOutcome, AgentWaitDescriptor } from './contract.js'
 
 export type AgentInputAccepted = { readonly spec: SessionEventId; readonly input: AgentInput }
-export type AgentRunStarted = { readonly spec: SessionEventId; readonly kind: 'drive' | 'command' }
+export type AgentRunStarted = { readonly spec: SessionEventId; readonly kind: 'drive' | 'command'; readonly selection?: import('./contract.js').AgentRunSelection }
 export type AgentRunSettled = { readonly run: SessionEventId; readonly stoppedBy: AgentRunStop; readonly reason: string }
 export type AgentMaintenanceRunStarted = { readonly spec: SessionEventId; readonly kind: 'maintenance' }
 export type AgentMaintenanceRunSettled = {
@@ -23,6 +23,7 @@ export type AgentTurnStarted = {
   readonly deadline: string | null
   readonly observedAt: string
   readonly protocolSource?: SessionEventId | null
+  readonly work?: { readonly accepted: SessionEventId; readonly assignment: import('../workflow/types.js').WorkflowEventRef; readonly allowance: AgentBudget; readonly toolNames: readonly string[]; readonly nativeActions: readonly string[] } | null
 }
 export type AgentStepOpened = { readonly turn: SessionEventId; readonly ordinal: number; readonly outputTokens: number; readonly observedAt: string }
 export type AgentActionIntent = {

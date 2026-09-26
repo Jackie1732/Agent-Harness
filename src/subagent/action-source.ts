@@ -14,7 +14,7 @@ export function validateSubagentActionSource(state: AgentProjectionState, event:
   const turn = step === undefined ? undefined : state.turns.get(step.opened.payload.turn)
   if (turn === undefined) invalid('subagent-turn-required')
   const spec = requireSpec(state).payload
-  if (spec.protocolVersion !== 2) invalid('subagent-spec-required')
+  if (spec.protocolVersion === 1) invalid('subagent-spec-required')
   const root = requireEntry(state.roots, turn.root, 'missing-root')
   if (result.kind === 'protocol-accepted') {
     const protocol = requireEntry(state.subagents.protocol, result.protocol, 'missing-progress-intent')

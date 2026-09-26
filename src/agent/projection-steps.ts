@@ -19,7 +19,7 @@ export function applyStepOpened(state: AgentProjectionState, event: CommittedSes
   if (state.openRecovery !== null || root.outcome !== null || root.stopControl !== null || event.payload.observedAt >= root.deadline) invalidAgent('step-not-admissible')
   if (steps.some(step => !stepClosed(state, step)) || event.payload.ordinal !== steps.length + 1) invalidAgent('step-order')
   if (event.payload.outputTokens !== spec.target.maxOutputTokens) invalidAgent('output-reservation-mismatch')
-  const budget = reserveAgentBudget(root.budget, { ...emptyAgentBudget, models: 1, steps: 1, outputTokens: event.payload.outputTokens }, spec.budget)
+  const budget = reserveAgentBudget(root.budget, { ...emptyAgentBudget, models: 1, steps: 1, outputTokens: event.payload.outputTokens }, root.limit)
   if (budget === null) invalidAgent('model-budget-exhausted')
   root.budget = budget
   state.steps.set(event.stored.eventId, { opened: event, decided: null })
@@ -43,19 +43,19 @@ export function applyStepDecided(state: AgentProjectionState, event: CommittedSe
     if (cp0raw === undefined) invalidAgent('missing-model-prepared')
     const cp0 = source(state, cp0raw.stored.eventId, modelPreparedEvent)
     const assembly = requireEntry(state.sources, p.model.assembly, 'missing-assembly')
-    if (assembly.stored.type !== 'context/assembly-committed' || assembly.stored.payloadVersion !== (spec.protocolVersion === 1 ? 2 : 3)
+    if (assembly.stored.type !== 'context/assembly-committed' || assembly.stored.payloadVersion !== (spec.protocolVersion + 1)
       || assembly.stored.sequence + 1 !== cp0.stored.sequence || assembly.stored.sequence <= step.opened.stored.sequence
       || !equal(record(assembly.payload).request, cp0.payload.submission.request)
       || !equal(record(record(record(assembly.payload).selection).target).provider, cp0.payload.submission.binding)
       || !equal(record(record(assembly.payload).consumer), { spec: requireSpec(state).stored.eventId, run: turn.started.payload.run,
         turn: turn.started.stored.eventId, step: p.step })) invalidAgent('model-assembly-source')
-    const expected = classifyAgentModel(cp2.payload, spec, cp0.payload.submission.request.tools.map(tool => tool.name))
+    const expected = classifyAgentModel(cp2.payload, spec, cp0.payload.submission.request.tools.map(tool => tool.name), { toolNames: root.allowedTools, nativeActions: root.allowedNativeActions })
     if (!equal(expected.actions, p.actions) || expected.classification !== p.classification || expected.reason !== p.reason) invalidAgent('model-decision-mismatch')
   }
   const amount = p.admitted ? actionBudget(p.actions.map(action => action.route)) : emptyAgentBudget
   if (!equal(amount, p.reservation) || p.admitted && (p.classification !== 'actions' || p.reason === 'invalid-control-batch'
     || root.stopControl !== null || root.outcome !== null || p.observedAt >= root.deadline)) invalidAgent('action-admission')
-  const budget = reserveAgentBudget(root.budget, amount, spec.budget)
+  const budget = reserveAgentBudget(root.budget, amount, root.limit)
   if (budget === null) invalidAgent('action-budget-exhausted')
   root.budget = budget; step.decided = event
 }

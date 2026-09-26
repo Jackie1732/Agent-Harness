@@ -1,6 +1,6 @@
 import type { ModelToolDefinition } from '../model/contract.js'
 import { snapshotJson } from '../foundation/json.js'
-import type { AgentNativeActionName } from './contract.js'
+import type { AgentNativeActionName, WorkflowNativeActionName } from './contract.js'
 
 const text = { type: 'string' } as const
 const message = { type: text, payloadVersion: { type: 'integer' }, payloadJson: text } as const
@@ -8,6 +8,11 @@ const deadline = { timeoutMs: { type: 'integer' } } as const
 const budgetProperties = Object.fromEntries(['models', 'steps', 'tools', 'messages', 'waits', 'outputTokens'].map(key => [key, { type: 'integer' }]))
 const paths = { type: 'array', items: text } as const
 const schemas = {
+  agent_ask_work_peer: { targetNodeKey: text, text, ...deadline },
+  agent_await_work_message: { kind: { type: 'string', enum: ['question', 'group', 'either'] }, ...deadline },
+  agent_answer_work_peer: { questionMessageId: text, outcome: { type: 'string', enum: ['answered', 'declined'] }, text },
+  agent_report_work_progress: { text },
+  agent_send_work_group: { targetNodeKeys: paths, text, completion: { type: 'string', enum: ['all-delivered', 'collect-outcomes'] }, ...deadline },
   agent_send_message: { peerKey: text, ...message },
   agent_reply_message: { messageId: text, ...message },
   agent_await_reply: { messageId: text, ...deadline },
@@ -28,6 +33,11 @@ const schemas = {
   agent_report_progress: { text },
 } as const
 const descriptions = {
+  agent_ask_work_peer: 'Ask an active work peer and wait for its exact answer. This must be the only call in this response.',
+  agent_await_work_message: 'Receive one authorized question or group notification and continue this work. This must be the only call in this response.',
+  agent_answer_work_peer: 'Answer or decline one question adopted by this work root.',
+  agent_report_work_progress: 'Record bounded progress for the workflow coordinator.',
+  agent_send_work_group: 'Send a fixed group of notifications and wait for transport outcomes. This must be the only call in this response.',
   agent_send_message: 'Accept a message into the local outbox for a configured peer. Acceptance does not confirm delivery.',
   agent_reply_message: 'Accept a reply to the current claimed peer input. Acceptance does not confirm delivery.',
   agent_await_reply: 'Wait for an exact reply to a message sent by this root task. This must be the only call in this response.',
@@ -40,7 +50,7 @@ const descriptions = {
 } as const
 
 /** Native protocol surfaces are fixed data; they carry no Tool execution rights. */
-export function agentNativeToolDefinitions(names: readonly AgentNativeActionName[]): readonly ModelToolDefinition[] {
+export function agentNativeToolDefinitions(names: readonly (AgentNativeActionName | WorkflowNativeActionName)[]): readonly ModelToolDefinition[] {
   return names.map(name => Object.freeze({ name, description: descriptions[name], inputSchema: snapshotJson({
     type: 'object', properties: schemas[name], required: Object.keys(schemas[name]), additionalProperties: false,
   }) as ModelToolDefinition['inputSchema'] }))

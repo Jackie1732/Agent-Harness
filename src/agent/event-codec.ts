@@ -1,3 +1,6 @@
+import { invalidAgent } from './errors.js'
+import { workflowReference } from '../workflow/work-binding.js'
+import type { AgentRunSelection } from './contract.js'
 import { parseModelInvocationId } from '../model/ids.js'
 import type { AgentEventPayloads, AgentActionResult, AgentMaintenanceRunSettled, AgentMaintenanceRunStarted } from './event-contract.js'
 import { decodeAgentBudget } from './budget.js'
@@ -9,8 +12,18 @@ export function decodeInputAccepted(value: unknown): AgentEventPayloads['input-a
   const input = record(agentJson(value)); exact(input, ['spec', 'input']); eventId(input.spec)
   return Object.freeze({ spec: eventId(input.spec), input: decodeAgentInput(input.input) })
 }
-export function decodeRunStarted(value: unknown): AgentEventPayloads['run-started'] {
-  const input = record(agentJson(value)); exact(input, ['spec', 'kind']); eventId(input.spec); choice(input.kind, ['drive', 'command'])
+export function decodeRunSelection(value: unknown): AgentRunSelection {
+  const input = record(agentJson(value))
+  const kind = choice(input.kind, ['ordinary', 'workflow'])
+  exact(input, kind === 'ordinary' ? ['kind'] : ['kind', 'assignment'])
+  return kind === 'ordinary' ? { kind } : { kind, assignment: workflowReference(input.assignment) }
+}
+export function decodeRunStarted(value: unknown, version: 1 | 3 = 1): AgentEventPayloads['run-started'] {
+  const input = record(agentJson(value)); exact(input, ['spec', 'kind', ...(version === 3 ? ['selection'] : [])]); eventId(input.spec); choice(input.kind, ['drive', 'command'])
+  if (version === 3) {
+    const selection = decodeRunSelection(input.selection)
+    if (input.kind === 'command' && selection.kind !== 'ordinary') invalidAgent('command-selection')
+  }
   return input as AgentEventPayloads['run-started']
 }
 export function decodeRunSettled(value: unknown): AgentEventPayloads['run-settled'] {
@@ -28,9 +41,14 @@ export function decodeMaintenanceRunSettled(value: unknown): AgentMaintenanceRun
   choice(input.stoppedBy, ['idle', 'run-budget', 'cancelled', 'faulted', 'interrupted']); text(input.reason, 128)
   return input as AgentMaintenanceRunSettled
 }
-export function decodeTurnStarted(value: unknown, version: 1 | 2 = 1): AgentEventPayloads['turn-started'] {
-  const input = record(agentJson(value)); exact(input, ['run', 'input', 'lane', 'ordinal', 'root', 'predecessor', 'deadline', 'observedAt', ...(version === 2 ? ['protocolSource'] : [])])
-  if (version === 2) nullableId(input.protocolSource)
+export function decodeTurnStarted(value: unknown, version: 1 | 2 | 3 = 1): AgentEventPayloads['turn-started'] {
+  const input = record(agentJson(value)); exact(input, ['run', 'input', 'lane', 'ordinal', 'root', 'predecessor', 'deadline', 'observedAt', ...(version !== 1 ? ['protocolSource'] : []), ...(version === 3 ? ['work'] : [])])
+  if (version !== 1) nullableId(input.protocolSource)
+  if (version === 3 && input.work !== null) {
+    const work = record(input.work); exact(work, ['accepted', 'assignment', 'allowance', 'toolNames', 'nativeActions'])
+    eventId(work.accepted); workflowReference(work.assignment); decodeAgentBudget(work.allowance)
+    for (const key of ['toolNames', 'nativeActions']) array(work[key], 64).forEach(name => text(name, 64))
+  }
   timestamp(input.observedAt)
   eventId(input.run); inputReference(input.input, version); text(input.lane, 256); integer(input.ordinal, 1); nullableId(input.root)
   if (input.predecessor !== null) actionReference(input.predecessor)
@@ -43,7 +61,7 @@ export function decodeStepOpened(value: unknown): AgentEventPayloads['step-opene
   eventId(input.turn); integer(input.ordinal, 1); integer(input.outputTokens, 1)
   return input as AgentEventPayloads['step-opened']
 }
-export function decodeStepDecided(value: unknown, version: 1 | 2 = 1): AgentEventPayloads['step-decided'] {
+export function decodeStepDecided(value: unknown, version: 1 | 2 | 3 = 1): AgentEventPayloads['step-decided'] {
   const input = record(agentJson(value))
   exact(input, ['step', 'model', 'classification', 'reason', 'actions', 'admitted', 'reservation', 'reassemblies', 'observedAt'])
   timestamp(input.observedAt)
@@ -56,14 +74,14 @@ export function decodeStepDecided(value: unknown, version: 1 | 2 = 1): AgentEven
     const action = record(value); exact(action, ['source', 'route'])
     const source = record(action.source); exact(source, ['invocationId', 'outputBlockIndex'])
     parseModelInvocationId(text(source.invocationId)); integer(source.outputBlockIndex)
-    choice(action.route, ['tool', 'send', 'reply', 'wait', 'ask', 'invalid', ...(version === 2 ? ['spawn', 'await-subagent', 'answer-subagent', 'ask-parent', 'progress'] : [])])
+    choice(action.route, ['tool', 'send', 'reply', 'wait', 'ask', 'invalid', ...(version !== 1 ? ['spawn', 'await-subagent', 'answer-subagent', 'ask-parent', 'progress'] : [])])
   })
   flag(input.admitted); decodeAgentBudget(input.reservation); integer(input.reassemblies)
   return input as AgentEventPayloads['step-decided']
 }
-function actionResult(value: unknown, version: 1 | 2): AgentActionResult {
+function actionResult(value: unknown, version: 1 | 2 | 3): AgentActionResult {
   const input = record(value)
-  const kind = choice(input.kind, ['tool', 'outbox', 'wait', 'not-started', 'communication-not-accepted', ...(version === 2 ? ['protocol-accepted'] : [])])
+  const kind = choice(input.kind, ['tool', 'outbox', 'wait', 'not-started', 'communication-not-accepted', ...(version !== 1 ? ['protocol-accepted'] : [])])
   switch (kind) {
     case 'tool': exact(input, ['kind', 'settled']); eventId(input.settled); break
     case 'outbox': exact(input, ['kind', 'accepted']); eventId(input.accepted); break
@@ -75,7 +93,7 @@ function actionResult(value: unknown, version: 1 | 2): AgentActionResult {
   }
   return input as AgentActionResult
 }
-export function decodeActionSettled(value: unknown, version: 1 | 2 = 1): AgentEventPayloads['action-settled'] {
+export function decodeActionSettled(value: unknown, version: 1 | 2 | 3 = 1): AgentEventPayloads['action-settled'] {
   const input = record(agentJson(value)); exact(input, ['action', 'result'])
   return Object.freeze({ action: actionReference(input.action), result: actionResult(input.result, version) })
 }
@@ -87,7 +105,7 @@ export function decodeTurnSettled(value: unknown): AgentEventPayloads['turn-sett
   nullableId(input.finalStep); decodeAgentBudget(input.budget)
   return input as AgentEventPayloads['turn-settled']
 }
-export function decodeWaitSettled(value: unknown, version: 1 | 2 = 1): AgentEventPayloads['wait-settled'] {
+export function decodeWaitSettled(value: unknown, version: 1 | 2 | 3 = 1): AgentEventPayloads['wait-settled'] {
   const input = record(agentJson(value)); exact(input, ['wait', 'outcome', 'response', 'reason', 'observedAt', 'supportedMessages', 'outboxTerminal'])
   nullableId(input.outboxTerminal)
   array(input.supportedMessages, 256).forEach(value => {
