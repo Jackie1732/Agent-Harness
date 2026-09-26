@@ -8,6 +8,7 @@ import { workflowDecisionCommittedEvent } from './coordinator-events.js'
 import { invalidHistory } from './errors.js'
 import { sameWorkflowValue } from './work-binding.js'
 import { workflowNodeResolvedEvent } from './definition-events.js'
+import { workflowBudgetWithRetries, reserveWorkflowAttempt } from './retry.js'
 
 export interface WorkflowStopState {
   stop: CommittedSessionEvent<ReturnType<typeof workflowStoppedEvent.decode>> | null
@@ -19,13 +20,18 @@ export interface WorkflowStopState {
 export function initialWorkflowStopState(): WorkflowStopState { return { stop: null, assignmentStops: [], stopReceipts: [], terminal: null, closed: null } }
 
 /** A known failure with an unused template remains open for the separately bounded retry decision. */
-export function finalWorkflowFailure(state: Pick<WorkflowSnapshot, 'definition' | 'assignments' | 'decisions' | 'upstream'>,
+export function finalWorkflowFailure(state: Pick<WorkflowSnapshot, 'definition' | 'assignments' | 'decisions' | 'upstream' | 'retries' | 'reservedBudget'>,
   sources: Iterable<CommittedSessionEvent>) {
   const failed = (assignment: SessionEventId) => {
     const work = state.assignments.find(item => item.stored.eventId === assignment)!
     if (work.payload.kind !== 'production') return false
     const node = state.definition!.payload.nodes.find(node => node.nodeKey === work.payload.nodeKey)!
-    return state.upstream.find(item => item.nodeKey === node.nodeKey)?.state.kind === 'result-unknown' || work.payload.attempt === node.attempts.length
+    if (state.assignments.filter(item => item.payload.kind === 'production' && item.payload.nodeKey === node.nodeKey).at(-1)?.stored.eventId !== assignment) return false
+    const retry = state.retries.find(item => item.assignment.eventId === assignment)
+    const outcome = state.upstream.find(item => item.nodeKey === node.nodeKey)?.state.kind
+    if (outcome === 'result-unknown' || outcome === 'cancelled' || retry === undefined || retry.expired !== null) return true
+    const used = workflowBudgetWithRetries(state)
+    return retry.request === null && (used === null || reserveWorkflowAttempt(used, node.attempts[work.payload.attempt]!, state.definition!.payload.budget) === null)
   }
   return state.decisions.find(decision => {
     const work = state.assignments.find(item => item.stored.eventId === decision.payload.assignment.eventId)!
@@ -44,7 +50,7 @@ export function finalWorkflowFailure(state: Pick<WorkflowSnapshot, 'definition' 
 
 /** Coordinator-local proofs order stop against output acceptance; participant release remains a separate fact. */
 export function applyCoordinatorStop(lifecycle: WorkflowStopState,
-  state: Pick<WorkflowSnapshot, 'definition' | 'assignments' | 'decisions' | 'upstream' | 'resolved'>,
+  state: Pick<WorkflowSnapshot, 'definition' | 'assignments' | 'decisions' | 'upstream' | 'resolved' | 'retries' | 'reservedBudget'>,
   sources: ReadonlyMap<SessionEventId, CommittedSessionEvent>, event: CommittedSessionEvent): void {
   const definition = state.definition!
   if (event.stored.payloadVersion !== 1 || event.stored.ignorable) invalidHistory('workflow-stop-version')

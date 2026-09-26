@@ -2,14 +2,24 @@ import { choice, eventId, exact, record, text } from '../agent/validation.js'
 import { createDurableEventDefinition } from '../session/event-catalog.js'
 import type { JsonObject } from '../foundation/json.js'
 import type { SessionEventId } from '../session/ids.js'
+import { workflowReference } from './work-binding.js'
+import type { WorkflowEventRef } from './types.js'
 
-export type WorkflowControlRequested = { readonly definition: SessionEventId; readonly requestKey: string;
-  readonly kind: 'pause' | 'resume' | 'cancel'; readonly reason: string }
+export type WorkflowRetryRequest = { readonly requestKey: string; readonly nodeKey: string; readonly failedAssignment: WorkflowEventRef }
+export type WorkflowControlRequested = { readonly definition: SessionEventId; readonly requestKey: string } & (
+  { readonly kind: 'pause' | 'resume' | 'cancel'; readonly reason: string }
+  | { readonly kind: 'retry'; readonly nodeKey: string; readonly failedAssignment: WorkflowEventRef })
 export type WorkflowControlSettled = { readonly request: SessionEventId; readonly outcome: 'applied' | 'no-op'; readonly owner: string }
 export const workflowControlRequestedEvent = createDurableEventDefinition<WorkflowControlRequested & JsonObject>({
   type: 'workflow/control-requested', payloadVersion: 1, ignorable: false,
   decode(value) {
-    const p = record(value); exact(p, ['definition', 'requestKey', 'kind', 'reason'])
+    const p = record(value)
+    if (p.kind === 'retry') {
+      exact(p, ['definition', 'requestKey', 'kind', 'nodeKey', 'failedAssignment'])
+      return { definition: eventId(p.definition), requestKey: text(p.requestKey, 128), kind: 'retry',
+        nodeKey: text(p.nodeKey, 128), failedAssignment: workflowReference(p.failedAssignment) }
+    }
+    exact(p, ['definition', 'requestKey', 'kind', 'reason'])
     return { definition: eventId(p.definition), requestKey: text(p.requestKey, 128), kind: choice(p.kind, ['pause', 'resume', 'cancel']), reason: text(p.reason, 1024, true) }
   },
 })

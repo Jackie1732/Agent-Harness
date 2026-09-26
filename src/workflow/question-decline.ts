@@ -58,7 +58,10 @@ export function declineCommands(sources: ReadonlyMap<SessionEventId, CommittedSe
 }
 
 export function nextWorkQuestionDecline(session: SessionHandle, clock: Clock): (() => Promise<unknown>) | undefined {
-  const state = foldAgentSession(session.snapshot())
+  const snapshot = session.snapshot()
+  if (!snapshot.history.at(-1)!.events.some(item => item.kind === 'known' && item.stored.type === workProtocolClassifiedEvent.type
+    && workProtocolClassifiedEvent.decode(item.payload).kind === 'question')) return undefined
+  const state = foldAgentSession(snapshot)
   for (const event of state.sources.values()) {
     if (event.stored.type !== workProtocolClassifiedEvent.type) continue
     const p = workProtocolClassifiedEvent.decode(event.payload)

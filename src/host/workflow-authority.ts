@@ -16,10 +16,10 @@ export function workflowMemberFingerprints(member: ResolvedHostLocalMember) {
 }
 
 /** Verify actual installed membership and the exact attempt grant before CP-W. */
-export function assertWorkflowMember(definition: WorkflowDefinition, slot: HostSlot, nodeKey: string): void {
+export function assertWorkflowMember(definition: WorkflowDefinition, slot: HostSlot, nodeKey: string, number = 1): void {
   const node = definition.nodes.find(node => node.nodeKey === nodeKey)!
   const authority = assertWorkflowParticipant(definition, slot, node.executor)
-  const attempt = node.attempts[0]!
+  const attempt = node.attempts[number - 1]!
   assertWorkTools(slot.member, attempt)
   if (attempt.toolNames.some(name => !authority.toolNames.includes(name))
     || attempt.nativeActions.some(name => !(authority.nativeActions as readonly string[]).includes(name))

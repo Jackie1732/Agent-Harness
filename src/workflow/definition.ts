@@ -162,9 +162,14 @@ function output(value: JsonValue, limitsValue: WorkflowLimits): WorkflowOutput {
     if (source.kind === 'json-text') { fields(source, ['kind', 'path']); return { name: key(item.name, 'artifact.name'),
       source: { kind: 'json-text' as const, path: path(source.path, 'artifact.path') } } }
     if (source.kind !== 'write-text') invalidDefinition('artifact-source')
+    if (Object.hasOwn(source, 'paths')) {
+      fields(source, ['kind', 'paths'])
+      return { name: key(item.name, 'artifact.name'), source: { kind: 'write-text' as const,
+        paths: list(source.paths, 'artifact.paths', limitsValue.maxAttemptsPerNode).map(path => workspaceRelativePath(path, 1024)) } }
+    }
     fields(source, ['kind', 'path'])
     return { name: key(item.name, 'artifact.name'), source: { kind: 'write-text' as const,
-      path: text(source.path, 'artifact.path', 1024) } }
+      path: workspaceRelativePath(source.path, 1024) } }
   })
   unique(artifacts.map(item => item.name), 'artifact.name')
   return { kind: 'json', schema: schema(input.schema, limitsValue), artifacts }
@@ -228,9 +233,19 @@ function node(value: JsonValue, limitsValue: WorkflowLimits): WorkflowNode {
       }))) invalidDefinition('attempt-output-overlap')
     }
   }
+  const delivery = output(input.output!, limitsValue)
+  if (delivery.kind === 'json') for (const artifact of delivery.artifacts) {
+    if (artifact.source.kind !== 'write-text') continue
+    const paths = 'paths' in artifact.source ? artifact.source.paths : [artifact.source.path]
+    if (paths.length !== attempts.length) invalidDefinition('artifact-attempt-path-count')
+    for (const [index, path] of paths.entries()) {
+      const workspace = attempts[index]!.workspace
+      if (workspace.kind !== 'exclusive-write' || !workspace.writePrefixes.some(prefix => path.startsWith(prefix + '/'))) invalidDefinition('artifact-attempt-path-authority')
+    }
+  }
   return { nodeKey: key(input.nodeKey, 'nodeKey'), executor: key(input.executor, 'executor'),
     task: text(input.task, 'task', limitsValue.maxTextBytes), dependencies, inputs,
-    inputSchema: schema(input.inputSchema, limitsValue), guard: guard(input.guard!), output: output(input.output!, limitsValue),
+    inputSchema: schema(input.inputSchema, limitsValue), guard: guard(input.guard!), output: delivery,
     acceptance: acceptance(input.acceptance!, limitsValue), attempts }
 }
 

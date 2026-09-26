@@ -8,6 +8,7 @@ import { nextWorkInputDisposition } from '../workflow/input-disposition.js'
 import { randomUUID } from 'node:crypto'
 import { SerialGate } from '../foundation/serial-gate.js'
 import type { Clock } from '../foundation/clock.js'
+import { clockTimestamp } from '../foundation/clock.js'
 import type { CommunicationService } from '../communication/service.js'
 import { parseChannelId } from '../communication/ids.js'
 import { projectAgentSession, foldAgentSession } from '../agent/projection.js'
@@ -37,6 +38,8 @@ import { nextWorkflowStop, nextWorkStop, notifyWorkflowStop } from './workflow-s
 import type { NotifyWorkStop } from './workflow-stop.js'
 import { workStopReceivedEvent, workStopSettledEvent } from '../workflow/stop-events.js'
 import { workAssignmentSettledEvent } from '../workflow/settlement-events.js'
+import { nextWorkflowAttempt, retryRequestFailure } from '../workflow/retry.js'
+import type { WorkflowRetryRequest } from '../workflow/control-events.js'
 
 interface WorkflowEntry { readonly slot: HostProtocolSlot; readonly journal: WorkflowJournal; readonly admission: WorkflowAdmission }
 
@@ -98,6 +101,28 @@ export class HostWorkflows {
       if (latest?.requested.stored.eventId === requested.stored.eventId && kind === 'resume' && settled.payload.outcome === 'applied') this.#active.add(key)
       return { status: settled.payload.outcome === 'no-op' ? 'no-op' as const : kind === 'resume' && latest?.requested.stored.eventId === requested.stored.eventId ? 'resumed' as const : 'applied' as const,
         ref: { address: entry.slot.session.header.address, eventId: settled.stored.eventId } }
+    })
+  }
+
+  retry(key: string, input: WorkflowRetryRequest) {
+    return this.#gate.run(async () => {
+      if (this.#closed) throw new HostError('HOST_INACTIVE', 'workflow-host-closed')
+      const entry = this.#entry(key), state = projectWorkflowSession(entry.slot.session.snapshot())
+      const payload = workflowControlRequestedEvent.decode({ definition: state.definition!.stored.eventId, kind: 'retry', ...input })
+      const prior = state.controls.find(item => item.requested.payload.requestKey === input.requestKey)
+      if (prior !== undefined && !sameWorkflowValue(prior.requested.payload, payload)) throw new HostError('HOST_BINDING_CONFLICT', 'workflow-request-key-conflict')
+      if (prior === undefined) {
+        const reason = retryRequestFailure(state, input, clockTimestamp(this.clock))
+        if (this.#stopping.has(key) || reason !== undefined) throw new HostError('HOST_NOT_READY', reason ?? 'workflow-stopping')
+        const previous = state.assignments.filter(item => item.stored.eventId === input.failedAssignment.eventId
+          || item.payload.kind === 'review' && item.payload.reviewOf.assignment.eventId === input.failedAssignment.eventId)
+        if (previous.some(item => !this.#retired.has(item.stored.eventId) || !workflowAssignmentClosed(entry.slot.session,
+          assignmentMember(this.slots, item.payload).session, item.stored.eventId, this.slots.map(slot => slot.session)))) throw new HostError('HOST_NOT_READY', 'workflow-retry-still-closing')
+      }
+      const requested = prior?.requested ?? await entry.journal.append(workflowControlRequestedEvent, () => payload)
+      const settled = prior?.settled ?? await entry.journal.append(workflowControlSettledEvent, () => ({ request: requested.stored.eventId,
+        outcome: state.stop !== null || state.terminal !== null ? 'no-op' as const : 'applied' as const, owner: this.owner }))
+      return { status: settled.payload.outcome, ref: { address: entry.slot.session.header.address, eventId: settled.stored.eventId } }
     })
   }
 
@@ -235,8 +260,12 @@ export class HostWorkflows {
       }
     }
     if (!enabled || state.assignments.filter(work => !this.#retired.has(work.stored.eventId)).length >= definition.payload.limits.maxActiveAssignments) return undefined
-    for (const node of definition.payload.nodes) {
-      if (state.assignments.some(item => item.payload.nodeKey === node.nodeKey) || state.resolved.some(item => item.nodeKey === node.nodeKey)) continue
+    const retryNodes = new Set(state.retries.filter(item => item.request !== null && item.consumed === null && item.expired === null)
+      .map(item => state.assignments.find(work => work.stored.eventId === item.assignment.eventId)!.payload.nodeKey))
+    const nodes = [...definition.payload.nodes.filter(node => retryNodes.has(node.nodeKey)), ...definition.payload.nodes.filter(node => !retryNodes.has(node.nodeKey))]
+    for (const node of nodes) {
+      const number = nextWorkflowAttempt(state, node.nodeKey)
+      if (number === undefined || state.resolved.some(item => item.nodeKey === node.nodeKey)) continue
       const resolution = resolveWorkflowNode(node, new Map(state.upstream.map(item => [item.nodeKey, item.state])),  definition.payload)
       if (resolution.kind === 'skipped' || resolution.kind === 'failed') return () => entry.journal.append(workflowNodeResolvedEvent,
         () => ({ definition: definition.stored.eventId, nodeKey: node.nodeKey, outcome: resolution.kind as 'skipped' | 'failed', reason: resolution.reason }))
@@ -244,13 +273,13 @@ export class HostWorkflows {
       const member = this.slots.find(slot => slot.member.agentKey === node.executor)
       if (member === undefined || !workflowMemberIdle(member) || !this.businessAllowed(member)) continue
       return async () => {
-        assertWorkflowMember(definition.payload, member, node.nodeKey)
+        assertWorkflowMember(definition.payload, member, node.nodeKey, number)
         await member.executions!.release()
         let lease: WorkspaceLease | undefined
         try {
-          lease = await prepareWorkWorkspace(member.member, node.attempts[0]!, this.workspaceAuthority)
+          lease = await prepareWorkWorkspace(member.member, node.attempts[number - 1]!, this.workspaceAuthority)
           const assignment = await entry.admission.admitRoot(node.nodeKey, member.session, parseChannelId(randomUUID()),
-            () => assertWorkflowMember(definition.payload, member, node.nodeKey), await lease?.baseline() ?? null)
+            () => assertWorkflowMember(definition.payload, member, node.nodeKey, number), await lease?.baseline() ?? null)
           if (lease !== undefined) this.#workspaces.set(assignment.stored.eventId, lease)
           this.communication.workflowChannels.bind(coordinator.session, assignment.stored.eventId, member.session)
         } catch (cause) {

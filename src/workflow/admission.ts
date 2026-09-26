@@ -24,6 +24,7 @@ import { WorkflowError } from './errors.js'
 import { resolveWorkflowNode } from './graph.js'
 import { projectWorkflowSession } from './projection.js'
 import { workflowAssignmentMailboxDemand } from './protocol-capacity.js'
+import { nextWorkflowAttempt } from './retry.js'
 import { workflowAssignmentCommittedEvent } from './session-events.js'
 import type { WorkflowAssignment } from './types.js'
 
@@ -88,7 +89,8 @@ export class WorkflowAdmission {
       const definition = state.definition!
       const node = definition.payload.nodes.find(item => item.nodeKey === nodeKey)
       if (node === undefined || !state.ready.includes(nodeKey)) throw new WorkflowError('WORKFLOW_ADMISSION_BLOCKED', 'node-not-ready')
-      const attempt = node.attempts[0]!
+      const number = nextWorkflowAttempt(state, nodeKey)!
+      const attempt = node.attempts[number - 1]!
       if (attempt.workspace.kind !== 'none' && baseline === null) blocked('workspace-lease-required')
       const memberRecord = definition.payload.roster.find(item => item.memberKey === node.executor)
       if (memberRecord?.address !== member.header.address) blocked('member-not-bound')
@@ -97,9 +99,9 @@ export class WorkflowAdmission {
       const deadlineMs = Math.min(Date.parse(definition.payload.deadline), Date.parse(observedAt) + attempt.durationMs)
       if (deadlineMs <= Date.parse(observedAt)) blocked('workflow-deadline')
       return workflowAssignmentCommittedEvent.decode(snapshotJson({
-        definition: definition.stored.eventId, nodeKey, attempt: 1, kind: 'production',
+        definition: definition.stored.eventId, nodeKey, attempt: number, kind: 'production',
         memberKey: node.executor, memberAddress: member.header.address, channelId,
-        inputs: selected.inputs, sourceAccepted: state.decisions.filter(item => node.inputs.some(input => input.source.kind === 'accepted'
+        inputs: selected.inputs, sourceAccepted: state.decisions.filter(item => item.payload.outcome === 'accepted' && node.inputs.some(input => input.source.kind === 'accepted'
           && state.assignments.find(assignment => assignment.payload.kind === 'production' && assignment.stored.eventId === item.payload.assignment.eventId)?.payload.nodeKey === input.source.nodeKey))
           .map(item => ({ address: definition.payload.coordinator, eventId: item.stored.eventId })), effectiveAllowance: attempt.workerGrant,
         reviewerReservations: attempt.reviewerGrants, toolNames: attempt.toolNames,

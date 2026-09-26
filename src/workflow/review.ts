@@ -8,6 +8,7 @@ import { sameWorkflowValue } from './work-binding.js'
 import { workflowAssignmentMailboxDemand } from './protocol-capacity.js'
 import { WorkflowError, invalidHistory } from './errors.js'
 import { decodeWorkflowProposalMessage } from './result-events.js'
+import { workOutputAtAttempt } from './output.js'
 
 export const workReviewSchema: JsonObject = { type: 'object', properties: {
   decision: { type: 'string', enum: ['accept', 'reject'] }, reason: { type: 'string' },
@@ -39,7 +40,7 @@ export function reviewAssignment(state: Pick<WorkflowSnapshot, 'definition' | 'a
   return { definition: definition.stored.eventId, kind: 'review', nodeKey: node.nodeKey, attempt: producer.payload.attempt,
     reviewOf: { assignment: candidate.payload.message.assignment, proposal: candidate.payload.message.proposal },
     memberKey: member.memberKey, memberAddress, channelId, inputs: {
-      candidate: candidate.payload.message as unknown as JsonObject, criteria: { task: node.task, output: node.output as unknown as JsonObject },
+      candidate: candidate.payload.message as unknown as JsonObject, criteria: { task: node.task, output: workOutputAtAttempt(node.output, producer.payload.attempt) as unknown as JsonObject },
     }, sourceAccepted: [], effectiveAllowance: reservation.grant, reviewerReservations: [], toolNames: [], nativeActions,
     workspace: { kind: 'none' }, workspaceBaseline: null, protocolLimits,
     protocolReserve: workflowAssignmentMailboxDemand(definition.payload, 'review'), deadline: producer.payload.deadline,
@@ -59,7 +60,7 @@ export function validateReviewRecipe(recipe: WorkflowDefinition, work: Extract<W
     || work.toolNames.length !== 0 || work.nativeActions.length > 1 || work.nativeActions.some(name => name !== 'agent_ask_user')
     || work.reviewerReservations.length !== 0 || work.sourceAccepted.length !== 0 || work.workspace.kind !== 'none'
     || work.acceptance.kind !== 'schema-only'
-    || !sameWorkflowValue(work.inputs.criteria, { task: node.task, output: node.output })
+    || !sameWorkflowValue(work.inputs.criteria, { task: node.task, output: workOutputAtAttempt(node.output, work.attempt) })
     || !sameWorkflowValue(work.protocolReserve, workflowAssignmentMailboxDemand(recipe, 'review'))) invalidHistory('review-assignment-recipe')
 }
 

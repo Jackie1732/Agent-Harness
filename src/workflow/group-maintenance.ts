@@ -12,7 +12,11 @@ import { workInteractionSendReady } from './receive.js'
 
 /** One original keyed send, one joined abandonment, or one complete durable result vector. */
 export function nextWorkGroupAction(session: SessionHandle, mailbox: SessionMailbox, clock: Clock): (() => Promise<unknown>) | undefined {
-  const state = foldAgentSession(session.snapshot()), observedAt = clockTimestamp(clock)
+  const snapshot = session.snapshot(), events = snapshot.history.at(-1)!.events.filter(item => item.kind === 'known')
+  const unresolved = events.some(item => item.stored.type === workGroupResolvedEvent.type && workGroupResolvedEvent.decode(item.payload).outcome === 'admitted'
+    && !events.some(result => result.stored.type === workGroupResultEvent.type && workGroupResultEvent.decode(result.payload).request === workGroupResolvedEvent.decode(item.payload).request))
+  if (!unresolved) return undefined
+  const state = foldAgentSession(snapshot), observedAt = clockTimestamp(clock)
   for (const event of state.sources.values()) {
     if (event.stored.type !== workGroupResolvedEvent.type) continue
     const resolution = workGroupResolvedEvent.decode(event.payload)

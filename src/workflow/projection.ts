@@ -1,5 +1,4 @@
 import { workflowControlRequestedEvent, workflowControlSettledEvent } from './control-events.js'
-import { validateWorkBaseline } from './workspace.js'
 import type { WorkflowControlRequested, WorkflowControlSettled } from './control-events.js'
 import { workflowProgressMessage } from './progress.js'
 import { workflowInteractionAdmittedEvent, workflowInteractionSettledEvent } from './interaction-events.js'
@@ -15,19 +14,20 @@ import { validateWorkflowProposal } from './proposal-validation.js'
 import type { CommittedSessionEvent } from '../session/types.js'
 import type { SessionEventId } from '../session/ids.js'
 import type { SessionSnapshot, StoredSessionEvent } from '../session/types.js'
-import { emptyAgentBudget, reserveAgentBudget } from '../agent/budget.js'
+import { emptyAgentBudget } from '../agent/budget.js'
 import type { AgentBudget } from '../agent/contract.js'
-import { canonicalJsonBytes } from '../foundation/canonical-json.js'
-import type { JsonValue } from '../foundation/json.js'
 import { invalidHistory } from './errors.js'
 import { resolveWorkflowNode } from './graph.js'
-import { workflowAssignmentMailboxDemand } from './protocol-capacity.js'
 import { workflowAssignmentCommittedEvent, workflowDefinitionRecordedEvent, workflowNodeResolvedEvent } from './session-events.js'
 import type { WorkflowAssignment, WorkflowDefinition } from './types.js'
 import type { WorkflowNodeResolved } from './session-events.js'
 import { applyCoordinatorStop, initialWorkflowStopState } from './coordinator-stop.js'
 import type { WorkflowStopState } from './coordinator-stop.js'
 import { workflowStoppedEvent, workflowAssignmentStopEvent, workflowStopAcknowledgedEvent, workflowTerminalEvent, workflowClosedEvent } from './stop-events.js'
+import { retryAfterFailure, retryRequestFailure, nextWorkflowAttempt, workflowRetryExpiredEvent } from './retry.js'
+import type { WorkflowRetry } from './retry.js'
+import { sameWorkflowValue as same } from './work-binding.js'
+import { validateProductionAssignment } from './assignment-projection.js'
 
 export interface WorkflowSnapshot extends WorkflowStopState {
   readonly definition: { readonly stored: StoredSessionEvent; readonly payload: WorkflowDefinition } | null
@@ -44,10 +44,7 @@ export interface WorkflowSnapshot extends WorkflowStopState {
     readonly settled: CommittedSessionEvent<ReturnType<typeof workflowInteractionSettledEvent.decode>> | null }[]
   readonly upstream: readonly { readonly nodeKey: string; readonly state: WorkflowUpstreamState }[]
   readonly reservedBudget: AgentBudget
-}
-
-function same(left: unknown, right: unknown): boolean {
-  return Buffer.compare(canonicalJsonBytes(left as JsonValue), canonicalJsonBytes(right as JsonValue)) === 0
+  readonly retries: readonly Readonly<WorkflowRetry>[]
 }
 
 /** Rebuild the coordinator's admitted definition and initially ready work. */
@@ -61,6 +58,7 @@ export function projectWorkflowSession(snapshot: SessionSnapshot): WorkflowSnaps
   const controls: { requested: WorkflowSnapshot['controls'][number]['requested']; settled: WorkflowSnapshot['controls'][number]['settled'] }[] = []
   let desired: WorkflowSnapshot['desired'] = 'paused'
   const lifecycle = initialWorkflowStopState()
+  const retries: WorkflowRetry[] = []
   const proposals: WorkflowSnapshot['proposals'][number][] = []
   const reviews: WorkflowSnapshot['reviews'][number][] = []
   const decisions: WorkflowSnapshot['decisions'][number][] = []
@@ -69,6 +67,15 @@ export function projectWorkflowSession(snapshot: SessionSnapshot): WorkflowSnaps
   const upstream = new Map<string, WorkflowUpstreamState>()
   const sources = new Map<SessionEventId, CommittedSessionEvent>()
   let reservedBudget: AgentBudget = emptyAgentBudget
+  const recordFailure = (work: WorkflowSnapshot['assignments'][number], event: CommittedSessionEvent, outcome: 'failed' | 'cancelled' | 'result-unknown'): void => {
+    if (assignments.filter(item => item.payload.kind === 'production' && item.payload.nodeKey === work.payload.nodeKey).at(-1)?.stored.eventId !== work.stored.eventId) return
+    let retry = retries.find(item => item.assignment.eventId === work.stored.eventId)
+    if (retry === undefined && outcome === 'failed') {
+      retry = retryAfterFailure(definition!.payload, work, event.stored.eventId, event.stored.recordedAt)
+      if (retry !== undefined) retries.push(retry)
+    }
+    upstream.set(work.payload.nodeKey, { kind: outcome !== 'failed' ? outcome : retry === undefined || retry.expired !== null ? 'failed' : 'retry-awaiting-decision' })
+  }
   for (const record of local.events) {
     if (record.kind !== 'known') continue
     if (record.stored.type === inboxAcceptedEvent.type) {
@@ -107,7 +114,8 @@ export function projectWorkflowSession(snapshot: SessionSnapshot): WorkflowSnaps
       if (lifecycle.stop !== null || lifecycle.terminal !== null || controls.some(item => item.requested.payload.kind === 'cancel' && item.settled?.payload.outcome !== 'no-op')) invalidHistory('assignment-after-stop')
       const payload = workflowAssignmentCommittedEvent.decode(record.payload)
       const recipe = definition.payload
-      if (assignments.filter(item => !decisions.some(decision => decision.payload.assignment.eventId === item.stored.eventId)).length >= recipe.limits.maxActiveAssignments) invalidHistory('assignment-not-admissible')
+      if (assignments.filter(item => !decisions.some(decision => decision.payload.assignment.eventId === item.stored.eventId)
+        && !lifecycle.stopReceipts.some(receipt => receipt.payload.message.assignment.eventId === item.stored.eventId)).length >= recipe.limits.maxActiveAssignments) invalidHistory('assignment-not-admissible')
       if (payload.kind === 'review') {
         const expected = reviewAssignment({ definition, assignments, proposals, decisions }, payload.reviewOf.assignment.eventId,
           payload.memberAddress, payload.channelId, record.stored.recordedAt, payload.protocolLimits, payload.nativeActions)
@@ -116,33 +124,12 @@ export function projectWorkflowSession(snapshot: SessionSnapshot): WorkflowSnaps
         sources.set(record.stored.eventId, record)
         continue
       }
-      const node = recipe.nodes.find(item => item.nodeKey === payload.nodeKey)
-      const attempt = node?.attempts[payload.attempt - 1]
-      if (payload.definition !== definition.stored.eventId || node === undefined || attempt === undefined
-        || resolved.has(payload.nodeKey) || assignments.some(item => item.payload.kind === 'production' && item.payload.nodeKey === payload.nodeKey)) invalidHistory('assignment-not-admissible')
-      const member = recipe.roster.find(item => item.memberKey === node.executor)
-      const selected = resolveWorkflowNode(node, upstream, recipe)
-      const demand = workflowAssignmentMailboxDemand(recipe, 'production')
-      if (selected.kind !== 'ready' || payload.memberKey !== node.executor || payload.memberAddress !== member?.address
-        || !same(payload.sourceAccepted, decisions.filter(item => node.inputs.some(input => input.source.kind === 'accepted'
-          && assignments.find(assignment => assignment.payload.kind === 'production' && assignment.stored.eventId === item.payload.assignment.eventId)?.payload.nodeKey === input.source.nodeKey))
-          .map(item => ({ address: recipe.coordinator, eventId: item.stored.eventId }))) || !same(payload.inputs, selected.inputs)
-        || !same(payload.effectiveAllowance, attempt.workerGrant)
-        || !same(payload.reviewerReservations, attempt.reviewerGrants)
-        || !same(payload.toolNames, attempt.toolNames) || !same(payload.nativeActions, attempt.nativeActions)
-        || !same(payload.workspace, attempt.workspace)
-        || !same(payload.protocolReserve, demand) || !same(payload.acceptance, node.acceptance)) invalidHistory('assignment-recipe-mismatch')
-      const until = Math.min(Date.parse(recipe.deadline), Date.parse(record.stored.recordedAt) + attempt.durationMs)
-      validateWorkBaseline(payload)
-      if (Date.parse(payload.deadline) > until) invalidHistory('assignment-deadline')
-      let next: AgentBudget | null = reserveAgentBudget(reservedBudget, attempt.workerGrant, recipe.budget)
-      for (const reviewer of attempt.reviewerGrants) {
-        if (next === null) break
-        next = reserveAgentBudget(next, reviewer.grant, recipe.budget)
-      }
-      if (next === null) invalidHistory('workflow-budget-exceeded')
-      reservedBudget = next
+      reservedBudget = validateProductionAssignment({ definition, assignments, decisions, controls, retries, reservedBudget,
+        resolved: [...resolved.values()], upstream: [...upstream].map(([nodeKey, state]) => ({ nodeKey, state })) }, payload, record.stored.recordedAt)
+      const previous = assignments.filter(item => item.payload.kind === 'production' && item.payload.nodeKey === payload.nodeKey).at(-1)
       assignments.push({ stored: record.stored, payload })
+      if (previous !== undefined) retries.find(item => item.assignment.eventId === previous.stored.eventId)!.consumed = record.stored.eventId
+      upstream.delete(payload.nodeKey)
     } else if ([workflowProposalReceivedEvent.type, workflowReviewReceivedEvent.type].includes(record.stored.type)) {
       if (record.stored.payloadVersion !== 1 || definition === null) invalidHistory('proposal-before-definition')
       const payload = workflowProposalReceivedEvent.decode(record.payload)
@@ -176,13 +163,22 @@ export function projectWorkflowSession(snapshot: SessionSnapshot): WorkflowSnaps
       if (assignment.payload.kind === 'production' && payload.outcome === 'accepted' && (lifecycle.stop !== null || lifecycle.terminal !== null
         || controls.some(item => item.requested.payload.kind === 'cancel' && item.settled?.payload.outcome !== 'no-op'))) invalidHistory('decision-after-stop')
       decisions.push({ ...record, payload })
-      if (assignment.payload.kind === 'production') upstream.set(assignment.payload.nodeKey, payload.outcome === 'accepted' ? { kind: 'accepted', value: payload.value }
-        : { kind: received.payload.message.value.outcome === 'result-unknown' || evaluated?.resultUnknown ? 'result-unknown' : 'failed' })
+      if (assignment.payload.kind === 'production') {
+        if (payload.outcome === 'accepted') upstream.set(assignment.payload.nodeKey, { kind: 'accepted', value: payload.value })
+        else recordFailure(assignment, record, received.payload.message.value.outcome === 'result-unknown' || evaluated?.resultUnknown === true ? 'result-unknown'
+          : received.payload.message.value.outcome === 'cancelled' ? 'cancelled' : 'failed')
+      }
     }
     if (record.stored.type === workflowControlRequestedEvent.type) {
       const payload = workflowControlRequestedEvent.decode(record.payload)
       if (record.stored.payloadVersion !== 1 || payload.definition !== definition?.stored.eventId
         || controls.some(item => item.requested.payload.requestKey === payload.requestKey || item.settled === null)) invalidHistory('workflow-control-conflict')
+      if (payload.kind === 'retry') {
+        const reason = retryRequestFailure({ definition, assignments, retries, reservedBudget, ...lifecycle,
+          upstream: [...upstream].map(([nodeKey, state]) => ({ nodeKey, state })) }, payload, record.stored.recordedAt)
+        if (reason !== undefined) invalidHistory(reason)
+        retries.find(item => item.assignment.eventId === payload.failedAssignment.eventId)!.request = record.stored.eventId
+      }
       controls.push({ requested: { ...record, payload }, settled: null })
       if (payload.kind === 'cancel' && lifecycle.terminal === null) desired = 'paused'
     } else if (record.stored.type === workflowControlSettledEvent.type) {
@@ -192,15 +188,23 @@ export function projectWorkflowSession(snapshot: SessionSnapshot): WorkflowSnaps
       control.settled = { ...record, payload }
       if ((lifecycle.terminal !== null || lifecycle.stop !== null || controls.some(item => item !== control && item.requested.payload.kind === 'cancel' && item.settled?.payload.outcome !== 'no-op'))
         && payload.outcome !== 'no-op') invalidHistory('workflow-control-after-stop')
-      if (payload.outcome === 'applied') desired = control.requested.payload.kind === 'resume' ? 'running' : 'paused'
+      if (payload.outcome === 'applied' && control.requested.payload.kind !== 'retry') desired = control.requested.payload.kind === 'resume' ? 'running' : 'paused'
+    }
+    if (record.stored.type === workflowRetryExpiredEvent.type) {
+      const p = workflowRetryExpiredEvent.decode(record.payload), retry = retries.find(item => same(item.assignment, p.assignment))
+      if (record.stored.payloadVersion !== 1 || record.stored.ignorable || retry === undefined || retry.failure !== p.failure || retry.expired !== null
+        || retry.request !== null || retry.consumed !== null || p.observedAt < retry.deadline) invalidHistory('workflow-retry-expiry-source')
+      retry.expired = record.stored.eventId
+      upstream.set(assignments.find(item => item.stored.eventId === p.assignment.eventId)!.payload.nodeKey, { kind: 'failed' })
     }
     if ([workflowStoppedEvent.type, workflowAssignmentStopEvent.type, workflowStopAcknowledgedEvent.type, workflowTerminalEvent.type, workflowClosedEvent.type].includes(record.stored.type)) {
       if (definition === null) invalidHistory('workflow-stop-before-definition')
-      applyCoordinatorStop(lifecycle, { definition, assignments, decisions, resolved: [...resolved.values()], upstream: [...upstream].map(([nodeKey, state]) => ({ nodeKey, state })) }, sources, record)
+      applyCoordinatorStop(lifecycle, { definition, assignments, decisions, retries, reservedBudget, resolved: [...resolved.values()], upstream: [...upstream].map(([nodeKey, state]) => ({ nodeKey, state })) }, sources, record)
       if (record.stored.type === workflowStopAcknowledgedEvent.type) {
         const receipt = workflowStopAcknowledgedEvent.decode(record.payload), work = assignments.find(item => item.stored.eventId === receipt.message.assignment.eventId)!
         if (work.payload.kind === 'production' && !decisions.some(item => item.payload.assignment.eventId === work.stored.eventId && item.payload.outcome === 'accepted')) {
-          upstream.set(work.payload.nodeKey, { kind: receipt.message.value.outcome === 'result-unknown' ? 'result-unknown' : 'failed' })
+          const stop = lifecycle.assignmentStops.find(item => item.stored.eventId === receipt.message.stop.eventId)!
+          recordFailure(work, record, receipt.message.value.outcome === 'result-unknown' ? 'result-unknown' : stop.payload.source === work.stored.eventId ? 'failed' : 'cancelled')
         }
       }
       if (lifecycle.stop !== null || lifecycle.terminal !== null) desired = 'paused'
@@ -223,9 +227,9 @@ export function projectWorkflowSession(snapshot: SessionSnapshot): WorkflowSnaps
     if (record.stored.type === workflowProtocolRecordedEvent.type) validateWorkflowProtocol(sources, record)
     sources.set(record.stored.eventId, record)
   }
-  return Object.freeze({ definition, ...lifecycle,
+  return Object.freeze({ definition, ...lifecycle, retries: Object.freeze(retries.map(item => Object.freeze(item))),
     ready: definition?.payload.nodes.filter(node => resolveWorkflowNode(node, upstream, definition!.payload).kind === 'ready' && !resolved.has(node.nodeKey)
-      && !assignments.some(item => item.payload.nodeKey === node.nodeKey)).map(node => node.nodeKey) ?? [],
+      && nextWorkflowAttempt({ assignments, retries, controls }, node.nodeKey) !== undefined).map(node => node.nodeKey) ?? [],
     controls: Object.freeze(controls), desired, proposals: Object.freeze(proposals), reviews: Object.freeze(reviews), decisions: Object.freeze(decisions), progress: Object.freeze(progress), upstream: Object.freeze([...upstream].map(([nodeKey, state]) => Object.freeze({ nodeKey, state }))),
     interactions: Object.freeze(interactions), resolved: Object.freeze([...resolved.values()]), assignments: Object.freeze(assignments), reservedBudget })
 }

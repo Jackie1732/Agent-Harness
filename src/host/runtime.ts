@@ -24,6 +24,7 @@ import { observeHostMembers } from './report.js'
 import { HostObservations } from './observation.js'
 import { exportHostConfig } from './config-export.js'
 import { workflowObserver } from './workflow-observer.js'
+import type { WorkflowRetryRequest } from '../workflow/control-events.js'
 
 export type HostStatus = 'ready' | 'stopping' | 'stopped' | 'failed'
 export type HostShutdownMode = 'drain' | 'cancel'
@@ -108,6 +109,12 @@ class HostRuntime {
       return result
     })
     return Object.freeze({ report: () => domain.report(workflowKey), readArtifact: (reference: unknown) => domain.readArtifact(workflowKey, reference), wait,
+      retry: (input: WorkflowRetryRequest) => this.#track(async () => {
+        this.#assertReady()
+        const result = await domain.retry(workflowKey, input)
+        this.#assembly.wakeup.notify()
+        return result
+      }),
       pause: (input: { readonly requestKey: string; readonly reason?: string }) => control('pause', input),
       cancel: (input: { readonly requestKey: string; readonly reason?: string }) => control('cancel', input),
       resume: (input: { readonly requestKey: string; readonly reason?: string }) => control('resume', input) })

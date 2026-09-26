@@ -70,7 +70,7 @@ export function validateWorkflowGraph(definition: WorkflowDefinition): void {
 }
 
 export type WorkflowUpstreamState = { readonly kind: 'accepted'; readonly value: JsonValue }
-  | { readonly kind: 'skipped' | 'failed' | 'cancelled' | 'result-unknown' }
+  | { readonly kind: 'skipped' | 'failed' | 'cancelled' | 'result-unknown' | 'retry-awaiting-decision' }
 export type WorkflowResolution = { readonly kind: 'blocked' | 'skipped' | 'failed'; readonly reason: string }
   | { readonly kind: 'ready'; readonly inputs: JsonObject }
 
@@ -88,7 +88,7 @@ export function resolveWorkflowNode(node: WorkflowNode, upstream: ReadonlyMap<st
   definition: WorkflowDefinition): WorkflowResolution {
   for (const edge of node.dependencies) {
     const source = upstream.get(edge.nodeKey)
-    if (source === undefined) return { kind: 'blocked', reason: 'dependency-pending' }
+    if (source === undefined || source.kind === 'retry-awaiting-decision') return { kind: 'blocked', reason: 'dependency-pending' }
     if (source.kind === 'skipped' && edge.mode === 'required') return { kind: 'skipped', reason: 'required-dependency-skipped' }
     if (source.kind !== 'accepted' && source.kind !== 'skipped') return { kind: 'failed', reason: 'dependency-failed' }
   }

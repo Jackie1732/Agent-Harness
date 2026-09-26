@@ -1,5 +1,6 @@
 import type { JsonValue } from '../foundation/json.js'
 import { workReviewOutput } from '../workflow/review.js'
+import { workOutputAtAttempt } from '../workflow/output.js'
 import type { ModelInputMessage } from '../model/contract.js'
 import type { SessionEventId } from '../session/ids.js'
 import type { SessionSnapshot } from '../session/types.js'
@@ -33,7 +34,7 @@ export function agentTurnUnits(snapshot: SessionSnapshot, state: AgentSessionSna
         collaboration: { questionTargets: input.work.recipe.nodes.filter(node => input.work!.recipe.communication.ask.some(pair => pair.from === input.work!.value.memberKey && pair.to === node.executor)).map(node => node.nodeKey),
           groupTargets: input.work.recipe.nodes.filter(node => input.work!.recipe.communication.groups.some(group => group.from === input.work!.value.memberKey && group.recipients.includes(node.executor))).map(node => node.nodeKey),
           reception: 'Questions and group notifications are queued until agent_await_work_message. Receive and answer inside this root; a peer waiting for another answer cannot be interrupted. Targets must already have active assignments. Group delivery confirms Inbox acceptance, not model adoption.' },
-        output: input.work.value.kind === 'review' ? workReviewOutput : input.work.recipe.nodes.find(node => node.nodeKey === input.work!.value.nodeKey)!.output })] })
+        output: input.work.value.kind === 'review' ? workReviewOutput : workOutputAtAttempt(input.work.recipe.nodes.find(node => node.nodeKey === input.work!.value.nodeKey)!.output, input.work.value.attempt) })] })
     for (const step of state.steps.filter(item => item.opened.payload.turn === turn.started.stored.eventId)) {
       const decision = step.decided
       if (decision === null) continue

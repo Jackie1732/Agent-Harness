@@ -10,6 +10,8 @@ import { AgentJournal } from '../agent/journal.js'
 import { sameWorkflowValue } from './work-binding.js'
 import { invalidHistory } from './errors.js'
 import { workStopReceivedEvent } from './stop-events.js'
+import { workProtocolClassifiedEvent } from './interaction-events.js'
+import { workGroupResultEvent } from './group-events.js'
 
 export const workInputUnadoptedEvent = createDurableEventDefinition({ type: 'work/input-unadopted', payloadVersion: 1, ignorable: false,
   decode(value) {
@@ -41,7 +43,9 @@ export function applyWorkInputUnadopted(state: AgentProjectionState, event: Comm
 }
 
 export function nextWorkInputDisposition(session: SessionHandle, clock: Clock): (() => Promise<unknown>) | undefined {
-  const state = foldAgentSession(session.snapshot())
+  const snapshot = session.snapshot()
+  if (!snapshot.history.at(-1)!.events.some(item => [workProtocolClassifiedEvent.type, workGroupResultEvent.type].includes(item.stored.type))) return undefined
+  const state = foldAgentSession(snapshot)
   for (const input of state.inputs.values()) {
     const assignment = input.workMessage?.assignment ?? input.workGroupResult?.assignment
     if (assignment === undefined || !['queued', 'review-required'].includes(input.status)) continue

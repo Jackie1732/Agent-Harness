@@ -12,6 +12,7 @@ import { workflowStoppedEvent, workflowAssignmentStopEvent, workStopReceivedEven
 import { workExecutionReleasedEvent } from '../workflow/result-events.js'
 import type { SessionEventId } from '../session/ids.js'
 import { CommunicationError } from '../communication/errors.js'
+import { workflowRetryExpiredEvent } from '../workflow/retry.js'
 
 export type NotifyWorkStop = (memberKey: string, root: SessionEventId) => void
 
@@ -41,6 +42,9 @@ export function nextWorkflowStop(coordinator: HostProtocolSlot, members: readonl
     })) return () => journal.append(workflowClosedEvent, () => ({ terminal: state.terminal!.stored.eventId, observedAt }))
     return undefined
   }
+  const expired = state.stop === null ? state.retries.find(item => item.request === null && item.expired === null && item.consumed === null && observedAt >= item.deadline) : undefined
+  if (expired !== undefined) return () => journal.append(workflowRetryExpiredEvent,
+    () => ({ assignment: expired.assignment, failure: expired.failure, observedAt }))
   const pendingTask = coordinator.mailbox.snapshot().outbox.find(item => item.status === 'pending' && item.envelope.type === 'workflow/assignment'
     && state.assignmentStops.some(stop => stop.payload.assignment.eventId === (item.envelope.payload as { assignment: { eventId: string } }).assignment.eventId))
   if (pendingTask !== undefined) return async () => {

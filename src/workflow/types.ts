@@ -40,6 +40,7 @@ export type WorkflowOutput = { readonly kind: 'text'; readonly name: string }
     readonly name: string
     readonly source: { readonly kind: 'json-text'; readonly path: readonly string[] }
       | { readonly kind: 'write-text'; readonly path: string }
+      | { readonly kind: 'write-text'; readonly paths: readonly string[] }
   }[] }
 export type WorkflowAcceptance = { readonly kind: 'schema-only' }
   | { readonly kind: 'reviewed-all'; readonly reviewers: readonly string[] }

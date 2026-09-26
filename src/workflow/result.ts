@@ -12,6 +12,7 @@ import type { WorkflowDefinition } from './types.js'
 import type { ArtifactSource, WorkArtifact } from './result-events.js'
 import { workAssignmentAcceptedEvent, sameWorkflowValue } from './work-binding.js'
 import { workReviewOutput, reviewValue } from './review.js'
+import { workOutputAtAttempt } from './output.js'
 
 function invalid(reason: string): never { throw new WorkflowError('WORKFLOW_RESULT_INVALID', reason) }
 
@@ -53,7 +54,7 @@ export function deriveWorkOutput(state: AgentProjectionState, accepted: SessionE
   if (settled.payload.outcome !== 'completed') invalid('work-final-model-incomplete')
   const content = settled.payload.result.blocks.flatMap(block => block.kind === 'text' && block.complete ? [block.text] : []).join('')
   const node = binding.recipe.nodes.find(node => node.nodeKey === binding.value.nodeKey)!
-  const output = binding.value.kind === 'review' ? workReviewOutput : node.output
+  const output = binding.value.kind === 'review' ? workReviewOutput : workOutputAtAttempt(node.output, binding.value.attempt)
   let value: JsonValue = content
   if (output.kind === 'json') {
     try { value = JSON.parse(content) as JsonValue } catch { invalid('output-json') }
