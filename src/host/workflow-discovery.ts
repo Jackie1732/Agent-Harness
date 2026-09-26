@@ -3,7 +3,7 @@ import { canonicalJsonBytes } from '../foundation/canonical-json.js'
 import type { JsonObject } from '../foundation/json.js'
 import type { ResolvedHostSpec } from './config.js'
 import { HostError } from './errors.js'
-import { projectHostWorkflowSession } from './workflow-binding.js'
+import { hasWorkflowBinding, projectHostWorkflowSession } from './workflow-binding.js'
 
 export interface HostWorkflowInventoryEntry {
   readonly workflowKey: string
@@ -18,8 +18,7 @@ export interface HostWorkflowInventoryEntry {
 export function collectHostWorkflowInventory(snapshots: readonly SessionSnapshot[]): readonly HostWorkflowInventoryEntry[] {
   const found: HostWorkflowInventoryEntry[] = []
   for (const snapshot of snapshots) {
-    if (!snapshot.history.at(-1)?.events.some(record => record.stored.type === 'host/session-planned'
-      && record.stored.payloadVersion === 2)) continue
+    if (!hasWorkflowBinding(snapshot)) continue
     const binding = projectHostWorkflowSession(snapshot)
     if (binding.planned === null) continue
     found.push({ workflowKey: binding.planned.payload.workflowKey, sessionId: snapshot.header.sessionId,
@@ -34,8 +33,7 @@ export function discoverHostWorkflows(spec: ResolvedHostSpec, snapshots: readonl
   const configured = spec.schemaVersion === 3 && spec.workflows.kind === 'enabled' ? spec.workflows.definitions : []
   const found = new Set<string>()
   for (const snapshot of snapshots) {
-    if (!snapshot.history.at(-1)?.events.some(record => record.stored.type === 'host/session-planned'
-      && record.stored.payloadVersion === 2)) continue
+    if (!hasWorkflowBinding(snapshot)) continue
     const binding = projectHostWorkflowSession(snapshot)
     if (binding.planned?.payload.hostKey !== spec.hostKey) continue
     const entry = configured.find(item => item.sessionId === snapshot.header.sessionId)

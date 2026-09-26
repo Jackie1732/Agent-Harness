@@ -43,7 +43,8 @@ export async function recoverHost(spec: ResolvedHostSpec, options: RecoverHostOp
     for (const member of spec.members.filter(isLocalHostMember)) {
       const session = await repository.open(parseSessionId(member.sessionId))
       try {
-        validateHostMemberSession(session, spec.hostKey, member, { requireQuiescent: false, allowEnded: true })
+        validateHostMemberSession(session, spec.hostKey, member, { requireQuiescent: false, allowEnded: true,
+          bindingVersion: 1 })
         const state = projectAgentSession(session.snapshot())
         const supersedes = options.supersedes?.[member.agentKey] ?? null
         if (supersedes !== state.openRecovery) throw new HostError('HOST_RECOVERY_REQUIRED', 'recovery-supersedes-mismatch')

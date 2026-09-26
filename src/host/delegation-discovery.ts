@@ -3,7 +3,7 @@ import type { SessionSnapshot, CommittedSessionEvent } from '../session/types.js
 import { SessionError } from '../session/errors.js'
 import { projectAgentSession } from '../agent/projection.js'
 import { projectHostSession } from './session-projection.js'
-import { projectHostWorkflowSession } from './workflow-binding.js'
+import { hasWorkflowBinding, projectHostWorkflowSession } from './workflow-binding.js'
 import type { ResolvedHostSpec } from './config.js'
 import { equal } from '../agent/validation.js'
 import type { DelegationRequested } from '../subagent/event-contract.js'
@@ -32,8 +32,7 @@ export async function discoverHostDelegations(spec: ResolvedHostSpec, repository
   const ownedChildren = new Set<string>()
   for (const parent of snapshots) {
     if (parent.header.parent !== undefined) continue
-    if (parent.history.at(-1)?.events.some(record => record.stored.type === 'host/session-planned'
-      && record.stored.payloadVersion === 2)) {
+    if (hasWorkflowBinding(parent)) {
       projectHostWorkflowSession(parent)
       continue
     }

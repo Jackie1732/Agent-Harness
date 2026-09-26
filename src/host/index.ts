@@ -9,8 +9,9 @@ export type {
   ResolvedHostMember, ResolvedHostRoute, ResolvedHostSpec,
 } from './config.js'
 export { hostSessionEventDefinitions, hostSessionPlannedEvent, hostSessionReadyEvent,
-  hostWorkflowPlannedEvent, hostWorkflowReadyEvent, fingerprintHostRecipe } from './session-events.js'
-export type { HostSessionPlanned, HostSessionReady, HostWorkflowPlanned, HostWorkflowReady } from './session-events.js'
+  hostSessionPlannedV2Event, hostSessionReadyV2Event, fingerprintHostRecipe } from './session-events.js'
+export type { HostSessionPlanned, HostSessionReady, HostAgentPlannedV2, HostAgentReadyV2,
+  HostWorkflowPlanned, HostWorkflowReady } from './session-events.js'
 export { projectHostSession } from './session-projection.js'
 export { projectHostWorkflowSession } from './workflow-binding.js'
 export type { HostWorkflowBinding } from './workflow-binding.js'

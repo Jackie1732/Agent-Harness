@@ -26,13 +26,14 @@ export function validateHostMemberSession(
   session: SessionHandle,
   hostKey: string,
   member: ResolvedHostLocalMember,
-  options: { readonly requireQuiescent?: boolean; readonly allowEnded?: boolean } = {},
+  options: { readonly requireQuiescent?: boolean; readonly allowEnded?: boolean; readonly bindingVersion?: 1 | 2 } = {},
 ): void {
   const snapshot = session.snapshot()
   if (snapshot.header.parent !== undefined) throw new HostError('HOST_BINDING_CONFLICT', 'fork-session-not-supported')
   if (snapshot.lifecycle !== 'active' && options.allowEnded !== true) throw new HostError('HOST_NOT_READY', 'session-ended')
   const binding = projectHostSession(snapshot)
-  if (binding.ready === null || binding.ready.payload.hostKey !== hostKey || binding.ready.payload.agentKey !== member.agentKey) {
+  if (binding.ready === null || options.bindingVersion !== undefined && binding.ready.stored.payloadVersion !== options.bindingVersion
+    || binding.ready.payload.hostKey !== hostKey || binding.ready.payload.agentKey !== member.agentKey) {
     throw new HostError('HOST_NOT_READY', 'host-binding-missing')
   }
   const profile = localEvent<ContextProfile>(session, binding.ready.payload.profile)

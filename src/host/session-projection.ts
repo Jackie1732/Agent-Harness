@@ -1,12 +1,12 @@
 import type { CommittedSessionEvent, SessionSnapshot } from '../session/types.js'
 import { parseSessionEventId } from '../session/ids.js'
-import type { HostSessionPlanned, HostSessionReady } from './session-events.js'
-import { hostSessionPlannedEvent, hostSessionReadyEvent } from './session-events.js'
+import type { HostSessionPlanned, HostSessionReady, HostAgentPlannedV2, HostAgentReadyV2 } from './session-events.js'
+import { hostSessionPlannedEvent, hostSessionReadyEvent, hostSessionPlannedV2Event, hostSessionReadyV2Event } from './session-events.js'
 import { HostError } from './errors.js'
 
 export interface HostSessionBinding {
-  readonly planned: CommittedSessionEvent<HostSessionPlanned> | null
-  readonly ready: CommittedSessionEvent<HostSessionReady> | null
+  readonly planned: CommittedSessionEvent<HostSessionPlanned | HostAgentPlannedV2> | null
+  readonly ready: CommittedSessionEvent<HostSessionReady | HostAgentReadyV2> | null
 }
 /** Interpret only the target Session's local Host binding facts. */
 export function projectHostSession(snapshot: SessionSnapshot): HostSessionBinding {
@@ -19,19 +19,32 @@ export function projectHostSession(snapshot: SessionSnapshot): HostSessionBindin
   for (const record of local.events) {
     if (record.kind !== 'known') continue
     if (record.stored.type === hostSessionPlannedEvent.type) {
-      if (record.stored.payloadVersion !== 1 || planned !== null) throw new HostError('HOST_BINDING_CONFLICT', 'duplicate-host-plan')
-      const payload = hostSessionPlannedEvent.decode(record.payload)
+      if (planned !== null) throw new HostError('HOST_BINDING_CONFLICT', 'duplicate-host-plan')
+      let payload: HostSessionPlanned | HostAgentPlannedV2
+      if (record.stored.payloadVersion === 1) payload = hostSessionPlannedEvent.decode(record.payload)
+      else if (record.stored.payloadVersion === 2) {
+        const decoded = hostSessionPlannedV2Event.decode(record.payload)
+        if (decoded.kind !== 'agent') throw new HostError('HOST_BINDING_CONFLICT', 'host-plan-kind')
+        payload = decoded
+      } else throw new HostError('HOST_BINDING_CONFLICT', 'host-plan-version')
       planned = { ...record, payload }
     } else if (record.stored.type === hostSessionReadyEvent.type) {
-      if (record.stored.payloadVersion !== 1 || ready !== null) throw new HostError('HOST_BINDING_CONFLICT', 'duplicate-host-ready')
-      const payload = hostSessionReadyEvent.decode(record.payload)
+      if (ready !== null) throw new HostError('HOST_BINDING_CONFLICT', 'duplicate-host-ready')
+      let payload: HostSessionReady | HostAgentReadyV2
+      if (record.stored.payloadVersion === 1) payload = hostSessionReadyEvent.decode(record.payload)
+      else if (record.stored.payloadVersion === 2) {
+        const decoded = hostSessionReadyV2Event.decode(record.payload)
+        if (decoded.kind !== 'agent') throw new HostError('HOST_BINDING_CONFLICT', 'host-ready-kind')
+        payload = decoded
+      } else throw new HostError('HOST_BINDING_CONFLICT', 'host-ready-version')
       if (payload.through !== record.stored.sequence - 1) throw new HostError('HOST_BINDING_CONFLICT', 'ready-cut')
       const profile = sources.get(payload.profile); const spec = sources.get(payload.spec)
       if (profile?.stored.type !== 'context/profile-recorded' || profile.stored.payloadVersion !== (spec?.stored.payloadVersion === 2 ? 3 : 2)
         || spec?.stored.type !== 'agent/spec-recorded' || ![1, 2].includes(spec.stored.payloadVersion)) throw new HostError('HOST_BINDING_CONFLICT', 'ready-source')
       if (parseSessionEventId(payload.profile).sessionId !== snapshot.header.sessionId
         || parseSessionEventId(payload.spec).sessionId !== snapshot.header.sessionId) throw new HostError('HOST_BINDING_CONFLICT', 'ready-foreign-source')
-      if (payload.mode === 'initialized' && (planned === null || payload.planned !== planned.stored.eventId
+      if (payload.mode === 'initialized' && (planned === null || planned.stored.payloadVersion !== record.stored.payloadVersion
+        || payload.planned !== planned.stored.eventId
         || payload.hostKey !== planned.payload.hostKey || payload.agentKey !== planned.payload.agentKey)) {
         throw new HostError('HOST_BINDING_CONFLICT', 'ready-plan-mismatch')
       }

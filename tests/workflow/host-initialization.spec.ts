@@ -9,7 +9,7 @@ import { decodeWorkflowDefinition } from '../../src/workflow/definition.js'
 import { hostRuntimeEventCatalog } from '../../src/host/initialization.js'
 import { initializeWorkflowCoordinator } from '../../src/host/workflow-initialization.js'
 import { projectHostWorkflowSession } from '../../src/host/workflow-binding.js'
-import { fingerprintHostRecipe, hostWorkflowPlannedEvent } from '../../src/host/session-events.js'
+import { fingerprintHostRecipe, hostSessionPlannedV2Event } from '../../src/host/session-events.js'
 import type { JsonObject } from '../../src/foundation/json.js'
 import { workflowFixture } from './fixtures.js'
 
@@ -46,7 +46,7 @@ describe('workflow coordinator initialization', () => {
       const recipe = { definition: definition as unknown as JsonObject }
       const first = repository(root)
       const session = await first.create({ sessionId: parseSessionAddress(definition.coordinator) })
-      await session.append(hostWorkflowPlannedEvent, { hostKey: 'host-a', kind: 'workflow',
+      await session.append(hostSessionPlannedV2Event, { hostKey: 'host-a', kind: 'workflow',
         workflowKey: definition.workflowKey, recipe, fingerprint: fingerprintHostRecipe(recipe) })
       await session.dispose()
       await first.dispose()

@@ -11,7 +11,7 @@ import type { SessionRepository } from '../session/repository.js'
 import { workflowDefinitionRecordedEvent } from '../workflow/session-events.js'
 import type { WorkflowDefinition } from '../workflow/types.js'
 import { HostError } from './errors.js'
-import { fingerprintHostRecipe, hostWorkflowPlannedEvent, hostWorkflowReadyEvent } from './session-events.js'
+import { fingerprintHostRecipe, hostSessionPlannedV2Event, hostSessionReadyV2Event } from './session-events.js'
 import { projectHostWorkflowSession } from './workflow-binding.js'
 
 export interface HostWorkflowInitializationResult {
@@ -32,10 +32,10 @@ export function preflightWorkflowInitialization(hostKey: string, definition: Wor
   const recipe = { definition: definition as unknown as JsonObject }
   const fingerprint = fingerprintHostRecipe(recipe)
   const values = [
-    [hostWorkflowPlannedEvent, hostWorkflowPlannedEvent.decode({ hostKey, kind: 'workflow', workflowKey: definition.workflowKey,
+    [hostSessionPlannedV2Event, hostSessionPlannedV2Event.decode({ hostKey, kind: 'workflow', workflowKey: definition.workflowKey,
       recipe, fingerprint })],
     [workflowDefinitionRecordedEvent, workflowDefinitionRecordedEvent.decode({ definition: recipe.definition })],
-    [hostWorkflowReadyEvent, hostWorkflowReadyEvent.decode({ hostKey, kind: 'workflow', workflowKey: definition.workflowKey,
+    [hostSessionReadyV2Event, hostSessionReadyV2Event.decode({ hostKey, kind: 'workflow', workflowKey: definition.workflowKey,
       mode: 'initialized', planned: formatSessionEventId(sessionId, sessionSequence(1)),
       definition: formatSessionEventId(sessionId, sessionSequence(2)), through: 2 })],
   ] as const
@@ -73,7 +73,7 @@ export async function initializeWorkflowCoordinator(repository: SessionRepositor
     }
     if (binding.planned === null) {
       if (!created) throw new HostError('HOST_BOOTSTRAP_AMBIGUOUS', 'workflow-header-unbound')
-      await session.append(hostWorkflowPlannedEvent, { hostKey, kind: 'workflow', workflowKey: definition.workflowKey,
+      await session.append(hostSessionPlannedV2Event, { hostKey, kind: 'workflow', workflowKey: definition.workflowKey,
         recipe, fingerprint })
       binding = projectHostWorkflowSession(session.snapshot())
     } else if (binding.planned.payload.hostKey !== hostKey || binding.planned.payload.fingerprint !== fingerprint
@@ -87,7 +87,7 @@ export async function initializeWorkflowCoordinator(repository: SessionRepositor
       await session.append(workflowDefinitionRecordedEvent, { definition: recipe.definition })
       binding = projectHostWorkflowSession(session.snapshot())
     }
-    const ready = await session.append(hostWorkflowReadyEvent, { hostKey, kind: 'workflow',
+    const ready = await session.append(hostSessionReadyV2Event, { hostKey, kind: 'workflow',
       workflowKey: definition.workflowKey, mode: 'initialized', planned: binding.planned!.stored.eventId,
       definition: binding.definition!.stored.eventId, through: session.snapshot().localPosition })
     return { kind: 'workflow', workflowKey: definition.workflowKey, sessionId, mode: 'initialized', readyEventId: ready.stored.eventId }

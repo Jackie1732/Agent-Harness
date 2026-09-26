@@ -37,7 +37,8 @@ import type { StoredSessionEvent } from '../session/types.js'
 import { isLocalHostMember } from './config.js'
 import type { ResolvedHostLocalMember, ResolvedHostSpec } from './config.js'
 import { HostError } from './errors.js'
-import { fingerprintHostRecipe, hostSessionEventDefinitions, hostSessionPlannedEvent, hostSessionReadyEvent } from './session-events.js'
+import { fingerprintHostRecipe, hostSessionEventDefinitions, hostSessionPlannedEvent, hostSessionReadyEvent,
+  hostSessionPlannedV2Event, hostSessionReadyV2Event } from './session-events.js'
 import { projectHostSession } from './session-projection.js'
 import { acquireHostStorageLock } from './storage-lock.js'
 
@@ -55,21 +56,24 @@ export interface HostInitializationResult {
   readonly readyEventId: SessionEventId
 }
 
-function preflightInitialization(hostKey: string, member: ResolvedHostLocalMember, maximum: number): void {
+function preflightInitialization(hostKey: string, member: ResolvedHostLocalMember, maximum: number, hostVersion: 1 | 2 | 3): void {
   const sessionId = parseSessionId(member.sessionId)
   const eventId = (sequence: number) => formatSessionEventId(sessionId, sessionSequence(sequence))
   const recipeValue = recipe(member)
-  const planned = hostSessionPlannedEvent.decode({ hostKey, agentKey: member.agentKey,
+  const plannedDefinition = hostVersion === 3 ? hostSessionPlannedV2Event : hostSessionPlannedEvent
+  const readyDefinition = hostVersion === 3 ? hostSessionReadyV2Event : hostSessionReadyEvent
+  const planned = plannedDefinition.decode({ hostKey, ...(hostVersion === 3 ? { kind: 'agent' } : {}), agentKey: member.agentKey,
     recipe: recipeValue, fingerprint: fingerprintHostRecipe(recipeValue) })
   const profileDefinition = member.spec.protocolVersion === 1 ? agentContextProfileRecordedEvent : subagentContextProfileRecordedEvent
   const specDefinition = member.spec.protocolVersion === 1 ? agentSpecRecordedEvent : subagentAgentSpecRecordedEvent
   const profile = profileDefinition.decode(member.profile)
   const spec = specDefinition.decode(installedSpec(member, eventId(2)))
-  const ready = hostSessionReadyEvent.decode({ hostKey, agentKey: member.agentKey, mode: 'initialized', planned: eventId(1),
+  const ready = readyDefinition.decode({ hostKey, ...(hostVersion === 3 ? { kind: 'agent' } : {}),
+    agentKey: member.agentKey, mode: 'initialized', planned: eventId(1),
     profile: eventId(2), spec: eventId(3), through: 3 })
   const values = [
-    [hostSessionPlannedEvent, planned], [profileDefinition, profile],
-    [specDefinition, spec], [hostSessionReadyEvent, ready],
+    [plannedDefinition, planned], [profileDefinition, profile],
+    [specDefinition, spec], [readyDefinition, ready],
   ] as const
   values.forEach(([definition, payload], index) => {
     const sequence = sessionSequence(index + 1)
@@ -104,7 +108,7 @@ export async function initializeHost(
   options: { readonly clock?: Clock; readonly resume?: boolean } = {},
 ): Promise<readonly (HostInitializationResult | HostWorkflowInitializationResult)[]> {
   for (const member of spec.members.filter(isLocalHostMember)) {
-    if (member.mode === 'create') preflightInitialization(spec.hostKey, member, spec.storage.maxRecordBytes)
+    if (member.mode === 'create') preflightInitialization(spec.hostKey, member, spec.storage.maxRecordBytes, spec.schemaVersion)
   }
   if (spec.schemaVersion === 3 && spec.workflows.kind === 'enabled') {
     for (const entry of spec.workflows.definitions) {
@@ -120,8 +124,8 @@ export async function initializeHost(
   try {
     for (const member of spec.members.filter(isLocalHostMember)) {
       const result = member.mode === 'create'
-        ? await initializeMember(repository, spec.hostKey, member, options.clock ?? systemClock, options.resume === true)
-        : await adoptMember(repository, spec.hostKey, member)
+        ? await initializeMember(repository, spec.hostKey, member, options.clock ?? systemClock, options.resume === true, spec.schemaVersion)
+        : await adoptMember(repository, spec.hostKey, member, spec.schemaVersion)
       results.push(spec.schemaVersion === 3 ? { ...result, kind: 'agent' } : result)
     }
     if (spec.schemaVersion === 3 && spec.workflows.kind === 'enabled') {
@@ -143,6 +147,7 @@ async function initializeMember(
   member: ResolvedHostLocalMember,
   clock: Clock,
   resume: boolean,
+  hostVersion: 1 | 2 | 3,
   adoptEmptyHeader?: SessionHeader,
 ): Promise<HostInitializationResult> {
   let session: SessionHandle
@@ -159,6 +164,7 @@ async function initializeMember(
     const expectedRecipe = recipe(member); const fingerprint = fingerprintHostRecipe(expectedRecipe)
     let binding = projectHostSession(session.snapshot())
     if (binding.ready !== null) {
+      if (binding.ready.stored.payloadVersion !== (hostVersion === 3 ? 2 : 1)) conflict('ready-version-mismatch')
       if (binding.ready.payload.hostKey !== hostKey || binding.ready.payload.agentKey !== member.agentKey
         || binding.planned === null || !same(binding.planned.payload.recipe, expectedRecipe)) conflict('ready-config-mismatch')
       assertInstalledSources(session, member, binding.ready.payload.profile, binding.ready.payload.spec)
@@ -169,16 +175,20 @@ async function initializeMember(
         || !same(session.snapshot().header, adoptEmptyHeader))) {
         throw new HostError('HOST_BOOTSTRAP_AMBIGUOUS', session.snapshot().localPosition === 0 ? 'header-only-session' : 'unbound-nonempty-session')
       }
-      await session.append(hostSessionPlannedEvent, { hostKey, agentKey: member.agentKey, recipe: expectedRecipe, fingerprint })
+      const plannedPayload = { hostKey, agentKey: member.agentKey, recipe: expectedRecipe, fingerprint }
+      if (hostVersion === 3) await session.append(hostSessionPlannedV2Event, { ...plannedPayload, kind: 'agent' })
+      else await session.append(hostSessionPlannedEvent, plannedPayload)
       binding = projectHostSession(session.snapshot())
-    } else if (binding.planned.payload.hostKey !== hostKey || binding.planned.payload.agentKey !== member.agentKey
+    } else if (binding.planned.stored.payloadVersion !== (hostVersion === 3 ? 2 : 1)
+      || binding.planned.payload.hostKey !== hostKey || binding.planned.payload.agentKey !== member.agentKey
       || binding.planned.payload.fingerprint !== fingerprint || !same(binding.planned.payload.recipe, expectedRecipe)) conflict('planned-config-mismatch')
     else if (!resume) throw new HostError('HOST_RECOVERY_REQUIRED', 'matching-initialization-prefix-requires-resume')
     const localRecords = session.snapshot().history.at(-1)!.events
     if (localRecords.some(event => event.kind !== 'known')) conflict('opaque-initialization-prefix')
     const local = localRecords.filter(event => event.kind === 'known')
     const allowed = ['host/session-planned', 'context/profile-recorded', 'agent/spec-recorded']
-    if (local.some((event, index) => event.stored.type !== allowed[index])) conflict('initialization-prefix')
+    if (local.some((event, index) => event.stored.type !== allowed[index]
+      || (index === 0 && event.stored.payloadVersion !== (hostVersion === 3 ? 2 : 1)))) conflict('initialization-prefix')
     const context = new SessionContext({ session, messageCatalog: createMessageCatalog() })
     try {
       const profileHead = projectContextSession(session.snapshot()).profileHeads.find(item => item.profileKey === member.profile.profileKey)
@@ -190,8 +200,12 @@ async function initializeMember(
       if (agent === null) agent = await installAgentSpec(session, expected, clock)
       else if (!same(agent.payload, expected)) conflict('agent-spec-mismatch')
       const planned = binding.planned!
-      const ready = await session.append(hostSessionReadyEvent, { hostKey, agentKey: member.agentKey, mode: 'initialized',
-        planned: planned.stored.eventId, profile: profile.stored.eventId, spec: agent.stored.eventId, through: session.snapshot().localPosition })
+      const readyPayload = { hostKey, agentKey: member.agentKey, mode: 'initialized' as const,
+        planned: planned.stored.eventId, profile: profile.stored.eventId, spec: agent.stored.eventId,
+        through: session.snapshot().localPosition }
+      const ready = hostVersion === 3
+        ? await session.append(hostSessionReadyV2Event, { ...readyPayload, kind: 'agent' })
+        : await session.append(hostSessionReadyEvent, readyPayload)
       return Object.freeze({ agentKey: member.agentKey, sessionId: member.sessionId, mode: 'initialized', readyEventId: ready.stored.eventId })
     } finally { await context.dispose() }
   } finally { await session.dispose() }
@@ -206,25 +220,27 @@ export async function adoptEmptyHostMember(
   if (options.predecessorStopped !== true) throw new HostError('HOST_BOOTSTRAP_AMBIGUOUS', 'adopt-empty-confirmation-required')
   const member = spec.members.filter(isLocalHostMember).find(item => item.agentKey === agentKey)
   if (member === undefined || member.mode !== 'create') throw new HostError('HOST_CONFIG_INVALID', 'adopt-empty-member-invalid')
-  preflightInitialization(spec.hostKey, member, spec.storage.maxRecordBytes)
+  preflightInitialization(spec.hostKey, member, spec.storage.maxRecordBytes, spec.schemaVersion)
   const lock = await acquireHostStorageLock(spec.storage.root, spec.hostKey)
   const backend = new FileSessionBackend({ root: lock.root, maxRecordBytes: spec.storage.maxRecordBytes })
   const clock = options.clock ?? systemClock
   const repository = new SessionRepository({ backend, catalog: hostRuntimeEventCatalog,
     maxLineageDepth: spec.storage.maxLineageDepth, clock })
   try {
-    return await initializeMember(repository, spec.hostKey, member, clock, true, options.expectedHeader)
+    return await initializeMember(repository, spec.hostKey, member, clock, true, spec.schemaVersion, options.expectedHeader)
   } finally {
     await repository.dispose()
     await lock.dispose()
   }
 }
 
-async function adoptMember(repository: SessionRepository, hostKey: string, member: ResolvedHostLocalMember): Promise<HostInitializationResult> {
+async function adoptMember(repository: SessionRepository, hostKey: string, member: ResolvedHostLocalMember,
+  hostVersion: 1 | 2 | 3): Promise<HostInitializationResult> {
   const session = await repository.open(parseSessionId(member.sessionId))
   try {
     const binding = projectHostSession(session.snapshot())
     if (binding.ready !== null) {
+      if (binding.ready.stored.payloadVersion !== (hostVersion === 3 ? 2 : 1)) conflict('ready-version-mismatch')
       if (binding.ready.payload.hostKey !== hostKey || binding.ready.payload.agentKey !== member.agentKey) conflict('ready-config-mismatch')
       assertInstalledSources(session, member, binding.ready.payload.profile, binding.ready.payload.spec)
       return Object.freeze({ agentKey: member.agentKey, sessionId: member.sessionId, mode: 'existing', readyEventId: binding.ready.stored.eventId })
@@ -239,8 +255,11 @@ async function adoptMember(repository: SessionRepository, hostKey: string, membe
     const profile = profileHead === undefined ? undefined : profileEvent(session, profileHead.eventId)
     if (profile === undefined || !same(profile.payload, member.profile)
       || !same(agent.spec.payload, installedSpec(member, agent.spec.payload.profileEventId))) conflict('adopt-recipe-mismatch')
-    const ready = await session.append(hostSessionReadyEvent, { hostKey, agentKey: member.agentKey, mode: 'adopted', planned: null,
-      profile: profile.stored.eventId, spec: agent.spec.stored.eventId, through: session.snapshot().localPosition })
+    const readyPayload = { hostKey, agentKey: member.agentKey, mode: 'adopted' as const, planned: null,
+      profile: profile.stored.eventId, spec: agent.spec.stored.eventId, through: session.snapshot().localPosition }
+    const ready = hostVersion === 3
+      ? await session.append(hostSessionReadyV2Event, { ...readyPayload, kind: 'agent' })
+      : await session.append(hostSessionReadyEvent, readyPayload)
     return Object.freeze({ agentKey: member.agentKey, sessionId: member.sessionId, mode: 'adopted', readyEventId: ready.stored.eventId })
   } finally { await session.dispose() }
 }

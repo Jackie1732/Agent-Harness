@@ -37,7 +37,8 @@ export async function recoverHostDelegations(spec: ResolvedHostSpec, repository:
   const participants = new Map<string, { session: SessionHandle; delegations: SessionEventId[] }>()
   for (const member of spec.members.filter(isLocalHostMember)) {
     const session = await open(member.sessionId)
-    validateHostMemberSession(session, spec.hostKey, member, { requireQuiescent: false, allowEnded: true })
+    validateHostMemberSession(session, spec.hostKey, member,
+      { requireQuiescent: false, allowEnded: true, bindingVersion: spec.schemaVersion === 3 ? 2 : 1 })
     participants.set(member.sessionId, { session, delegations: [] })
   }
   for (const relation of discovered.filter(item => !item.closed)) {

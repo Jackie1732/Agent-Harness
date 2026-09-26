@@ -22,6 +22,8 @@ export interface HostSessionReady extends JsonObject {
   readonly spec: SessionEventId
   readonly through: SessionLogPosition
 }
+export interface HostAgentPlannedV2 extends HostSessionPlanned { readonly kind: 'agent' }
+export interface HostAgentReadyV2 extends HostSessionReady { readonly kind: 'agent' }
 
 function invalid(reason: string): never { throw new HostError('HOST_BINDING_CONFLICT', reason) }
 function object(value: unknown): Record<string, JsonValue> {
@@ -102,12 +104,26 @@ function decodeWorkflowReady(value: JsonValue): HostWorkflowReady {
     planned: eventId(input.planned!, 'ready-planned'), definition: eventId(input.definition!, 'ready-definition'),
     through: sessionLogPosition(input.through as number) })
 }
-export const hostWorkflowPlannedEvent = createDurableEventDefinition<HostWorkflowPlanned>({
-  type: 'host/session-planned', payloadVersion: 2, ignorable: false, decode: decodeWorkflowPlanned,
+function decodePlannedV2(value: JsonValue): HostAgentPlannedV2 | HostWorkflowPlanned {
+  const input = object(value)
+  if (input.kind !== 'agent') return decodeWorkflowPlanned(value)
+  exact(input, ['hostKey', 'kind', 'agentKey', 'recipe', 'fingerprint'])
+  return Object.freeze({ ...decodePlanned({ hostKey: input.hostKey!, agentKey: input.agentKey!,
+    recipe: input.recipe!, fingerprint: input.fingerprint! }), kind: 'agent' })
+}
+function decodeReadyV2(value: JsonValue): HostAgentReadyV2 | HostWorkflowReady {
+  const input = object(value)
+  if (input.kind !== 'agent') return decodeWorkflowReady(value)
+  exact(input, ['hostKey', 'kind', 'agentKey', 'mode', 'planned', 'profile', 'spec', 'through'])
+  return Object.freeze({ ...decodeReady({ hostKey: input.hostKey!, agentKey: input.agentKey!, mode: input.mode!,
+    planned: input.planned!, profile: input.profile!, spec: input.spec!, through: input.through! }), kind: 'agent' })
+}
+export const hostSessionPlannedV2Event = createDurableEventDefinition<HostAgentPlannedV2 | HostWorkflowPlanned>({
+  type: 'host/session-planned', payloadVersion: 2, ignorable: false, decode: decodePlannedV2,
 })
-export const hostWorkflowReadyEvent = createDurableEventDefinition<HostWorkflowReady>({
-  type: 'host/session-ready', payloadVersion: 2, ignorable: false, decode: decodeWorkflowReady,
+export const hostSessionReadyV2Event = createDurableEventDefinition<HostAgentReadyV2 | HostWorkflowReady>({
+  type: 'host/session-ready', payloadVersion: 2, ignorable: false, decode: decodeReadyV2,
 })
 export const hostSessionEventDefinitions = Object.freeze([
-  hostSessionPlannedEvent, hostSessionReadyEvent, hostWorkflowPlannedEvent, hostWorkflowReadyEvent,
+  hostSessionPlannedEvent, hostSessionReadyEvent, hostSessionPlannedV2Event, hostSessionReadyV2Event,
 ])

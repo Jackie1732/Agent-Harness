@@ -63,7 +63,8 @@ export async function assembleHost(spec: ResolvedHostSpec, clock: Clock,
       const local: { member: ResolvedHostLocalMember; session: SessionHandle }[] = []
       for (const member of spec.members.filter(isLocalHostMember)) {
         const session = await repository.open(parseSessionId(member.sessionId))
-        validateHostMemberSession(session, spec.hostKey, member, { allowEnded: !member.enabled })
+        validateHostMemberSession(session, spec.hostKey, member,
+          { allowEnded: !member.enabled, bindingVersion: spec.schemaVersion === 3 ? 2 : 1 })
         local.push({ member, session })
       }
       const inventory = await scanHostInventory(spec, repository)
@@ -123,7 +124,8 @@ export async function assembleHost(spec: ResolvedHostSpec, clock: Clock,
       const slotOwners = new Map<string, HostSlotOwner>()
       for (const { member, session } of local) {
         const lifetime = await effect.apply('member lifetime', () => new HostSlotOwner(member.agentKey, async () => {
-          validateHostMemberSession(session, spec.hostKey, member)
+          validateHostMemberSession(session, spec.hostKey, member,
+            { bindingVersion: spec.schemaVersion === 3 ? 2 : 1 })
           return await createHostSlot(session, member, service, catalog, clock, credentials, protectedRoots, bindings, { ...(subagents === undefined ? {} : { subagentActions: subagents.actions(member.agentKey, session) }),
             ...(member.tools.kind === 'none' || workspaces === undefined ? {} : { workspaceAccess: workspaces.staticAccess(member.tools.rootPath) }) })
         }), value => release(value))

@@ -4,11 +4,14 @@ import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
 import { decodeHostConfig, planHostConfig, resolveHostConfig } from '../../src/host/config.js'
 import { initializeHost } from '../../src/host/initialization.js'
+import { hostRuntimeEventCatalog } from '../../src/host/initialization.js'
 import { openHost } from '../../src/host/runtime.js'
 import { exportHostConfig } from '../../src/host/config-export.js'
 import { inspectHost } from '../../src/host/inspection.js'
 import { parseChannelId } from '../../src/communication/ids.js'
 import { parseSessionId } from '../../src/session/ids.js'
+import { FileSessionBackend } from '../../src/session/file-backend.js'
+import { SessionRepository } from '../../src/session/repository.js'
 import type { JsonObject } from '../../src/foundation/json.js'
 import { twoMemberHostConfig } from '../host/fixtures.js'
 import { workflowFixture } from './fixtures.js'
@@ -43,6 +46,13 @@ describe('Host v3 workflow planning', () => {
         .toBe('ah-session:87000000-0000-4000-8000-000000000001')
       const spec = resolveHostConfig(planned)
       expect((await initializeHost(spec)).map(item => item.mode)).toEqual(['initialized', 'initialized', 'initialized'])
+      const repository = new SessionRepository({ backend: new FileSessionBackend(spec.storage),
+        catalog: hostRuntimeEventCatalog, maxLineageDepth: spec.storage.maxLineageDepth })
+      const member = await repository.read(parseSessionId('70000000-0000-4000-8000-000000000101'))
+      expect(member.history.at(-1)?.events.filter(item => item.stored.type.startsWith('host/session-'))
+        .map(item => [item.stored.payloadVersion, item.kind === 'known' && (item.payload as JsonObject).kind]))
+        .toEqual([[2, 'agent'], [2, 'agent']])
+      await repository.dispose()
       expect((await inspectHost(spec, { protocolVersion: 3 })).workflows).toMatchObject({
         count: 1, entries: [{ workflowKey: 'research', state: 'ready' }], truncated: false,
       })
