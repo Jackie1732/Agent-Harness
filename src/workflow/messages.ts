@@ -14,6 +14,8 @@ export const workflowAssignmentAcceptedMessage = createMessageDefinition({ type:
   } })
 export const workflowProposalMessage = createMessageDefinition({ type: 'workflow/proposal', payloadVersion: 1,
   decode: decodeWorkflowProposalMessage })
+export const workflowReviewMessage = createMessageDefinition({ type: 'workflow/review', payloadVersion: 1,
+  decode: decodeWorkflowProposalMessage })
 export const workflowDecisionMessage = createMessageDefinition({ type: 'workflow/decision', payloadVersion: 1,
   decode(value) {
     const p = record(value); exact(p, ['assignment', 'decision', 'value'])
@@ -21,4 +23,4 @@ export const workflowDecisionMessage = createMessageDefinition({ type: 'workflow
   } })
 
 export const workflowMessageDefinitions = [workflowAssignmentMessage, workflowAssignmentAcceptedMessage,
-  workflowProposalMessage, workflowDecisionMessage] as const
+  workflowProposalMessage, workflowReviewMessage, workflowDecisionMessage] as const

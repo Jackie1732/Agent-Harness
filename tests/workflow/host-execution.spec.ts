@@ -9,6 +9,8 @@ import { SessionRepository } from '../../src/session/repository.js'
 import { parseSessionId } from '../../src/session/ids.js'
 import { projectWorkflowSession } from '../../src/workflow/projection.js'
 import { runnableWorkflowHost } from './host-fixture.js'
+import { assembleHost } from '../../src/host/assembly.js'
+import { systemClock } from '../../src/foundation/clock.js'
 
 it('runs a paused-by-default DAG through independent roots and accepted output copies using the Host scheduler', async () => {
   const root = await mkdtemp(join(tmpdir(), 'host-workflow-execution-'))
@@ -44,6 +46,30 @@ it('runs a paused-by-default DAG through independent roots and accepted output c
     } finally { await reopened.shutdown() }
   } finally { await rm(root, { recursive: true, force: true }) }
 }, 30000)
+
+it('rechecks pause before executing an already selected admission and does not reactivate an obsolete resume key', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'workflow-pause-admission-'))
+  try {
+    const spec = runnableWorkflowHost(root)
+    await initializeHost(spec)
+    const assembly = await assembleHost(spec, systemClock, {}, {})
+    try {
+      const domain = assembly.workflows!
+      await domain.control('research', 'resume', { requestKey: 'first' })
+      const selected = domain.nextAction()!
+      expect(selected).toBeTypeOf('function')
+      await domain.control('research', 'pause', { requestKey: 'pause' })
+      await selected()
+      expect(domain.report('research').counts.assignments).toBe(0)
+      expect(assembly.slots.every(slot => slot.agent.status === 'accepting')).toBe(true)
+      await domain.control('research', 'resume', { requestKey: 'first' })
+      expect(domain.nextAction()).toBeUndefined()
+      await domain.control('research', 'resume', { requestKey: 'new' })
+      await domain.nextAction()!()
+      expect(domain.report('research').counts.assignments).toBe(1)
+    } finally { await assembly.dispose() }
+  } finally { await rm(root, { recursive: true, force: true }) }
+})
 
 it('settles invalid output as failed delivery without rewriting the completed model root or starting its dependent', async () => {
   const root = await mkdtemp(join(tmpdir(), 'host-workflow-invalid-'))

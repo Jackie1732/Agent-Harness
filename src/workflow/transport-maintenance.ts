@@ -8,7 +8,7 @@ import { workflowProtocolRecordedEvent, workProtocolRecordedEvent, workflowSourc
 import { workflowAssignmentCommittedEvent } from './definition-events.js'
 import { workflowDecisionCommittedEvent } from './coordinator-events.js'
 import { workAssignmentAcceptedEvent } from './work-binding.js'
-import { workProposalRecordedEvent } from './result-events.js'
+import {  workProposalRecordedEvent , workReviewRecordedEvent } from './result-events.js'
 
 /** One local command or one keyed Outbox write; actual delivery belongs to the Host delivery lane. */
 export function nextWorkflowSend(session: SessionHandle, mailbox: SessionMailbox, clock: Clock,
@@ -17,7 +17,7 @@ export function nextWorkflowSend(session: SessionHandle, mailbox: SessionMailbox
   const sources = new Map(events.map(item => [item.stored.eventId, item]))
   const definition = role === 'coordinator' ? workflowProtocolRecordedEvent : workProtocolRecordedEvent
   const kinds = role === 'coordinator' ? [workflowAssignmentCommittedEvent.type, workflowDecisionCommittedEvent.type]
-    : [workAssignmentAcceptedEvent.type, workProposalRecordedEvent.type]
+    : [workAssignmentAcceptedEvent.type, workProposalRecordedEvent.type, workReviewRecordedEvent.type]
   const protocol = events.filter(item => item.stored.type === definition.type)
     .map(item => ({ ...item, payload: definition.decode(item.payload) }))
   const missing = events.find(item => kinds.includes(item.stored.type) && !protocol.some(command => command.payload.source === item.stored.eventId))

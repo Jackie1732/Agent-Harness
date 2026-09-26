@@ -42,4 +42,6 @@ export const workflowDecisionCommittedEvent = createDurableEventDefinition<Workf
   },
 })
 
-export const workflowCoordinatorEventDefinitions = [workflowProposalReceivedEvent, workflowDecisionCommittedEvent] as const
+export const workflowReviewReceivedEvent = createDurableEventDefinition({ type: 'workflow/review-received', payloadVersion: 1, ignorable: false,
+  decode: workflowProposalReceivedEvent.decode })
+export const workflowCoordinatorEventDefinitions = [workflowProposalReceivedEvent, workflowReviewReceivedEvent, workflowDecisionCommittedEvent] as const

@@ -3,7 +3,8 @@ import { validateWorkBaseline } from './workspace.js'
 import type { WorkflowControlRequested, WorkflowControlSettled } from './control-events.js'
 import { validateWorkflowProtocol, workflowProtocolRecordedEvent } from './protocol.js'
 import { inboxAcceptedEvent } from '../communication/session-events.js'
-import { workflowDecisionCommittedEvent, workflowProposalReceivedEvent } from './coordinator-events.js'
+import { workflowDecisionCommittedEvent, workflowProposalReceivedEvent, workflowReviewReceivedEvent } from './coordinator-events.js'
+import { reviewAssignment, resolveWorkflowReviews } from './review.js'
 import type { WorkflowDecisionCommitted, WorkflowProposalReceived } from './coordinator-events.js'
 import type { WorkflowUpstreamState } from './graph.js'
 import { validateWorkflowProposal } from './proposal-validation.js'
@@ -29,6 +30,7 @@ export interface WorkflowSnapshot {
   readonly controls: readonly { readonly requested: CommittedSessionEvent<WorkflowControlRequested & import('../foundation/json.js').JsonObject>; readonly settled: CommittedSessionEvent<WorkflowControlSettled & import('../foundation/json.js').JsonObject> | null }[]
   readonly desired: 'paused' | 'running'
   readonly proposals: readonly CommittedSessionEvent<WorkflowProposalReceived & import('../foundation/json.js').JsonObject>[]
+  readonly reviews: readonly CommittedSessionEvent<WorkflowProposalReceived & import('../foundation/json.js').JsonObject>[]
   readonly decisions: readonly CommittedSessionEvent<WorkflowDecisionCommitted & import('../foundation/json.js').JsonObject>[]
   readonly upstream: readonly { readonly nodeKey: string; readonly state: WorkflowUpstreamState }[]
   readonly reservedBudget: AgentBudget
@@ -49,6 +51,7 @@ export function projectWorkflowSession(snapshot: SessionSnapshot): WorkflowSnaps
   const controls: { requested: WorkflowSnapshot['controls'][number]['requested']; settled: WorkflowSnapshot['controls'][number]['settled'] }[] = []
   let desired: WorkflowSnapshot['desired'] = 'paused'
   const proposals: WorkflowSnapshot['proposals'][number][] = []
+  const reviews: WorkflowSnapshot['reviews'][number][] = []
   const decisions: WorkflowSnapshot['decisions'][number][] = []
   const upstream = new Map<string, WorkflowUpstreamState>()
   const sources = new Map<SessionEventId, CommittedSessionEvent>()
@@ -76,17 +79,25 @@ export function projectWorkflowSession(snapshot: SessionSnapshot): WorkflowSnaps
       if (record.stored.payloadVersion !== 1 || definition === null) invalidHistory('assignment-before-definition')
       const payload = workflowAssignmentCommittedEvent.decode(record.payload)
       const recipe = definition.payload
+      if (assignments.filter(item => !decisions.some(decision => decision.payload.assignment.eventId === item.stored.eventId)).length >= recipe.limits.maxActiveAssignments) invalidHistory('assignment-not-admissible')
+      if (payload.kind === 'review') {
+        const expected = reviewAssignment({ definition, assignments, proposals, decisions }, payload.reviewOf.assignment.eventId,
+          payload.memberAddress, payload.channelId, record.stored.recordedAt, payload.protocolLimits, payload.nativeActions)
+        if (!same(payload, expected)) invalidHistory('review-assignment-source')
+        assignments.push({ stored: record.stored, payload })
+        sources.set(record.stored.eventId, record)
+        continue
+      }
       const node = recipe.nodes.find(item => item.nodeKey === payload.nodeKey)
       const attempt = node?.attempts[payload.attempt - 1]
       if (payload.definition !== definition.stored.eventId || node === undefined || attempt === undefined
-        || resolved.has(payload.nodeKey) || assignments.some(item => item.payload.nodeKey === payload.nodeKey)
-        || assignments.filter(item => !decisions.some(decision => decision.payload.assignment.eventId === item.stored.eventId)).length >= recipe.limits.maxActiveAssignments) invalidHistory('assignment-not-admissible')
+        || resolved.has(payload.nodeKey) || assignments.some(item => item.payload.kind === 'production' && item.payload.nodeKey === payload.nodeKey)) invalidHistory('assignment-not-admissible')
       const member = recipe.roster.find(item => item.memberKey === node.executor)
       const selected = resolveWorkflowNode(node, upstream, recipe)
       const demand = workflowAssignmentMailboxDemand(recipe, 'production')
       if (selected.kind !== 'ready' || payload.memberKey !== node.executor || payload.memberAddress !== member?.address
         || !same(payload.sourceAccepted, decisions.filter(item => node.inputs.some(input => input.source.kind === 'accepted'
-          && assignments.find(assignment => assignment.stored.eventId === item.payload.assignment.eventId)?.payload.nodeKey === input.source.nodeKey))
+          && assignments.find(assignment => assignment.payload.kind === 'production' && assignment.stored.eventId === item.payload.assignment.eventId)?.payload.nodeKey === input.source.nodeKey))
           .map(item => ({ address: recipe.coordinator, eventId: item.stored.eventId }))) || !same(payload.inputs, selected.inputs)
         || !same(payload.effectiveAllowance, attempt.workerGrant)
         || !same(payload.reviewerReservations, attempt.reviewerGrants)
@@ -104,35 +115,39 @@ export function projectWorkflowSession(snapshot: SessionSnapshot): WorkflowSnaps
       if (next === null) invalidHistory('workflow-budget-exceeded')
       reservedBudget = next
       assignments.push({ stored: record.stored, payload })
-    } else if (record.stored.type === workflowProposalReceivedEvent.type) {
+    } else if ([workflowProposalReceivedEvent.type, workflowReviewReceivedEvent.type].includes(record.stored.type)) {
       if (record.stored.payloadVersion !== 1 || definition === null) invalidHistory('proposal-before-definition')
       const payload = workflowProposalReceivedEvent.decode(record.payload)
       const assignment = assignments.find(item => item.stored.eventId === payload.message.assignment.eventId)
+      const received = record.stored.type === workflowReviewReceivedEvent.type ? reviews : proposals
       const inbox = sources.get(payload.inbox)
       if (assignment === undefined || payload.definition !== definition.stored.eventId || inbox?.stored.type !== inboxAcceptedEvent.type
-        || proposals.some(item => same(item.payload.message.assignment, payload.message.assignment))) invalidHistory('proposal-source')
+        || (assignment.payload.kind === 'review') !== (record.stored.type === workflowReviewReceivedEvent.type)
+        || received.some(item => same(item.payload.message.assignment, payload.message.assignment))) invalidHistory('proposal-source')
       const envelope = inboxAcceptedEvent.decode(inbox.payload).envelope
-      if (envelope.type !== 'workflow/proposal' || envelope.payloadVersion !== 1 || envelope.sender !== assignment.payload.memberAddress
+      if (envelope.type !== (assignment.payload.kind === 'review' ? 'workflow/review' : 'workflow/proposal') || envelope.payloadVersion !== 1 || envelope.sender !== assignment.payload.memberAddress
         || envelope.recipient !== definition.payload.coordinator || envelope.channelId !== assignment.payload.channelId
         || !same(envelope.payload, payload.message)) invalidHistory('proposal-inbox')
       validateWorkflowProposal(definition.payload, assignment.payload,
         { address: definition.payload.coordinator, eventId: assignment.stored.eventId }, payload.message)
-      proposals.push({ ...record, payload })
+      received.push({ ...record, payload })
       const total = proposals.flatMap(item => item.payload.message.artifacts).reduce((sum, item) => sum + item.value.byteLength, 0)
       if (total > definition.payload.limits.maxTotalArtifactBytes) invalidHistory('workflow-artifact-total')
     } else if (record.stored.type === workflowDecisionCommittedEvent.type) {
       if (record.stored.payloadVersion !== 1 || definition === null) invalidHistory('decision-before-definition')
       const payload = workflowDecisionCommittedEvent.decode(record.payload)
       const assignment = assignments.find(item => item.stored.eventId === payload.assignment.eventId)
-      const received = proposals.find(item => same(item.payload.message.proposal, payload.proposal))
+      const received = [...proposals, ...reviews].find(item => same(item.payload.message.proposal, payload.proposal))
+      const evaluated = assignment === undefined ? undefined : resolveWorkflowReviews({ assignments, reviews }, assignment.stored.eventId)
       if (assignment === undefined || received === undefined || payload.definition !== definition.stored.eventId
         || !same(received.payload.message.assignment, payload.assignment)
         || decisions.some(item => same(item.payload.assignment, payload.assignment))
-        || (received.payload.message.value.outcome === 'completed' ? assignment.payload.acceptance.kind !== 'schema-only' || payload.outcome !== 'accepted' : payload.outcome !== 'rejected') || payload.reviews.length !== 0
+        || (received.payload.message.value.outcome === 'completed' ? evaluated === undefined || payload.outcome !== evaluated.outcome || !same(payload.reviews, evaluated.reviews)
+          : payload.outcome !== 'rejected' || payload.reviews.length !== 0)
         || !same(payload.value, received.payload.message.value.value) || !same(payload.artifacts, received.payload.message.value.artifacts)) invalidHistory('decision-source')
       decisions.push({ ...record, payload })
-      upstream.set(assignment.payload.nodeKey, payload.outcome === 'accepted' ? { kind: 'accepted', value: payload.value }
-        : { kind: received.payload.message.value.outcome === 'result-unknown' ? 'result-unknown' : 'failed' })
+      if (assignment.payload.kind === 'production') upstream.set(assignment.payload.nodeKey, payload.outcome === 'accepted' ? { kind: 'accepted', value: payload.value }
+        : { kind: received.payload.message.value.outcome === 'result-unknown' || evaluated?.resultUnknown ? 'result-unknown' : 'failed' })
     }
     if (record.stored.type === workflowControlRequestedEvent.type) {
       const payload = workflowControlRequestedEvent.decode(record.payload)
@@ -152,6 +167,6 @@ export function projectWorkflowSession(snapshot: SessionSnapshot): WorkflowSnaps
   return Object.freeze({ definition,
     ready: definition?.payload.nodes.filter(node => resolveWorkflowNode(node, upstream, definition!.payload).kind === 'ready' && !resolved.has(node.nodeKey)
       && !assignments.some(item => item.payload.nodeKey === node.nodeKey)).map(node => node.nodeKey) ?? [],
-    controls: Object.freeze(controls), desired, proposals: Object.freeze(proposals), decisions: Object.freeze(decisions), upstream: Object.freeze([...upstream].map(([nodeKey, state]) => Object.freeze({ nodeKey, state }))),
+    controls: Object.freeze(controls), desired, proposals: Object.freeze(proposals), reviews: Object.freeze(reviews), decisions: Object.freeze(decisions), upstream: Object.freeze([...upstream].map(([nodeKey, state]) => Object.freeze({ nodeKey, state }))),
     resolved: Object.freeze([...resolved.values()]), assignments: Object.freeze(assignments), reservedBudget })
 }

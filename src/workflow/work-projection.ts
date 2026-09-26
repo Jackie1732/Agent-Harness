@@ -1,6 +1,7 @@
 import { workAssignmentSettledEvent } from './settlement-events.js'
 import { workflowDecisionMessage } from './messages.js'
-import { workProposalRecordedEvent } from './result-events.js'
+import {  workProposalRecordedEvent , workReviewRecordedEvent } from './result-events.js'
+import { workReviewTask } from './review.js'
 import { emptyAgentBudget, reserveAgentBudget } from '../agent/budget.js'
 import { invalidAgent } from '../agent/errors.js'
 import { inputKey } from '../agent/input-codec.js'
@@ -37,7 +38,7 @@ export function applyWorkAssignmentAccepted(state: AgentProjectionState, event: 
     || assignment.workspace.kind !== 'none' && !authority.resourceIds.includes(assignment.workspace.resourceId)
     || reserveAgentBudget(emptyAgentBudget, assignment.effectiveAllowance, spec.budget) === null) invalidAgent('work-accept-authority')
   const node = accepted.recipe.nodes.find(item => item.nodeKey === assignment.nodeKey)!
-  const input = { kind: 'task' as const, text: node.task, originLabel: `workflow:${accepted.recipe.workflowKey}` }
+  const input = { kind: 'task' as const, text: assignment.kind === 'review' ? workReviewTask : node.task, originLabel: `workflow:${accepted.recipe.workflowKey}` }
   const reference = { kind: 'workflow' as const, eventId: event.stored.eventId }
   state.inputs.set(inputKey(reference), { reference, input, message: null, work: accepted,
     acceptedAt: event.stored.recordedAt, sequence: event.stored.sequence, lane: `workflow:${accepted.assignment.address}`,
@@ -56,7 +57,7 @@ export function applyWorkAssignmentSettled(state: AgentProjectionState, event: C
   const binding = source(state, p.accepted, workAssignmentAcceptedEvent)
   const inbox = source(state, p.inbox, inboxAcceptedEvent).payload.envelope
   const decision = workflowDecisionMessage.decode(inbox.payload)
-  const proposal = [...state.sources.values()].find(item => item.stored.type === workProposalRecordedEvent.type
+  const proposal = [...state.sources.values()].find(item => [workProposalRecordedEvent.type, workReviewRecordedEvent.type].includes(item.stored.type)
     && workProposalRecordedEvent.decode(item.payload).accepted === p.accepted)
   if (event.stored.payloadVersion !== 1 || proposal === undefined || inbox.type !== workflowDecisionMessage.type || inbox.payloadVersion !== 1
     || inbox.sender !== binding.payload.assignment.address || inbox.recipient !== binding.payload.value.memberAddress

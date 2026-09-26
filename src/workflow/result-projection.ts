@@ -6,7 +6,7 @@ import { formatSessionAddress } from '../session/ids.js'
 import { invalidHistory } from './errors.js'
 import { deriveWorkDelivery } from './delivery.js'
 import { workAssignmentAcceptedEvent, sameWorkflowValue } from './work-binding.js'
-import { artifactPublishedEvent, workExecutionReleasedEvent, workProposalRecordedEvent } from './result-events.js'
+import {  artifactPublishedEvent, workExecutionReleasedEvent, workProposalRecordedEvent , workReviewRecordedEvent } from './result-events.js'
 
 /** Validate output publication against preceding local business and release evidence. */
 export function applyWorkResultEvent(state: AgentProjectionState, event: CommittedSessionEvent): void {
@@ -22,16 +22,17 @@ export function applyWorkResultEvent(state: AgentProjectionState, event: Committ
       || sources.some(item => item.stored.type === event.stored.type && workExecutionReleasedEvent.decode(item.payload).accepted === p.accepted)) invalidHistory('work-release-source')
     return
   }
-  const proposal = event.stored.type === workProposalRecordedEvent.type
+  const proposal = [workProposalRecordedEvent.type, workReviewRecordedEvent.type].includes(event.stored.type)
   const p = proposal ? workProposalRecordedEvent.decode(event.payload) : artifactPublishedEvent.decode(event.payload)
   const release = source(state, p.executionRelease, workExecutionReleasedEvent)
   if (release.payload.root !== p.root || release.payload.accepted !== p.accepted
     || !sameWorkflowValue(release.payload.assignment, p.assignment)) invalidHistory('work-result-release')
   const derived = deriveWorkDelivery(state, p.accepted, p.executionRelease)
   if (derived.proposal.root !== p.root || !sameWorkflowValue(derived.binding.assignment, p.assignment)) invalidHistory('work-result-binding')
+  if (proposal && event.stored.type !== (derived.binding.value.kind === 'review' ? workReviewRecordedEvent.type : workProposalRecordedEvent.type)) invalidHistory('work-result-kind')
   const artifacts = sources.filter(item => item.stored.type === artifactPublishedEvent.type)
     .map(item => ({ ...item, payload: artifactPublishedEvent.decode(item.payload) })).filter(item => item.payload.accepted === p.accepted)
-  const proposals = sources.filter(item => item.stored.type === workProposalRecordedEvent.type)
+  const proposals = sources.filter(item => [workProposalRecordedEvent.type, workReviewRecordedEvent.type].includes(item.stored.type))
     .map(item => workProposalRecordedEvent.decode(item.payload)).filter(item => item.accepted === p.accepted)
   if (proposals.length !== 0) invalidHistory('work-proposal-already-published')
   if (proposal) {

@@ -1,5 +1,6 @@
 import { decodeAgentBudget, emptyAgentBudget, reserveAgentBudget } from '../agent/budget.js'
 import { validateWorkBaseline } from './workspace.js'
+import { validateReviewRecipe } from './review.js'
 import { eventId, exact, record } from '../agent/validation.js'
 import { snapshotJson } from '../foundation/json.js'
 import type { JsonObject, JsonValue } from '../foundation/json.js'
@@ -46,9 +47,10 @@ export function decodeWorkAssignmentMessage(value: unknown): WorkAssignmentMessa
   const member = recipe.roster.find(item => item.memberKey === work.memberKey)
   if (recipe.coordinator !== definition.address || assignment.address !== definition.address
     || work.definition !== definition.eventId || parseSessionEventId(assignment.eventId).sequence <= parseSessionEventId(definition.eventId).sequence
-    || node === undefined || attempt === undefined || member === undefined || node.executor !== member.memberKey
-    || work.memberAddress !== member.address || !member.canProduce || work.deadline > recipe.deadline
-    || !sameWorkflowValue(work.effectiveAllowance, attempt.workerGrant)
+    || node === undefined || attempt === undefined || member === undefined
+    || work.memberAddress !== member.address || work.deadline > recipe.deadline) invalidHistory('work-assignment-recipe')
+  if (work.kind === 'review') validateReviewRecipe(recipe, work)
+  else if (node.executor !== member.memberKey || !member.canProduce || !sameWorkflowValue(work.effectiveAllowance, attempt.workerGrant)
     || !sameWorkflowValue(work.reviewerReservations, attempt.reviewerGrants)
     || !sameWorkflowValue(work.toolNames, attempt.toolNames) || !sameWorkflowValue(work.nativeActions, attempt.nativeActions)
     || !sameWorkflowValue(work.workspace, attempt.workspace) || !sameWorkflowValue(work.acceptance, node.acceptance)

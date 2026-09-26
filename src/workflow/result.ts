@@ -11,6 +11,7 @@ import { WorkflowError } from './errors.js'
 import type { WorkflowDefinition } from './types.js'
 import type { ArtifactSource, WorkArtifact } from './result-events.js'
 import { workAssignmentAcceptedEvent, sameWorkflowValue } from './work-binding.js'
+import { workReviewOutput, reviewValue } from './review.js'
 
 function invalid(reason: string): never { throw new WorkflowError('WORKFLOW_RESULT_INVALID', reason) }
 
@@ -52,11 +53,12 @@ export function deriveWorkOutput(state: AgentProjectionState, accepted: SessionE
   if (settled.payload.outcome !== 'completed') invalid('work-final-model-incomplete')
   const content = settled.payload.result.blocks.flatMap(block => block.kind === 'text' && block.complete ? [block.text] : []).join('')
   const node = binding.recipe.nodes.find(node => node.nodeKey === binding.value.nodeKey)!
+  const output = binding.value.kind === 'review' ? workReviewOutput : node.output
   let value: JsonValue = content
-  if (node.output.kind === 'json') {
+  if (output.kind === 'json') {
     try { value = JSON.parse(content) as JsonValue } catch { invalid('output-json') }
   }
-  value = validateWorkValue(value, binding.recipe, node.nodeKey)
+  value = binding.value.kind === 'review' ? reviewValue(workflowValue(value, binding.recipe)) : validateWorkValue(value, binding.recipe, node.nodeKey)
   const modelSource = { turn: final.started.stored.eventId, settled: settled.stored.eventId }
   const artifacts: Omit<WorkArtifact, 'assignment' | 'accepted' | 'root' | 'executionRelease'>[] = []
   const add = (name: string, text: string, source: ArtifactSource) => {
@@ -65,8 +67,8 @@ export function deriveWorkOutput(state: AgentProjectionState, accepted: SessionE
     if (byteLength > binding.recipe.limits.maxArtifactBytes) invalid('artifact-byte-limit')
     artifacts.push({ name, mediaType: 'text/plain', text, byteLength, sha256: createHash('sha256').update(text, 'utf8').digest('hex'), source })
   }
-  if (node.output.kind === 'text') add(node.output.name, content, { kind: 'model-final', ...modelSource })
-  else for (const declared of node.output.artifacts) {
+  if (output.kind === 'text') add(output.name, content, { kind: 'model-final', ...modelSource })
+  else for (const declared of output.artifacts) {
     if (declared.source.kind === 'json-text') {
       const text = workflowField(value, declared.source.path)
       if (typeof text !== 'string') invalid('artifact-json-text')

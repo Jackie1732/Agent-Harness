@@ -108,4 +108,7 @@ export function decodeWorkflowProposalMessage(value: unknown): WorkflowProposalM
     }) }
 }
 
-export const workResultEventDefinitions = [workExecutionReleasedEvent, artifactPublishedEvent, workProposalRecordedEvent] as const
+export const workReviewRecordedEvent = createDurableEventDefinition({ type: 'work/review-recorded', payloadVersion: 1, ignorable: false,
+  decode: workProposalRecordedEvent.decode })
+
+export const workResultEventDefinitions = [workExecutionReleasedEvent, artifactPublishedEvent, workProposalRecordedEvent, workReviewRecordedEvent] as const

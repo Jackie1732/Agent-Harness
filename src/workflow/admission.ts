@@ -1,3 +1,5 @@
+import { reviewAssignment } from './review.js'
+import type { WorkflowSnapshot } from './projection.js'
 import { assertWorkflowMessageFits } from './message-budget.js'
 import { workflowSourceCommands } from './protocol.js'
 import { workflowAssignmentClosed } from './closure.js'
@@ -81,6 +83,42 @@ export class WorkflowAdmission {
   async admitRoot(nodeKey: string, member: SessionHandle, channelId: ChannelId,
     authorize: () => void, baseline: WorkflowAssignment['workspaceBaseline'] = null): Promise<CommittedSessionEvent<WorkflowAssignment & JsonObject>> {
     authorize()
+    return this.#commit(member, state => {
+      const definition = state.definition!
+      const observedAt = clockTimestamp(this.clock)
+      const node = definition.payload.nodes.find(item => item.nodeKey === nodeKey)
+      if (node === undefined || !state.ready.includes(nodeKey)) throw new WorkflowError('WORKFLOW_ADMISSION_BLOCKED', 'node-not-ready')
+      const attempt = node.attempts[0]!
+      if (attempt.workspace.kind !== 'none' && baseline === null) blocked('workspace-lease-required')
+      const memberRecord = definition.payload.roster.find(item => item.memberKey === node.executor)
+      if (memberRecord?.address !== member.header.address) blocked('member-not-bound')
+      const selected = resolveWorkflowNode(node, new Map(state.upstream.map(item => [item.nodeKey, item.state])),  definition.payload)
+      if (selected.kind !== 'ready') throw new WorkflowError('WORKFLOW_ADMISSION_BLOCKED', 'node-not-ready')
+      const deadlineMs = Math.min(Date.parse(definition.payload.deadline), Date.parse(observedAt) + attempt.durationMs)
+      if (deadlineMs <= Date.parse(observedAt)) blocked('workflow-deadline')
+      return workflowAssignmentCommittedEvent.decode(snapshotJson({
+        definition: definition.stored.eventId, nodeKey, attempt: 1, kind: 'production',
+        memberKey: node.executor, memberAddress: member.header.address, channelId,
+        inputs: selected.inputs, sourceAccepted: state.decisions.filter(item => node.inputs.some(input => input.source.kind === 'accepted'
+          && state.assignments.find(assignment => assignment.payload.kind === 'production' && assignment.stored.eventId === item.payload.assignment.eventId)?.payload.nodeKey === input.source.nodeKey))
+          .map(item => ({ address: definition.payload.coordinator, eventId: item.stored.eventId })), effectiveAllowance: attempt.workerGrant,
+        reviewerReservations: attempt.reviewerGrants, toolNames: attempt.toolNames,
+        nativeActions: attempt.nativeActions, workspace: attempt.workspace, workspaceBaseline: baseline,
+        protocolLimits: { maxMessageBytes: this.capacity.limits.maxMessageBytes, maxRecordBytes: Math.min(this.coordinator.maxRecordBytes, member.maxRecordBytes) },
+        protocolReserve: workflowAssignmentMailboxDemand(definition.payload, 'production'),
+        deadline: new Date(deadlineMs).toISOString(), acceptance: node.acceptance,
+      }))
+    })
+  }
+
+  admitReview(production: SessionEventId, member: SessionHandle, channelId: ChannelId, authorize: () => void,
+    nativeActions: readonly string[] = []): Promise<CommittedSessionEvent<WorkflowAssignment & JsonObject>> {
+    authorize()
+    return this.#commit(member, state => workflowAssignmentCommittedEvent.decode(snapshotJson(reviewAssignment(state, production, member.header.address, channelId,
+      clockTimestamp(this.clock), { maxMessageBytes: this.capacity.limits.maxMessageBytes, maxRecordBytes: Math.min(this.coordinator.maxRecordBytes, member.maxRecordBytes) }, nativeActions))))
+  }
+
+  #commit(member: SessionHandle, derive: (state: WorkflowSnapshot) => WorkflowAssignment & JsonObject): Promise<CommittedSessionEvent<WorkflowAssignment & JsonObject>> {
     return this.capacity.run(async () => {
       for (let conflict = 0; ; conflict++) {
         if (this.#closed || this.#uncertain || this.coordinator.status !== 'open' || member.status !== 'open') blocked('admission-closed')
@@ -88,29 +126,8 @@ export class WorkflowAdmission {
         const state = projectWorkflowSession(snapshot)
         const definition = state.definition
         if (definition === null) throw new WorkflowError('WORKFLOW_ADMISSION_BLOCKED', 'definition-missing')
-        const node = definition.payload.nodes.find(item => item.nodeKey === nodeKey)
-        if (node === undefined || !state.ready.includes(nodeKey)) throw new WorkflowError('WORKFLOW_ADMISSION_BLOCKED', 'node-not-ready')
-        const attempt = node.attempts[0]!
-        if (attempt.workspace.kind !== 'none' && baseline === null) blocked('workspace-lease-required')
-        const memberRecord = definition.payload.roster.find(item => item.memberKey === node.executor)
-        if (memberRecord?.address !== member.header.address) blocked('member-not-bound')
-        const selected = resolveWorkflowNode(node, new Map(state.upstream.map(item => [item.nodeKey, item.state])),  definition.payload)
-        if (selected.kind !== 'ready') throw new WorkflowError('WORKFLOW_ADMISSION_BLOCKED', 'node-not-ready')
         const observedAt = clockTimestamp(this.clock)
-        const deadlineMs = Math.min(Date.parse(definition.payload.deadline), Date.parse(observedAt) + attempt.durationMs)
-        if (deadlineMs <= Date.parse(observedAt)) blocked('workflow-deadline')
-        const candidate = workflowAssignmentCommittedEvent.decode(snapshotJson({
-          definition: definition.stored.eventId, nodeKey, attempt: 1, kind: 'production',
-          memberKey: node.executor, memberAddress: member.header.address, channelId,
-          inputs: selected.inputs, sourceAccepted: state.decisions.filter(item => node.inputs.some(input => input.source.kind === 'accepted'
-            && state.assignments.find(assignment => assignment.stored.eventId === item.payload.assignment.eventId)?.payload.nodeKey === input.source.nodeKey))
-            .map(item => ({ address: definition.payload.coordinator, eventId: item.stored.eventId })), effectiveAllowance: attempt.workerGrant,
-          reviewerReservations: attempt.reviewerGrants, toolNames: attempt.toolNames,
-          nativeActions: attempt.nativeActions, workspace: attempt.workspace, workspaceBaseline: baseline,
-          protocolLimits: { maxMessageBytes: this.capacity.limits.maxMessageBytes, maxRecordBytes: Math.min(this.coordinator.maxRecordBytes, member.maxRecordBytes) },
-          protocolReserve: workflowAssignmentMailboxDemand(definition.payload, 'production'),
-          deadline: new Date(deadlineMs).toISOString(), acceptance: node.acceptance,
-        }))
+        const candidate = derive(state)
         this.#preview(snapshot, candidate, observedAt, member.maxRecordBytes)
         const quotas = this.#quotas(candidate)
         this.capacity.check(quotas, new Map([[this.coordinator.header.address, this.coordinator], [member.header.address, member]]))

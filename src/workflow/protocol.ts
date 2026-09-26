@@ -8,7 +8,7 @@ import type { SessionEventId } from '../session/ids.js'
 import type { CommittedSessionEvent } from '../session/types.js'
 import { workflowAssignmentCommittedEvent, workflowDefinitionRecordedEvent } from './definition-events.js'
 import { workAssignmentAcceptedEvent, workflowReference, sameWorkflowValue } from './work-binding.js'
-import { artifactPublishedEvent, workProposalRecordedEvent } from './result-events.js'
+import {  artifactPublishedEvent, workProposalRecordedEvent , workReviewRecordedEvent } from './result-events.js'
 import { workflowDecisionCommittedEvent } from './coordinator-events.js'
 import type { WorkflowDefinition, WorkflowEventRef } from './types.js'
 import { invalidHistory } from './errors.js'
@@ -42,7 +42,7 @@ export function workflowSourceCommands(sources: ReadonlyMap<SessionEventId, Comm
     const recipe = workflowDefinitionRecordedEvent.decode(event.payload).definition as unknown as WorkflowDefinition
     assignment = ref; recipient = value.memberAddress; channelId = value.channelId; type = 'workflow/assignment'
     payload = { definition: { address: recipe.coordinator, eventId: event.stored.eventId }, assignment, recipe, value } as unknown as JsonObject
-  } else if (source.stored.type === workAssignmentAcceptedEvent.type || source.stored.type === workProposalRecordedEvent.type) {
+  } else if (source.stored.type === workAssignmentAcceptedEvent.type || [workProposalRecordedEvent.type, workReviewRecordedEvent.type].includes(source.stored.type)) {
     const accepted = source.stored.type === workAssignmentAcceptedEvent.type ? id : workProposalRecordedEvent.decode(source.payload).accepted
     const event = sources.get(accepted)
     if (event?.stored.type !== workAssignmentAcceptedEvent.type) invalidHistory('protocol-acceptance-source')
@@ -51,7 +51,7 @@ export function workflowSourceCommands(sources: ReadonlyMap<SessionEventId, Comm
     if (source.stored.type === workAssignmentAcceptedEvent.type) {
       type = 'workflow/assignment-accepted'; payload = { assignment, accepted: ref }
     } else {
-      type = 'workflow/proposal'
+      type = binding.value.kind === 'review' ? 'workflow/review' : 'workflow/proposal'
       const value = workProposalRecordedEvent.decode(source.payload)
       payload = { assignment, proposal: ref, value, artifacts: value.artifacts.map(ref => {
         const event = sources.get(ref.eventId)

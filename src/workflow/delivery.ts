@@ -48,7 +48,7 @@ export function deriveWorkDelivery(state: AgentProjectionState, accepted: Sessio
       artifacts: output.artifacts.map((artifact, index) => ({ ref: proposal.artifacts[index]!, value: {
         assignment: base.assignment, accepted, root: base.root, executionRelease, ...artifact,
       } })) }
-    assertWorkflowMessageFits(sessionId, { kind: 'send', type: 'workflow/proposal', payloadVersion: 1,
+    assertWorkflowMessageFits(sessionId, { kind: 'send', type: terminal.binding.value.kind === 'review' ? 'workflow/review' : 'workflow/proposal', payloadVersion: 1,
       request: { kind: 'root', recipient: base.assignment.address, channelId: terminal.binding.value.channelId }, payload: message as unknown as JsonObject }, terminal.binding.value.protocolLimits)
     return { binding: terminal.binding, proposal, artifacts: output.artifacts }
   } catch (cause) {

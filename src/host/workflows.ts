@@ -22,7 +22,8 @@ import { nextWorkflowSend } from '../workflow/transport-maintenance.js'
 import { HostError } from './errors.js'
 import type { HostSlot, HostProtocolSlot } from './runtime-types.js'
 import { nextWorkflowInbox } from './workflow-inbox.js'
-import { assignmentMember, assertWorkflowMember, workflowMemberIdle } from './workflow-authority.js'
+import { assignmentMember, assertWorkflowMember, assertWorkflowParticipant, workflowMemberIdle } from './workflow-authority.js'
+import { resolveWorkflowReviews } from '../workflow/review.js'
 import { workflowReport } from './workflow-report.js'
 import { prepareWorkWorkspace, workExecutionTools } from './workflow-workspace.js'
 import type { WorkspaceAuthority, WorkspaceLease } from '../subagent/workspace.js'
@@ -105,7 +106,7 @@ export class HostWorkflows {
       const action = this.#next(entry)
       if (action !== undefined) return () => this.#gate.run(async () => {
         this.#cursor = (index + 1) % entries.length
-        return this.#closed ? undefined : action()
+        return this.#closed ? undefined : this.#next(entry)?.()
       })
     }
     return undefined
@@ -155,13 +156,38 @@ export class HostWorkflows {
       }
       const publication = nextWorkPublication(member.session, this.clock)
       if (publication !== undefined) return publication
-      const proposal = state.proposals.find(item => item.payload.message.assignment.eventId === work.stored.eventId)
-      if (proposal !== undefined && !state.decisions.some(item => item.payload.assignment.eventId === work.stored.eventId)
-        && (work.payload.acceptance.kind === 'schema-only' || proposal.payload.message.value.outcome !== 'completed')) return () => entry.journal.append(workflowDecisionCommittedEvent, () => ({
+      const proposal = [...state.proposals, ...state.reviews].find(item => item.payload.message.assignment.eventId === work.stored.eventId)
+      const decisionMissing = !state.decisions.some(item => item.payload.assignment.eventId === work.stored.eventId)
+      const evaluated = resolveWorkflowReviews(state, work.stored.eventId)
+      if (proposal !== undefined && decisionMissing && (evaluated !== undefined || proposal.payload.message.value.outcome !== 'completed')) return () => entry.journal.append(workflowDecisionCommittedEvent, () => ({
         definition: definition.stored.eventId, assignment: proposal.payload.message.assignment, proposal: proposal.payload.message.proposal,
-        expectedOutputRevision: 0 as const, outcome: proposal.payload.message.value.outcome === 'completed' ? 'accepted' as const : 'rejected' as const, value: proposal.payload.message.value.value,
-        artifacts: proposal.payload.message.value.artifacts, reviews: [],
+        expectedOutputRevision: 0 as const, outcome: proposal.payload.message.value.outcome === 'completed' ? evaluated!.outcome : 'rejected' as const, value: proposal.payload.message.value.value,
+        artifacts: proposal.payload.message.value.artifacts, reviews: proposal.payload.message.value.outcome === 'completed' ? evaluated!.reviews : [],
       }))
+      if (proposal !== undefined && decisionMissing && state.desired === 'running' && work.payload.kind === 'production' && work.payload.acceptance.kind === 'reviewed-all'
+        && state.assignments.filter(item => !state.decisions.some(decision => decision.payload.assignment.eventId === item.stored.eventId)).length < definition.payload.limits.maxActiveAssignments) {
+        for (const reviewer of work.payload.acceptance.reviewers) {
+          if (state.assignments.some(item => item.payload.kind === 'review' && item.payload.reviewOf.assignment.eventId === work.stored.eventId && item.payload.memberKey === reviewer)) continue
+          const peer = this.slots.find(slot => slot.member.agentKey === reviewer)
+          if (peer === undefined || !workflowMemberIdle(peer) || !this.businessAllowed(peer)) continue
+          return async () => {
+            const authority = assertWorkflowParticipant(definition.payload, peer, reviewer)
+            const actions = work.payload.reviewerReservations.find(item => item.memberKey === reviewer)!.grant.waits > 0
+              && authority.nativeActions.includes('agent_ask_user') ? ['agent_ask_user'] : []
+            await peer.executions!.release()
+            try {
+              const assigned = await entry.admission.admitReview(work.stored.eventId, peer.session, parseChannelId(randomUUID()),
+                () => { assertWorkflowParticipant(definition.payload, peer, reviewer) }, actions)
+              this.communication.workflowChannels.bind(coordinator.session, assigned.stored.eventId, peer.session)
+            } catch (cause) {
+              if (coordinator.session.status === 'open' && !(cause instanceof WorkflowError && cause.code === 'WORKFLOW_COMMIT_UNKNOWN')) {
+                this.slots[this.slots.indexOf(peer)] = await peer.executions!.replace({ kind: 'ordinary' }, {})
+              }
+              throw cause
+            }
+          }
+        }
+      }
       if (workflowAssignmentClosed(coordinator.session, member.session, work.stored.eventId)) return async () => {
         entry.admission.retire(work.stored.eventId, member.session)
         this.#retired.add(work.stored.eventId)

@@ -116,11 +116,10 @@ export type WorkflowDecision = { readonly nodeKey: string; readonly assignment: 
   readonly value: JsonValue | null; readonly artifacts: readonly WorkflowEventRef[] }
 
 /** Complete production reservation fixed at the coordinator's CP-W. */
-export interface WorkflowAssignment {
+interface WorkflowAssignmentFields {
   readonly definition: SessionEventId
   readonly nodeKey: string
   readonly attempt: number
-  readonly kind: 'production'
   readonly memberKey: string
   readonly memberAddress: SessionAddress
   readonly channelId: ChannelId
@@ -137,3 +136,5 @@ export interface WorkflowAssignment {
   readonly deadline: string
   readonly acceptance: WorkflowAcceptance
 }
+export type WorkflowAssignment = WorkflowAssignmentFields & ({ readonly kind: 'production' }
+  | { readonly kind: 'review'; readonly reviewOf: { readonly assignment: WorkflowEventRef; readonly proposal: WorkflowEventRef } })

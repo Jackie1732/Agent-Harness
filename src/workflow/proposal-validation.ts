@@ -4,6 +4,7 @@ import type { WorkflowProposalMessage } from './result-events.js'
 import type { WorkflowAssignment, WorkflowDefinition, WorkflowEventRef } from './types.js'
 import { sameWorkflowValue } from './work-binding.js'
 import { validateWorkValue, workflowField } from './result.js'
+import { reviewValue } from './review.js'
 
 /** Validate authorized received copies without dereferencing another Session's private history. */
 export function validateWorkflowProposal(recipe: WorkflowDefinition, assignment: WorkflowAssignment,
@@ -23,6 +24,11 @@ export function validateWorkflowProposal(recipe: WorkflowDefinition, assignment:
     return
   }
   if (proposal.reason !== null) invalidHistory('proposal-success-reason')
+  if (assignment.kind === 'review') {
+    reviewValue(proposal.value)
+    if (message.artifacts.length !== 0) invalidHistory('review-has-artifacts')
+    return
+  }
   validateWorkValue(proposal.value, recipe, node.nodeKey)
   const declarations = node.output.kind === 'text' ? [{ name: node.output.name, source: { kind: 'model-final' as const } }] : node.output.artifacts
   if (message.artifacts.length !== declarations.length || message.artifacts.length > recipe.limits.maxArtifactsPerAttempt

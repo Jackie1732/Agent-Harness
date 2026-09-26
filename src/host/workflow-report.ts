@@ -23,8 +23,9 @@ export function workflowReport(session: SessionHandle, slots: readonly HostSlot[
   return Object.freeze({ workflowKey: definition.workflowKey, desired: state.desired,
     state: failed ? 'failed' as const : completed ? 'completed' as const : state.desired === 'paused' ? 'paused' as const : resumed ? 'running' as const : 'suspended' as const,
     settled: completed || failed, closed: (completed || failed) && closed, budget: definition.budget, reservedBudget: state.reservedBudget,
-    counts: { nodes: nodes.length, assignments: state.assignments.length, proposals: state.proposals.length, accepted: state.decisions.filter(item => item.payload.outcome === 'accepted').length,
-      failed: state.decisions.filter(item => item.payload.outcome === 'rejected').length,
+    counts: { nodes: nodes.length, assignments: state.assignments.length, proposals: state.proposals.length, reviews: state.reviews.length,
+      accepted: state.decisions.filter(item => item.payload.outcome === 'accepted' && state.assignments.some(work => work.stored.eventId === item.payload.assignment.eventId && work.payload.kind === 'production')).length,
+      failed: state.decisions.filter(item => item.payload.outcome === 'rejected' && state.assignments.some(work => work.stored.eventId === item.payload.assignment.eventId && work.payload.kind === 'production')).length,
       pendingInbox: communication.inbox.filter(item => item.status === 'pending').length,
       pendingOutbox: communication.outbox.filter(item => item.status === 'pending').length },
     nodes: Object.freeze(nodes.slice(0, maximum)), assignments: Object.freeze(state.assignments.slice(0, maximum).map(item => ({

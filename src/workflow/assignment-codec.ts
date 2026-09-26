@@ -55,8 +55,10 @@ function decodeAssignment(value: JsonValue): WorkflowAssignment & JsonObject {
     maxDepth: DEFAULT_WORKFLOW_LIMITS.maxSchemaDepth + 8, maxNodes: DEFAULT_WORKFLOW_LIMITS.maxSchemaNodes }), 'assignment')
   exact(input, ['definition', 'nodeKey', 'attempt', 'kind', 'memberKey', 'memberAddress', 'channelId', 'inputs', 'sourceAccepted',
     'effectiveAllowance', 'reviewerReservations', 'toolNames', 'nativeActions', 'workspace', 'workspaceBaseline',
-    'protocolReserve', 'protocolLimits', 'deadline', 'acceptance'], 'assignment')
-  if (input.kind !== 'production' || !Number.isSafeInteger(input.attempt) || (input.attempt as number) < 1) invalidHistory('assignment-kind-attempt')
+    'protocolReserve', 'protocolLimits', 'deadline', 'acceptance', ...(input.kind === 'review' ? ['reviewOf'] : [])], 'assignment')
+  if (input.kind !== 'production' && input.kind !== 'review' || !Number.isSafeInteger(input.attempt) || (input.attempt as number) < 1) invalidHistory('assignment-kind-attempt')
+  const review = input.kind === 'review' ? object(input.reviewOf!, 'reviewOf') : undefined
+  if (review !== undefined) exact(review, ['assignment', 'proposal'], 'reviewOf')
   const reviewerReservations = list(input.reviewerReservations, 'reviewerReservations').map(value => {
     const item = object(value, 'reviewerReservation'); exact(item, ['memberKey', 'grant'], 'reviewerReservation')
     return { memberKey: text(item.memberKey, 'reviewer.memberKey'), grant: decodeAgentBudget(item.grant) }
@@ -69,7 +71,8 @@ function decodeAssignment(value: JsonValue): WorkflowAssignment & JsonObject {
   const definition = parseSessionEventId(text(input.definition, 'definition'))
   return {
     definition: formatSessionEventId(definition.sessionId, definition.sequence),
-    nodeKey: text(input.nodeKey, 'nodeKey'), attempt: input.attempt as number, kind: 'production',
+    nodeKey: text(input.nodeKey, 'nodeKey'), attempt: input.attempt as number, kind: input.kind,
+    ...(review === undefined ? {} : { reviewOf: { assignment: reference(review.assignment!), proposal: reference(review.proposal!) } }),
     memberKey: text(input.memberKey, 'memberKey'),
     memberAddress: formatSessionAddress(parseSessionAddress(text(input.memberAddress, 'memberAddress'))),
     channelId: parseChannelId(text(input.channelId, 'channelId')),
