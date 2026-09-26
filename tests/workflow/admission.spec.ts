@@ -32,7 +32,8 @@ describe('Workflow CP-W admission', () => {
     try {
       await coordinator.append(workflowDefinitionRecordedEvent, { definition: recipe() })
       const shared = capacity()
-      const admission = new WorkflowAdmission(coordinator, shared, systemClock)
+      let tick = Date.now()
+      const admission = new WorkflowAdmission(coordinator, shared, { now: () => tick++ })
       let checked = 0
       const assignment = await admission.admitRoot('read', member, parseChannelId('71000000-0000-4000-8000-000000000101'), () => { checked++ })
       expect(checked).toBe(1)

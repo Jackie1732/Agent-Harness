@@ -23,12 +23,13 @@ export function workflowReport(session: SessionHandle, slots: readonly HostSlot[
   return Object.freeze({ workflowKey: definition.workflowKey, desired: state.desired,
     state: failed ? 'failed' as const : completed ? 'completed' as const : state.desired === 'paused' ? 'paused' as const : resumed ? 'running' as const : 'suspended' as const,
     settled: completed || failed, closed: (completed || failed) && closed, budget: definition.budget, reservedBudget: state.reservedBudget,
-    counts: { nodes: nodes.length, assignments: state.assignments.length, proposals: state.proposals.length, reviews: state.reviews.length,
+    counts: { nodes: nodes.length, assignments: state.assignments.length, proposals: state.proposals.length, reviews: state.reviews.length, progress: state.progress.length,
       accepted: state.decisions.filter(item => item.payload.outcome === 'accepted' && state.assignments.some(work => work.stored.eventId === item.payload.assignment.eventId && work.payload.kind === 'production')).length,
       failed: state.decisions.filter(item => item.payload.outcome === 'rejected' && state.assignments.some(work => work.stored.eventId === item.payload.assignment.eventId && work.payload.kind === 'production')).length,
       pendingInbox: communication.inbox.filter(item => item.status === 'pending').length,
       pendingOutbox: communication.outbox.filter(item => item.status === 'pending').length },
+    progress: Object.freeze(state.progress.slice(0, maximum)),
     nodes: Object.freeze(nodes.slice(0, maximum)), assignments: Object.freeze(state.assignments.slice(0, maximum).map(item => ({
       ref: { address: session.header.address, eventId: item.stored.eventId }, nodeKey: item.payload.nodeKey, memberKey: item.payload.memberKey, attempt: item.payload.attempt }))),
-    truncated: nodes.length > maximum || state.assignments.length > maximum })
+    truncated: nodes.length > maximum || state.assignments.length > maximum || state.progress.length > maximum })
 }

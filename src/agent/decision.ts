@@ -36,6 +36,7 @@ export function classifyAgentModel(
           case 'agent_answer_subagent': if (spec.protocolVersion !== 1) route = 'answer-subagent'; break
           case 'agent_ask_parent': if (spec.protocolVersion !== 1) route = 'ask-parent'; break
           case 'agent_report_progress': if (spec.protocolVersion !== 1) route = 'progress'; break
+          case 'agent_report_work_progress': if (spec.protocolVersion === 3) route = 'work-progress'; break
         }
       }
     }

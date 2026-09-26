@@ -1,4 +1,6 @@
-import { array, eventId, exact, record } from '../agent/validation.js'
+import { array, eventId, exact, record, timestamp } from '../agent/validation.js'
+import { actionReference } from '../agent/input-codec.js'
+import type { AgentActionReference } from '../agent/contract.js'
 import type { JsonObject } from '../foundation/json.js'
 import { decodeSendCommand } from '../communication/send-command.js'
 import type { MessageSendCommand } from '../communication/send-command.js'
@@ -15,12 +17,18 @@ import { invalidHistory } from './errors.js'
 
 export type WorkflowProtocolRecorded = {
   readonly assignment: WorkflowEventRef
-  readonly source: SessionEventId
+  readonly source: SessionEventId | { readonly action: AgentActionReference; readonly observedAt: string }
   readonly commands: readonly MessageSendCommand[]
 }
 function decode(value: import('../foundation/json.js').JsonValue): WorkflowProtocolRecorded & JsonObject {
   const p = record(value); exact(p, ['assignment', 'source', 'commands'])
-  return { assignment: workflowReference(p.assignment), source: eventId(p.source), commands: array(p.commands, 128).map(decodeSendCommand) }
+  let source: WorkflowProtocolRecorded['source']
+  if (typeof p.source === 'string') source = eventId(p.source)
+  else {
+    const value = record(p.source); exact(value, ['action', 'observedAt'])
+    source = { action: actionReference(value.action), observedAt: timestamp(value.observedAt) }
+  }
+  return { assignment: workflowReference(p.assignment), source, commands: array(p.commands, 128).map(decodeSendCommand) }
 }
 export const workflowProtocolRecordedEvent = createDurableEventDefinition({ type: 'workflow/protocol-recorded', payloadVersion: 1, ignorable: false, decode })
 export const workProtocolRecordedEvent = createDurableEventDefinition({ type: 'work/protocol-recorded', payloadVersion: 1, ignorable: false, decode })
@@ -74,8 +82,12 @@ export function workflowSourceCommands(sources: ReadonlyMap<SessionEventId, Comm
 export function validateWorkflowProtocol(sources: ReadonlyMap<SessionEventId, CommittedSessionEvent>, event: CommittedSessionEvent): void {
   const p = decode(event.payload)
   if (event.stored.payloadVersion !== 1 || event.stored.ignorable === true || !sameWorkflowValue(p, event.payload)
-    || !sameWorkflowValue(p, workflowSourceCommands(sources, p.source))
-    || [...sources.values()].some(item => item.stored.type === event.stored.type && decode(item.payload).source === p.source)) invalidHistory('protocol-command-source')
+    || [...sources.values()].some(item => item.stored.type === event.stored.type && sameWorkflowValue(decode(item.payload).source, p.source))) invalidHistory('protocol-command-source')
+  if (typeof p.source !== 'string') {
+    if (event.stored.type !== workProtocolRecordedEvent.type) invalidHistory('protocol-action-owner')
+    return
+  }
+  if (!sameWorkflowValue(p, workflowSourceCommands(sources, p.source))) invalidHistory('protocol-command-source')
   const source = sources.get(p.source)!
   const coordinator = source.stored.type === workflowAssignmentCommittedEvent.type || source.stored.type === workflowDecisionCommittedEvent.type
   if (event.stored.type !== (coordinator ? workflowProtocolRecordedEvent.type : workProtocolRecordedEvent.type)) invalidHistory('protocol-source-owner')

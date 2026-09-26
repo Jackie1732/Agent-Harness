@@ -1,4 +1,5 @@
 import type { SubagentActionExecutor } from '../subagent/action-port.js'
+import type { AgentNativeActionExecutor } from './native-action-port.js'
 import type { Scope } from '../extension/types.js'
 import type { Clock } from '../foundation/clock.js'
 import type { SessionHandle } from '../session/session-handle.js'
@@ -17,6 +18,7 @@ import type { agentExecutionEvents } from './session-events.js'
 /** Runners/Context and a lazily attached Mailbox are owned; supplied Mailboxes, Service and Session remain borrowed. */
 export interface SessionAgentOptions {
   readonly subagentActions?: SubagentActionExecutor
+  readonly workActions?: AgentNativeActionExecutor
   readonly session: SessionHandle
   readonly model: SessionModelRunner
   readonly context: SessionContext

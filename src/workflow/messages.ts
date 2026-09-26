@@ -4,6 +4,7 @@ import { createMessageDefinition } from '../communication/message-catalog.js'
 import { decodeWorkAssignmentMessage, workflowReference } from './work-binding.js'
 import { decodeWorkflowProposalMessage } from './result-events.js'
 import { workflowDecisionCommittedEvent } from './coordinator-events.js'
+import { workflowProgressMessage } from './progress.js'
 
 export const workflowAssignmentMessage = createMessageDefinition({ type: 'workflow/assignment', payloadVersion: 1,
   decode: value => decodeWorkAssignmentMessage(value) as ReturnType<typeof decodeWorkAssignmentMessage> & JsonObject })
@@ -23,4 +24,4 @@ export const workflowDecisionMessage = createMessageDefinition({ type: 'workflow
   } })
 
 export const workflowMessageDefinitions = [workflowAssignmentMessage, workflowAssignmentAcceptedMessage,
-  workflowProposalMessage, workflowReviewMessage, workflowDecisionMessage] as const
+  workflowProposalMessage, workflowReviewMessage, workflowDecisionMessage, workflowProgressMessage] as const

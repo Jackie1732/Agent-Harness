@@ -1,4 +1,5 @@
 import { recoverSubagentAction } from '../subagent/recover-action.js'
+import { recoverWorkAction } from '../workflow/recover-action.js'
 import { delegationClosure } from '../subagent/closure.js'
 import { agentRootUsageUnknown } from './root-policy.js'
 import { legacyAbandonLostClaim } from './input-ownership.js'
@@ -85,7 +86,7 @@ export async function recoverAgentSession(session: SessionHandle, options: Agent
       const outbox = projectCommunicationFacts(snapshot).outbox.find(item => item.sendKey !== undefined && referenceKey(item.sendKey) === referenceKey(pending.action))
       if (tool?.state === 'settled') result = { kind: 'tool', settled: tool.settled.stored.eventId }
       else if (outbox !== undefined) result = { kind: 'outbox', accepted: outbox.acceptedEventId }
-      else result = recoverSubagentAction(snapshot, state, pending.action, pending.intent) ?? result
+      else result = recoverWorkAction(snapshot, pending.action) ?? recoverSubagentAction(snapshot, state, pending.action, pending.intent) ?? result
       await journal.append(executionEvents.actionSettled, () => ({ action: pending.action, result })); writes++; continue
     }
     const command = state.commands.find(item => !state.actions.some(action => action.payload.action.eventId === item.stored.eventId))

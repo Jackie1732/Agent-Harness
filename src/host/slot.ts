@@ -34,6 +34,7 @@ export interface HostRuntimeBindings {
 
 export interface HostExecutionExtensions {
   readonly subagentActions?: SubagentActionExecutor
+  readonly workActions?: import('../agent/native-action-port.js').AgentNativeActionExecutor
   readonly workspaceAccess?: WorkspaceAccess
   readonly toolConfig?: import('./config.js').HostToolConfig
   readonly workspaceTools?: WorkspaceToolConfig
@@ -86,7 +87,7 @@ export async function createHostExecution(
   messageCatalog: MessageCatalog, clock: Clock, credentials: Readonly<Record<string, string>>,
   protectedRoots: readonly string[], bindings: HostRuntimeBindings, mailbox: SessionMailbox, extensions: HostExecutionExtensions = {},
 ): Promise<HostSlot> {
-  const { subagentActions, workspaceLease } = extensions
+  const { subagentActions, workActions, workspaceLease } = extensions
   const registry = new CapabilityRegistry()
   const resourcesKey = createCapabilityKey<SessionAgentOptions>('host.slot.resources')
   const agentKey = createCapabilityKey<SessionAgent>('host.slot.agent')
@@ -121,6 +122,7 @@ export async function createHostExecution(
       resources = { member, session, mailbox, dispatcher, provider, ...(tools === undefined ? {} : { tools }) }
       effect.provide(resourcesKey, { session, model, context, mailbox, messageCatalog, clock,
         ...(subagentActions === undefined ? {} : { subagentActions }),
+        ...(workActions === undefined ? {} : { workActions }),
         ...(tools === undefined ? {} : { tools: tools.runner }) })
     } })
     const consumer = registry.mount({ label: `agent:${member.agentKey}`, requires: [resourcesKey], provides: [agentKey], setup: async effect => {

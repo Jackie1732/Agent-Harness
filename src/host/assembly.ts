@@ -1,4 +1,5 @@
 import { HostWorkflows } from './workflows.js'
+import { SessionWorkActions } from '../workflow/actions.js'
 import { workflowMessageDefinitions } from '../workflow/messages.js'
 import { discoverHostDelegations } from './delegation-discovery.js'
 import { WorkspaceAuthority } from '../subagent/workspace.js'
@@ -129,6 +130,7 @@ export async function assembleHost(spec: ResolvedHostSpec, clock: Clock,
           validateHostMemberSession(session, spec.hostKey, member,
             { bindingVersion: spec.schemaVersion === 3 ? 2 : 1 })
           return await createHostSlot(session, member, service, catalog, clock, credentials, protectedRoots, bindings, { ...(subagents === undefined ? {} : { subagentActions: subagents.actions(member.agentKey, session) }),
+            ...(workflows.length === 0 ? {} : { workActions: new SessionWorkActions(session, clock) }),
             ...(member.tools.kind === 'none' || workspaces === undefined ? {} : { workspaceAccess: workspaces.staticAccess(member.tools.rootPath) }) })
         }), value => release(value))
         slotOwners.set(member.agentKey, lifetime)

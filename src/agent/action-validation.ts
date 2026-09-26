@@ -9,10 +9,14 @@ import { resolveAgentSend } from './command.js'
 import { invalidAgent } from './errors.js'
 import { rootPeerInputs } from './obligations.js'
 import { validateSubagentActionSource } from '../subagent/action-source.js'
+import { validateWorkActionResult } from '../workflow/actions.js'
 
 /** Durable success must prove the exact command and permitted task association. */
 export function validateAgentActionSource(state: AgentProjectionState, event: CommittedSessionEvent<AgentActionSettled>, intent: AgentActionIntent | null) {
   const result = event.payload.result
+  if (result.kind === 'protocol-accepted' && intent?.route === 'work-progress') {
+    validateWorkActionResult(state, event, intent); return
+  }
   if (result.kind === 'protocol-accepted' || result.kind === 'wait' && (result.descriptor.kind === 'delegation' || result.descriptor.kind === 'parent-answer')) {
     validateSubagentActionSource(state, event, intent); return
   }

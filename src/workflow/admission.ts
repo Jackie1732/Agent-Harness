@@ -83,9 +83,8 @@ export class WorkflowAdmission {
   async admitRoot(nodeKey: string, member: SessionHandle, channelId: ChannelId,
     authorize: () => void, baseline: WorkflowAssignment['workspaceBaseline'] = null): Promise<CommittedSessionEvent<WorkflowAssignment & JsonObject>> {
     authorize()
-    return this.#commit(member, state => {
+    return this.#commit(member, (state, observedAt) => {
       const definition = state.definition!
-      const observedAt = clockTimestamp(this.clock)
       const node = definition.payload.nodes.find(item => item.nodeKey === nodeKey)
       if (node === undefined || !state.ready.includes(nodeKey)) throw new WorkflowError('WORKFLOW_ADMISSION_BLOCKED', 'node-not-ready')
       const attempt = node.attempts[0]!
@@ -114,11 +113,11 @@ export class WorkflowAdmission {
   admitReview(production: SessionEventId, member: SessionHandle, channelId: ChannelId, authorize: () => void,
     nativeActions: readonly string[] = []): Promise<CommittedSessionEvent<WorkflowAssignment & JsonObject>> {
     authorize()
-    return this.#commit(member, state => workflowAssignmentCommittedEvent.decode(snapshotJson(reviewAssignment(state, production, member.header.address, channelId,
-      clockTimestamp(this.clock), { maxMessageBytes: this.capacity.limits.maxMessageBytes, maxRecordBytes: Math.min(this.coordinator.maxRecordBytes, member.maxRecordBytes) }, nativeActions))))
+    return this.#commit(member, (state, observedAt) => workflowAssignmentCommittedEvent.decode(snapshotJson(reviewAssignment(state, production, member.header.address, channelId,
+      observedAt, { maxMessageBytes: this.capacity.limits.maxMessageBytes, maxRecordBytes: Math.min(this.coordinator.maxRecordBytes, member.maxRecordBytes) }, nativeActions))))
   }
 
-  #commit(member: SessionHandle, derive: (state: WorkflowSnapshot) => WorkflowAssignment & JsonObject): Promise<CommittedSessionEvent<WorkflowAssignment & JsonObject>> {
+  #commit(member: SessionHandle, derive: (state: WorkflowSnapshot, observedAt: string) => WorkflowAssignment & JsonObject): Promise<CommittedSessionEvent<WorkflowAssignment & JsonObject>> {
     return this.capacity.run(async () => {
       for (let conflict = 0; ; conflict++) {
         if (this.#closed || this.#uncertain || this.coordinator.status !== 'open' || member.status !== 'open') blocked('admission-closed')
@@ -127,7 +126,7 @@ export class WorkflowAdmission {
         const definition = state.definition
         if (definition === null) throw new WorkflowError('WORKFLOW_ADMISSION_BLOCKED', 'definition-missing')
         const observedAt = clockTimestamp(this.clock)
-        const candidate = derive(state)
+        const candidate = derive(state, observedAt)
         this.#preview(snapshot, candidate, observedAt, member.maxRecordBytes)
         const quotas = this.#quotas(candidate)
         this.capacity.check(quotas, new Map([[this.coordinator.header.address, this.coordinator], [member.header.address, member]]))

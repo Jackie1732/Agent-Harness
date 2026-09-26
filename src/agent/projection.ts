@@ -1,4 +1,5 @@
 import { validateWorkflowProtocol, workProtocolRecordedEvent } from '../workflow/protocol.js'
+import { validateWorkActionProtocol } from '../workflow/actions.js'
 import { applyWorkResultEvent } from '../workflow/result-projection.js'
 import { workResultEventDefinitions } from '../workflow/result-events.js'
 import { applyWorkAssignmentAccepted, applyWorkAssignmentSettled } from '../workflow/work-projection.js'
@@ -144,7 +145,10 @@ export function foldAgentSession(snapshot: SessionSnapshot): AgentProjectionStat
     }
     else if (event.stored.type === workAssignmentAcceptedEvent.type) applyWorkAssignmentAccepted(state, event)
     else if (event.stored.type === workAssignmentSettledEvent.type) applyWorkAssignmentSettled(state, event)
-    else if (event.stored.type === workProtocolRecordedEvent.type) validateWorkflowProtocol(state.sources, event)
+    else if (event.stored.type === workProtocolRecordedEvent.type) {
+      validateWorkflowProtocol(state.sources, event)
+      validateWorkActionProtocol(state, event)
+    }
     else if (workResultEventDefinitions.some(definition => definition.type === event.stored.type)) {
       const definition = workResultEventDefinitions.find(definition => definition.type === event.stored.type)!
       if (event.stored.payloadVersion !== 1 || event.stored.ignorable === true || !equal(definition.decode(event.payload), event.payload)) invalidAgent('invalid-work-result')

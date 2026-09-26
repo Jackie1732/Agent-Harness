@@ -3,6 +3,7 @@ import { toolRequestedEvent, toolSettledEvent } from '../tool/session-events.js'
 import type { CommittedSessionEvent } from '../session/types.js'
 import type { AgentActionIntent, AgentEventPayloads } from './event-contract.js'
 import { actionBudget, emptyAgentBudget, reserveAgentBudget } from './budget.js'
+import { workProtocolRecordedEvent } from '../workflow/protocol.js'
 import { classifyAgentModel } from './decision.js'
 import { invalidAgent } from './errors.js'
 import { referenceKey } from './input-codec.js'
@@ -120,6 +121,11 @@ export function applyActionSettled(state: AgentProjectionState, event: Committed
       break
     }
     case 'not-started':
+      if ([...state.sources.values()].some(entry => {
+        if (entry.stored.type !== workProtocolRecordedEvent.type) return false
+        const source = workProtocolRecordedEvent.decode(entry.payload).source
+        return typeof source !== 'string' && equal(source.action, event.payload.action)
+      })) invalidAgent('not-started-has-work-intent')
       if ([...state.subagents.delegations.values()].some(item => item.payload.source.kind === 'model' && equal(item.payload.source.action, event.payload.action))
         || [...state.subagents.protocol.values()].some(item => item.payload.source.kind === 'action' && equal(item.payload.source.action, event.payload.action))) invalidAgent('not-started-has-delegation-intent')
       if (intent !== null && [...state.sources.values()].some(entry => entry.stored.type === toolRequestedEvent.type

@@ -21,6 +21,7 @@ export function nextWorkflowInbox(session: SessionHandle, mailbox: SessionMailbo
     if (role === 'coordinator') {
       const state = projectWorkflowSession(session.snapshot())
       const journal = new WorkflowJournal(session, clock)
+      if (item.envelope.type === 'workflow/progress') return () => mailbox.markProcessed(item.messageId)
       if (item.envelope.type === workflowAssignmentAcceptedMessage.type) {
         const message = workflowAssignmentAcceptedMessage.decode(item.envelope.payload)
         const work = state.assignments.find(entry => entry.stored.eventId === message.assignment.eventId)

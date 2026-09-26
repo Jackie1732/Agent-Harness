@@ -1,5 +1,6 @@
 import { ToolError } from '../tool/errors.js'
 import { SubagentError } from '../subagent/errors.js'
+import { WorkflowError } from '../workflow/errors.js'
 import type { AgentActionReference, AgentSendCommand } from './contract.js'
 import type { AgentActionIntent, AgentActionResult } from './event-contract.js'
 import type { AgentRuntime } from './runtime-contract.js'
@@ -74,6 +75,10 @@ export async function executeAgentAction(runtime: AgentRuntime, turnId: SessionE
   let parsed
   try {
     parsed = record(agentJson(JSON.parse(block.argumentsText)))
+    if (intent.route === 'work-progress') {
+      if (runtime.workActions === undefined) return { kind: 'not-started', reason: 'work-capability-unavailable' }
+      return await runtime.workActions.execute(turnId, action, intent, parsed, signal)
+    }
     if (['spawn', 'await-subagent', 'answer-subagent', 'ask-parent', 'progress'].includes(intent.route)) {
       if (runtime.subagentActions === undefined) return { kind: 'not-started', reason: 'subagent-capability-unavailable' }
       return await runtime.subagentActions.execute(turnId, action, intent, parsed, signal)
@@ -101,6 +106,12 @@ export async function executeAgentAction(runtime: AgentRuntime, turnId: SessionE
     if (state.turns.find(item => item.started.stored.eventId === ownerStep?.opened.payload.turn)?.root !== root.id) throw new Error('watched-outbox-not-owned')
     return waitResult(runtime, { ...common, kind: 'reply', messageId, outboxEventId: accepted.acceptedEventId })
   } catch (error) {
+    if (error instanceof WorkflowError) {
+      if (error.code === 'WORKFLOW_COMMIT_UNKNOWN') throw new AgentError('AGENT_COMMIT_UNKNOWN', 'work-commit-unknown')
+      if (error.code === 'WORKFLOW_ADMISSION_BLOCKED' || error.code === 'WORKFLOW_RESULT_INVALID') return { kind: 'not-started', reason: error.message }
+      throw error
+    }
+    if (intent.route === 'work-progress' && !(error instanceof AgentError) && !(error instanceof SyntaxError)) throw error
     if (error instanceof SubagentError && error.code === 'SUBAGENT_COMMIT_UNKNOWN') throw new AgentError('AGENT_COMMIT_UNKNOWN', 'subagent-commit-unknown')
     if (error instanceof AgentError && ['AGENT_COMMIT_UNKNOWN', 'AGENT_WRITE_FAILED'].includes(error.code)) throw error
     return { kind: 'not-started', reason: error instanceof SubagentError ? error.message : 'native-arguments-invalid' }

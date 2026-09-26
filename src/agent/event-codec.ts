@@ -74,7 +74,7 @@ export function decodeStepDecided(value: unknown, version: 1 | 2 | 3 = 1): Agent
     const action = record(value); exact(action, ['source', 'route'])
     const source = record(action.source); exact(source, ['invocationId', 'outputBlockIndex'])
     parseModelInvocationId(text(source.invocationId)); integer(source.outputBlockIndex)
-    choice(action.route, ['tool', 'send', 'reply', 'wait', 'ask', 'invalid', ...(version !== 1 ? ['spawn', 'await-subagent', 'answer-subagent', 'ask-parent', 'progress'] : [])])
+    choice(action.route, ['tool', 'send', 'reply', 'wait', 'ask', 'invalid', ...(version !== 1 ? ['spawn', 'await-subagent', 'answer-subagent', 'ask-parent', 'progress'] : []), ...(version === 3 ? ['work-progress'] : [])])
   })
   flag(input.admitted); decodeAgentBudget(input.reservation); integer(input.reassemblies)
   return input as AgentEventPayloads['step-decided']
