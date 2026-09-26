@@ -1,3 +1,4 @@
+import { WorkflowChannels } from './workflow-channels.js'
 import { DelegationChannels } from './delegation-channels.js'
 import { ProtocolCapacity } from './protocol-capacity.js'
 import type { DelegationChannelLease } from './delegation-channels.js'
@@ -42,6 +43,7 @@ type ServiceStatus = 'active' | 'disposing' | 'disposed'
 
 /** Owns Session attachment, private receiver registration, and Dispatcher identity. */
 export class CommunicationService {
+  readonly workflowChannels = new WorkflowChannels()
   readonly protocolCapacity: ProtocolCapacity
   readonly delegationChannels: DelegationChannels
   readonly #directory: SessionDirectory
@@ -127,6 +129,7 @@ export class CommunicationService {
       const mailbox = new SessionMailboxImpl({
         handle,
         channels: this.delegationChannels,
+        workflowChannels: this.workflowChannels,
         catalog: options.catalog,
         policy,
         limits: this.#limits,

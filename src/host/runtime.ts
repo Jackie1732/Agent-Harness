@@ -1,3 +1,4 @@
+import { AgentJournal } from '../agent/journal.js'
 import { bindParentSubagents } from './parent-subagents.js'
 import { HostObservationTasks } from './observation-tasks.js'
 import { projectAgentSession } from '../agent/projection.js'
@@ -41,7 +42,7 @@ class HostRuntime {
   readonly #timer: HostTimer
   readonly #assembly: HostAssembly
   readonly #fingerprint: string
-  readonly #byKey: Map<string, HostSlot>
+  readonly #inputs: Map<string, AgentJournal>
   readonly #paused = new Set<string>()
   readonly #routingPaused = new Set<string>()
   readonly #offline = new Set<string>()
@@ -53,7 +54,7 @@ class HostRuntime {
   readonly #operations = new Set<Promise<unknown>>()
   readonly #observers = new HostObservationTasks()
   readonly #scheduler: HostSchedulerState = {
-    cursor: 0, protocolNext: true, laneOrder: ['delivery', 'maintenance', 'business'], memberCursors: { delivery: 0, maintenance: 0, business: 0 },
+    cursor: 0, protocolNext: true, protocolCursor: 0, laneOrder: ['delivery', 'maintenance', 'business'], memberCursors: { delivery: 0, maintenance: 0, business: 0 },
     faults: new Set(), stalled: new Map(), cooldowns: new Map(), observations: new HostObservations(),
   }
   #status: HostStatus = 'ready'
@@ -66,7 +67,7 @@ class HostRuntime {
   constructor(spec: ResolvedHostSpec, clock: Clock, timer: HostTimer, assembly: HostAssembly) {
     this.#spec = spec; this.#clock = clock; this.#timer = timer; this.#assembly = assembly
     this.#fingerprint = exportHostConfig(spec).fingerprint
-    this.#byKey = new Map(assembly.slots.map(slot => [slot.member.agentKey, slot]))
+    this.#inputs = new Map(assembly.local.map(({ member, session }) => [member.agentKey, new AgentJournal(session, member.spec.limits.maxJournalConflicts, clock)]))
     for (const key of assembly.subagents?.suspendedParents ?? []) this.#paused.add(key)
     for (const member of spec.members.filter(isLocalHostMember)) if (!member.enabled) {
       this.#offline.add(member.agentKey); this.#paused.add(member.agentKey)
@@ -88,15 +89,32 @@ class HostRuntime {
         if ([...hostTasks.getStore() ?? []].some(token => this.#tokens.has(token))) throw new HostError('HOST_REENTRANT_WAIT', 'parent-cannot-wait-on-own-business-lane')
       }, track: task => this.#track(task), wake: () => this.#assembly.wakeup.notify() })
   }
+  /** Bind operator access to one fixed coordinator without starting its driver. */
+  workflow(workflowKey: string) {
+    this.#assertReady()
+    const domain = this.#assembly.workflows
+    if (domain === undefined) throw new HostError('HOST_NOT_READY', 'workflows-disabled')
+    domain.report(workflowKey)
+    const control = (kind: 'pause' | 'resume', input: { readonly requestKey: string; readonly reason?: string }) => this.#track(async () => {
+      this.#assertReady()
+      const result = await domain.control(workflowKey, kind, input)
+      this.#assembly.wakeup.notify()
+      return result
+    })
+    return Object.freeze({ report: () => domain.report(workflowKey), readArtifact: (reference: unknown) => domain.readArtifact(workflowKey, reference),
+      pause: (input: { readonly requestKey: string; readonly reason?: string }) => control('pause', input),
+      resume: (input: { readonly requestKey: string; readonly reason?: string }) => control('resume', input) })
+  }
+
   delegationReport() {
     return this.#assembly.subagents?.report(this.#spec.scheduling.maxReportEntries) ?? { count: 0, unresolved: 0, blocked: 0, failed: 0, active: 0, nextDeadline: null, delegations: [], truncated: false }
   }
 
   /** Persist a user task without implicitly starting inference. */
   submitTask(agentKey: string, text: string, originLabel = 'host-user'): Promise<HostInputReceipt> {
-    const slot = this.#slot(agentKey)
+    this.#slot(agentKey)
     return this.#track(async () => {
-      const accepted = await slot.agent.submitInput({ kind: 'task', text, originLabel })
+      const accepted = await this.#inputs.get(agentKey)!.acceptInput({ kind: 'task', text, originLabel })
       this.#assembly.wakeup.notify()
       return Object.freeze({ agentKey, eventId: accepted.stored.eventId })
     })
@@ -130,7 +148,7 @@ class HostRuntime {
   /** Detach a mailbox after its accepted work settles; reattachment constructs fresh slot owners. */
   setMailboxOnline(agentKey: string, online: boolean, mode: HostShutdownMode = 'drain'): Promise<void> {
     this.#assertReady()
-    const slot = this.#byKey.get(agentKey)
+    const slot = this.#assembly.slots.find(slot => slot.member.agentKey === agentKey)
     if (!this.#assembly.local.some(entry => entry.member.agentKey === agentKey)) throw new HostError('HOST_NOT_READY', 'agent-slot-unavailable')
     if (this.#mailboxTransitions.has(agentKey)) throw new HostError('HOST_BUSY', 'mailbox-transition-active')
     if (online === !this.#offline.has(agentKey)) return Promise.resolve()
@@ -142,7 +160,6 @@ class HostRuntime {
         const index = slot === undefined ? -1 : this.#assembly.slots.indexOf(slot)
         if (index < 0) this.#assembly.slots.push(replacement)
         else this.#assembly.slots[index] = replacement
-        this.#byKey.set(agentKey, replacement)
         this.#offline.delete(agentKey); this.#scheduler.stalled.delete(agentKey)
         this.#scheduler.faults.delete(agentKey)
         this.#assembly.wakeup.notify()
@@ -195,6 +212,7 @@ class HostRuntime {
     if (this.#shutdownTask === undefined) {
       this.#status = 'stopping'; this.#shutdownMode = mode
       this.#assembly.subagents?.closeAdmission()
+      this.#assembly.workflows?.closeAdmission()
       this.#stoppingAt = this.#timer.now()
       const closingToken = Symbol('Host release')
       this.#tokens.add(closingToken)
@@ -268,7 +286,7 @@ class HostRuntime {
   }
   #slot(agentKey: string): HostSlot {
     this.#assertReady()
-    const slot = this.#byKey.get(agentKey)
+    const slot = this.#assembly.slots.find(slot => slot.member.agentKey === agentKey)
     if (slot === undefined) throw new HostError('HOST_NOT_READY', 'agent-slot-unavailable', { agentKey })
     return slot
   }

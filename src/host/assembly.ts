@@ -1,3 +1,5 @@
+import { HostWorkflows } from './workflows.js'
+import { workflowMessageDefinitions } from '../workflow/messages.js'
 import { discoverHostDelegations } from './delegation-discovery.js'
 import { WorkspaceAuthority } from '../subagent/workspace.js'
 import { readFile } from 'node:fs/promises'
@@ -33,7 +35,7 @@ import { discoverHostWorkflows } from './workflow-discovery.js'
 import type { CommunicationPolicy } from '../communication/types.js'
 
 const workflowProtocolPolicy: CommunicationPolicy = Object.freeze({
-  canSend: () => ({ kind: 'deny' as const, reasonCode: 'workflow-protocol-not-installed' }),
+  canSend: () => ({ kind: 'deny' as const, reasonCode: 'workflow-protocol-authority-required' }),
   canReceive: () => ({ kind: 'deny' as const, reasonCode: 'workflow-protocol-not-installed' }),
 })
 
@@ -102,7 +104,7 @@ export async function assembleHost(spec: ResolvedHostSpec, clock: Clock,
       const workspaces = spec.schemaVersion === 3 || spec.schemaVersion === 2 && spec.subagents.kind === 'enabled'
         ? await effect.apply('workspace authority',
           () => WorkspaceAuthority.create(workspaceResources, local.flatMap(({ member }) => member.tools.kind === 'none' ? [] : [member.tools.rootPath]), protectedRoots, clock), value => release(value)) : undefined
-      const catalog = compileHostMessageCatalog(spec.messages, spec.schemaVersion !== 1 && spec.subagents.kind === 'enabled' ? subagentMessageDefinitions : [])
+      const catalog = compileHostMessageCatalog(spec.messages, [...(spec.schemaVersion !== 1 && spec.subagents.kind === 'enabled' ? subagentMessageDefinitions : []), ...(workflows.length > 0 ? workflowMessageDefinitions : [])])
       const slots: HostSlot[] = []
       const protocolSlots: HostProtocolSlot[] = []
       const subagents = spec.schemaVersion !== 1 && spec.subagents.kind === 'enabled' ? new HostSubagents({
@@ -134,6 +136,9 @@ export async function assembleHost(spec: ResolvedHostSpec, clock: Clock,
       if (subagents !== undefined) await effect.apply('subagents', () => subagents, value => release(value))
       if (subagents !== undefined) await subagents.restore(discovered, local)
       for (const { member } of local) if (member.enabled) slots.push(await slotOwners.get(member.agentKey)!.open())
+      const workflowDomain = workflows.length === 0 ? undefined : await effect.apply('workflows',
+        () => new HostWorkflows(slots, protocolSlots.filter(slot => slot.member.agentKey.startsWith('workflow:')), service, clock, lock.record.instanceId), value => release(value))
+      await workflowDomain?.restore()
       const server = https !== undefined && tls !== undefined ? await effect.apply('HTTPS listener',
         () => createHttpsMessageServer({ directory, host: https.listen.host,
           port: https.listen.port,
@@ -141,7 +146,7 @@ export async function assembleHost(spec: ResolvedHostSpec, clock: Clock,
           peers: https.peers.map(peer => ({ hostKey: peer.hostKey,
             fingerprint256: peer.fingerprint256, senders: new Set(peer.sessionIds.map(id => formatSessionAddress(parseSessionId(id)))) })),
         }), value => release(value)) : undefined
-      return { lock, directory, server, slots, protocolSlots, wakeup, local, catalog, subagents,
+      return { lock, directory, server, slots, protocolSlots, wakeup, local, catalog, subagents, workflows: workflowDomain,
         reopen: async (agentKey: string) => {
           const lifetime = slotOwners.get(agentKey)
           if (lifetime === undefined) throw new HostError('HOST_NOT_READY', 'slot-unavailable')

@@ -1,3 +1,4 @@
+import type { AgentRunSelection } from './contract.js'
 import { subagentMessageDefinitions } from '../subagent/messages.js'
 import type { MessageCatalog } from '../communication/message-catalog.js'
 import { projectCommunicationFacts } from '../communication/projection.js'
@@ -33,6 +34,7 @@ export function inspectAgentReadiness(
   snapshot: SessionSnapshot,
   catalog: MessageCatalog,
   observedAt: string,
+  selection: AgentRunSelection = { kind: 'ordinary' },
 ): AgentReadiness {
   if (!Number.isFinite(Date.parse(observedAt)) || new Date(observedAt).toISOString() !== observedAt) {
     throw new AgentError('AGENT_INPUT_INVALID', 'readiness-observed-at')
@@ -63,7 +65,7 @@ export function inspectAgentReadiness(
   const pendingMaintenance = pendingControls + pendingReceipts + actionableWaits + dueRoots
   let runnableInputs = 0
   let capacityBlocked = false
-  try { selectAgentInput(state, catalog); runnableInputs = runnableAgentInputs(state, catalog).length } catch (error) {
+  try { selectAgentInput(state, catalog, selection); runnableInputs = runnableAgentInputs(state, catalog, selection).length } catch (error) {
     if (!(error instanceof AgentError) || error.code !== 'AGENT_LIMIT_EXCEEDED') throw error
     capacityBlocked = true
   }

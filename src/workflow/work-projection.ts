@@ -1,3 +1,6 @@
+import { workAssignmentSettledEvent } from './settlement-events.js'
+import { workflowDecisionMessage } from './messages.js'
+import { workProposalRecordedEvent } from './result-events.js'
 import { emptyAgentBudget, reserveAgentBudget } from '../agent/budget.js'
 import { invalidAgent } from '../agent/errors.js'
 import { inputKey } from '../agent/input-codec.js'
@@ -13,12 +16,13 @@ export function applyWorkAssignmentAccepted(state: AgentProjectionState, event: 
   if (event.stored.payloadVersion !== 1 || event.stored.ignorable) invalidAgent('work-accept-version')
   const accepted = workAssignmentAcceptedEvent.decode(event.payload)
   if (!sameWorkflowValue(accepted, event.payload) || !sameWorkflowValue(event.payload, event.stored.payload)) invalidAgent('work-accept-noncanonical')
+  if ([...state.inputs.values()].some(input => input.work !== undefined && sameWorkflowValue(input.work.assignment, accepted.assignment))) invalidAgent('duplicate-work-accept')
   const spec = requireSpec(state).payload
   if (spec.protocolVersion !== 3 || spec.workflow.kind !== 'participant'
     || state.openRun !== null || state.openRecovery !== null || state.closing !== null
     || [...state.roots.values()].some(root => root.outcome === null)
-    || [...state.inputs.values()].some(input => input.work !== undefined && input.status === 'queued')) invalidAgent('work-accept-not-admissible')
-  if ([...state.inputs.values()].some(input => input.work !== undefined && sameWorkflowValue(input.work.assignment, accepted.assignment))) invalidAgent('duplicate-work-accept')
+    || [...state.inputs.values()].some(input => input.work !== undefined && ![...state.sources.values()].some(item => item.stored.type === workAssignmentSettledEvent.type
+      && workAssignmentSettledEvent.decode(item.payload).accepted === input.reference.eventId))) invalidAgent('work-accept-not-admissible')
   const inbox = source(state, accepted.inbox, inboxAcceptedEvent)
   const { inbox: _inbox, ...message } = accepted
   const envelope = inbox.payload.envelope
@@ -44,4 +48,22 @@ export function applyWorkAssignmentAccepted(state: AgentProjectionState, event: 
 export function workAcceptanceForRoot(state: AgentProjectionState, rootId: import('../session/ids.js').SessionEventId) {
   const rootTurn = requireEntry(state.turns, rootId, 'work-root-turn')
   return requireEntry(state.inputs, inputKey(rootTurn.started.payload.input), 'work-root-input')
+}
+
+/** Close local work only after the exact coordinator decision reached this Inbox. */
+export function applyWorkAssignmentSettled(state: AgentProjectionState, event: CommittedSessionEvent): void {
+  const p = workAssignmentSettledEvent.decode(event.payload)
+  const binding = source(state, p.accepted, workAssignmentAcceptedEvent)
+  const inbox = source(state, p.inbox, inboxAcceptedEvent).payload.envelope
+  const decision = workflowDecisionMessage.decode(inbox.payload)
+  const proposal = [...state.sources.values()].find(item => item.stored.type === workProposalRecordedEvent.type
+    && workProposalRecordedEvent.decode(item.payload).accepted === p.accepted)
+  if (event.stored.payloadVersion !== 1 || proposal === undefined || inbox.type !== workflowDecisionMessage.type || inbox.payloadVersion !== 1
+    || inbox.sender !== binding.payload.assignment.address || inbox.recipient !== binding.payload.value.memberAddress
+    || inbox.channelId !== binding.payload.value.channelId || !sameWorkflowValue(p.assignment, binding.payload.assignment)
+    || !sameWorkflowValue(decision.assignment, p.assignment) || decision.value.outcome !== 'accepted'
+    || decision.value.proposal.eventId !== proposal.stored.eventId
+    || !sameWorkflowValue(decision.value.value, workProposalRecordedEvent.decode(proposal.payload).value)
+    || !sameWorkflowValue(decision.value.artifacts, workProposalRecordedEvent.decode(proposal.payload).artifacts)
+    || [...state.sources.values()].some(item => item.stored.type === event.stored.type && workAssignmentSettledEvent.decode(item.payload).accepted === p.accepted)) invalidAgent('work-settlement-source')
 }

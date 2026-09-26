@@ -22,6 +22,9 @@ import { createHostModelProvider } from './model-factory.js'
 import type { HostSlot } from './runtime-types.js'
 import { createHostTools } from './tool-factory.js'
 import { createHostCommunicationPolicy } from './communication-policy.js'
+import { HostSlotOwner } from './slot-owner.js'
+import type { AgentRunSelection } from '../agent/contract.js'
+import type { HostExecutionControl } from './runtime-types.js'
 
 /** Explicit programmatic bindings stay outside saved configuration and durable recipes. */
 export interface HostRuntimeBindings {
@@ -32,6 +35,7 @@ export interface HostRuntimeBindings {
 export interface HostExecutionExtensions {
   readonly subagentActions?: SubagentActionExecutor
   readonly workspaceAccess?: WorkspaceAccess
+  readonly toolConfig?: import('./config.js').HostToolConfig
   readonly childTools?: ChildToolConfig
   readonly workspaceLease?: WorkspaceLease
 }
@@ -46,7 +50,27 @@ export async function createHostSlot(
   try {
     const lease = await owner.run('member', async effect => {
       const mailbox = await effect.apply('protocol', () => service.attach(session, { catalog: messageCatalog, policy: createHostCommunicationPolicy(member) }), value => value.dispose())
-      return effect.apply('execution', () => createHostExecution(session, member, service, messageCatalog, clock, credentials, protectedRoots, bindings, mailbox, extensions), value => value.dispose())
+      let selected: AgentRunSelection = { kind: 'ordinary' }
+      let configured = extensions
+      let current: HostSlot | undefined
+      let generation = 0
+      const executions = await effect.apply('execution generations', () => new HostSlotOwner(member.agentKey,
+        () => createHostExecution(session, member, service, messageCatalog, clock, credentials, protectedRoots, bindings, mailbox, configured)), value => value.dispose())
+      const publish = async (): Promise<HostSlot> => {
+        current = await executions.open()
+        generation++
+        return Object.freeze({ ...current, selection: selected, executions: control, dispose: () => owner.dispose() })
+      }
+      const control: HostExecutionControl = {
+        get generation() { return generation },
+        async release() { await current?.dispose() },
+        async replace(selection, next) {
+          await current?.dispose()
+          selected = selection; configured = { ...extensions, ...next }
+          return publish()
+        },
+      }
+      return publish()
     })
     return Object.freeze({ ...lease.value, dispose: () => owner.dispose() })
   } catch (cause) {

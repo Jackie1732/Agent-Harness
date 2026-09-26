@@ -1,3 +1,4 @@
+import type { WorkflowChannels } from './workflow-channels.js'
 import type { DelegationChannelLease, DelegationChannels } from './delegation-channels.js'
 import { systemClock } from '../foundation/clock.js'
 import type { Clock, JsonValue } from '../foundation/index.js'
@@ -72,6 +73,7 @@ export interface SessionMailbox {
 /** Dependencies supplied only by Communication Service attachment. */
 export interface SessionMailboxOptions {
   readonly channels?: DelegationChannels
+  readonly workflowChannels?: WorkflowChannels
   readonly handle: SessionHandle
   readonly catalog: MessageCatalog
   readonly policy: CommunicationPolicy
@@ -118,6 +120,7 @@ export class SessionMailboxImpl implements SessionMailbox, DirectoryReceiver {
     const identitySource = options.identitySource ?? systemCommunicationIdentitySource
     const journalOptions = {
       ...(options.channels === undefined ? {} : { channels: options.channels }),
+      ...(options.workflowChannels === undefined ? {} : { workflowChannels: options.workflowChannels }),
       handle: this.#handle,
       catalog: this.#catalog,
       policy: options.policy,

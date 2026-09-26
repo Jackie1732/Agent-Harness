@@ -1,6 +1,6 @@
 /** Invalid workflow definition or incompatible persisted workflow history. */
 export class WorkflowError extends Error {
-  constructor(readonly code: 'WORKFLOW_DEFINITION_INVALID' | 'WORKFLOW_HISTORY_INVALID' | 'WORKFLOW_ADMISSION_BLOCKED' | 'WORKFLOW_COMMIT_UNKNOWN', reason: string) {
+  constructor(readonly code: 'WORKFLOW_DEFINITION_INVALID' | 'WORKFLOW_HISTORY_INVALID' | 'WORKFLOW_ADMISSION_BLOCKED' | 'WORKFLOW_COMMIT_UNKNOWN' | 'WORKFLOW_RESULT_INVALID', reason: string) {
     super(reason)
     this.name = 'WorkflowError'
   }

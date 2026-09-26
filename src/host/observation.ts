@@ -18,6 +18,6 @@ export class HostObservations {
 }
 
 function observe(slot: HostSlot, now: number) {
-  return { readiness: slot.agent.readiness(new Date(now).toISOString()), agent: slot.agent.report(), roots: slot.agent.snapshot().roots,
+  return { readiness: slot.agent.readiness(new Date(now).toISOString(), slot.selection), agent: slot.agent.report(), roots: slot.agent.snapshot().roots,
     communication: projectCommunicationFacts(slot.session.snapshot()) }
 }

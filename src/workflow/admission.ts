@@ -1,3 +1,6 @@
+import { assertWorkflowMessageFits } from './message-budget.js'
+import { workflowSourceCommands } from './protocol.js'
+import { workflowAssignmentClosed } from './closure.js'
 import { clockTimestamp } from '../foundation/clock.js'
 import type { Clock } from '../foundation/clock.js'
 import { snapshotJson } from '../foundation/json.js'
@@ -52,6 +55,12 @@ export class WorkflowAdmission {
 
   constructor(readonly coordinator: SessionHandle, readonly capacity: ProtocolCapacity, readonly clock: Clock) {}
 
+  retire(assignment: SessionEventId, member: SessionHandle): void {
+    if (!workflowAssignmentClosed(this.coordinator, member, assignment)) blocked('assignment-still-open')
+    const lease = this.#leases.get(assignment)
+    if (lease !== undefined) { this.capacity.retire(lease); this.#leases.delete(assignment) }
+  }
+
   closeAdmission(): void { this.#closed = true }
 
   /** Restore committed reservations before mailboxes admit ordinary traffic. */
@@ -85,7 +94,7 @@ export class WorkflowAdmission {
         if (attempt.workspace.kind !== 'none') blocked('workspace-lease-required')
         const memberRecord = definition.payload.roster.find(item => item.memberKey === node.executor)
         if (memberRecord?.address !== member.header.address) blocked('member-not-bound')
-        const selected = resolveWorkflowNode(node, new Map(), definition.payload)
+        const selected = resolveWorkflowNode(node, new Map(state.upstream.map(item => [item.nodeKey, item.state])),  definition.payload)
         if (selected.kind !== 'ready') throw new WorkflowError('WORKFLOW_ADMISSION_BLOCKED', 'node-not-ready')
         const observedAt = clockTimestamp(this.clock)
         const deadlineMs = Math.min(Date.parse(definition.payload.deadline), Date.parse(observedAt) + attempt.durationMs)
@@ -93,13 +102,15 @@ export class WorkflowAdmission {
         const candidate = workflowAssignmentCommittedEvent.decode(snapshotJson({
           definition: definition.stored.eventId, nodeKey, attempt: 1, kind: 'production',
           memberKey: node.executor, memberAddress: member.header.address, channelId,
-          inputs: selected.inputs, sourceAccepted: [], effectiveAllowance: attempt.workerGrant,
+          inputs: selected.inputs, sourceAccepted: state.decisions.filter(item => node.inputs.some(input => input.source.kind === 'accepted'
+            && state.assignments.find(assignment => assignment.stored.eventId === item.payload.assignment.eventId)?.payload.nodeKey === input.source.nodeKey))
+            .map(item => ({ address: definition.payload.coordinator, eventId: item.stored.eventId })), effectiveAllowance: attempt.workerGrant,
           reviewerReservations: attempt.reviewerGrants, toolNames: attempt.toolNames,
           nativeActions: attempt.nativeActions, workspace: attempt.workspace, workspaceBaseline: null,
           protocolReserve: workflowAssignmentMailboxDemand(definition.payload, 'production'),
           deadline: new Date(deadlineMs).toISOString(), acceptance: node.acceptance,
         }))
-        this.#preview(snapshot, candidate, observedAt)
+        this.#preview(snapshot, candidate, observedAt, member.maxRecordBytes)
         const quotas = this.#quotas(candidate)
         this.capacity.check(quotas, new Map([[this.coordinator.header.address, this.coordinator], [member.header.address, member]]))
         try {
@@ -119,13 +130,17 @@ export class WorkflowAdmission {
     })
   }
 
-  #preview(snapshot: SessionSnapshot, payload: WorkflowAssignment & JsonObject, recordedAt: string): void {
+  #preview(snapshot: SessionSnapshot, payload: WorkflowAssignment & JsonObject, recordedAt: string, memberRecordBytes: number): void {
     const sequence = sessionSequence(snapshot.localPosition + 1)
     const stored: StoredSessionEvent = { envelopeVersion: SESSION_ENVELOPE_VERSION, sessionId: snapshot.header.sessionId,
       eventId: formatSessionEventId(snapshot.header.sessionId, sequence), sequence, recordedAt,
       type: workflowAssignmentCommittedEvent.type, payloadVersion: 1, payload }
     if (encodeStoredSessionEvent(stored).byteLength > this.coordinator.maxRecordBytes) blocked('assignment-record-size')
     const event: CommittedSessionEvent<WorkflowAssignment & JsonObject> = { kind: 'known', stored, payload }
+    const sources = new Map(snapshot.history.at(-1)!.events.filter(item => item.kind === 'known').map(item => [item.stored.eventId, item]))
+    sources.set(event.stored.eventId, event)
+    for (const command of workflowSourceCommands(sources, event.stored.eventId).commands) assertWorkflowMessageFits(snapshot.header.sessionId, command,
+      { maxMessageBytes: this.capacity.limits.maxMessageBytes, maxRecordBytes: Math.min(this.coordinator.maxRecordBytes, memberRecordBytes) })
     const history = snapshot.history.map(segment => segment.header.sessionId === snapshot.header.sessionId
       ? extendLocalSegment(segment, event) : segment)
     try { projectWorkflowSession({ ...snapshot, localPosition: sessionLogPosition(sequence), history }) }

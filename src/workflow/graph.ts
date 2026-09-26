@@ -1,9 +1,8 @@
-import { Ajv2020 } from 'ajv/dist/2020.js'
+import { compileInlineValidator } from '../schema/inline-validator.js'
 import { budgetFields } from '../agent/budget.js'
 import type { AgentBudget } from '../agent/contract.js'
 import type { JsonObject, JsonValue } from '../foundation/json.js'
 import { boundedJson, JsonBoundaryError } from '../schema/bounded-json.js'
-import { validationData, validationSchema } from '../schema/validation-keys.js'
 import { invalidDefinition } from './errors.js'
 import { workflowProtocolDemand } from './protocol-capacity.js'
 import type { WorkflowDefinition, WorkflowNode } from './types.js'
@@ -121,10 +120,7 @@ export function resolveWorkflowNode(node: WorkflowNode, upstream: ReadonlyMap<st
     if (cause instanceof JsonBoundaryError) return { kind: 'failed', reason: 'input-limit' }
     throw cause
   }
-  const ajv = new Ajv2020({ strict: true, ownProperties: true, $data: false, allErrors: false,
-    coerceTypes: false, useDefaults: false, removeAdditional: false, validateSchema: true,
-    addUsedSchema: false, inlineRefs: false })
-  const valid = ajv.compile(validationSchema(node.inputSchema))
-  if (!valid(validationData(checked))) return { kind: 'failed', reason: 'input-schema' }
+  const valid = compileInlineValidator(node.inputSchema)
+  if (!valid(checked)) return { kind: 'failed', reason: 'input-schema' }
   return { kind: 'ready', inputs: checked as JsonObject }
 }

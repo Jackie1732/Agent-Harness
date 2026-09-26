@@ -82,12 +82,17 @@ export class OutboxAcceptance {
     const { handle, limits, policy } = this.options
     const decision = evaluatePolicyDecision(() => policy.canSend({ sender: handle.header.address, recipient: request.recipient,
       channelId: request.channelId, type: definition.type, payloadVersion: definition.payloadVersion }))
+    const workflow = definition.type.startsWith('workflow/')
     const protocol = definition.type.startsWith('subagent/')
+    if (workflow) {
+      if (keyed === undefined || this.options.workflowChannels === undefined) throw new CommunicationError('MESSAGE_SEND_FORBIDDEN', 'workflow-send-requires-durable-source')
+      this.options.workflowChannels.assertSend(handle, keyed.key, keyed.command)
+    }
     if (protocol) {
       if (lease === undefined || keyed === undefined || this.options.channels === undefined) throw new CommunicationError('MESSAGE_SEND_FORBIDDEN', 'reserved protocol requires a channel lease')
       this.options.channels.assertSend(lease, handle, keyed.key, keyed.command)
     }
-    if (!protocol && decision.kind === 'deny') throw new CommunicationError('MESSAGE_SEND_FORBIDDEN', 'outgoing communication policy denied the message', { details: { reasonCode: decision.reasonCode } })
+    if (!protocol && !workflow && decision.kind === 'deny') throw new CommunicationError('MESSAGE_SEND_FORBIDDEN', 'outgoing communication policy denied the message', { details: { reasonCode: decision.reasonCode } })
     const messageId = parseMessageId(this.options.identitySource.nextMessageId())
     const createdAt = clockTimestamp(this.options.clock)
     for (let attempt = 0; attempt <= limits.maxSendJournalConflicts; attempt++) {

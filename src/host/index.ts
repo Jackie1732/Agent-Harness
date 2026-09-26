@@ -1,3 +1,4 @@
+export { workflowMemberFingerprints } from './workflow-authority.js'
 export { HostError, hostErrorCodes } from './errors.js'
 export { exportHostConfig } from './config-export.js'
 export type { HostErrorCode } from './errors.js'

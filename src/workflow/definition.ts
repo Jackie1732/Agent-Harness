@@ -1,11 +1,10 @@
-import { Ajv2020 } from 'ajv/dist/2020.js'
+import { compileInlineValidator } from '../schema/inline-validator.js'
 import { decodeAgentBudget } from '../agent/budget.js'
 import type { AgentBudget } from '../agent/contract.js'
 import type { JsonObject, JsonValue } from '../foundation/json.js'
 import { snapshotJson } from '../foundation/json.js'
 import { boundedJson, JsonBoundaryError } from '../schema/bounded-json.js'
 import { InlineSchemaError, validateInlineSchema } from '../schema/inline.js'
-import { validationSchema } from '../schema/validation-keys.js'
 import { formatSessionAddress, parseSessionAddress } from '../session/ids.js'
 import { SessionError } from '../session/errors.js'
 import { workspaceRelativePath } from '../tool/workspace-path.js'
@@ -101,10 +100,7 @@ function schema(value: JsonValue | undefined, limits: WorkflowLimits): JsonObjec
   if (candidate.type !== 'object' || candidate.additionalProperties !== false) invalidDefinition('schema-open-object')
   boundedJson(candidate, { maxBytes: limits.maxDefinitionBytes, maxDepth: limits.maxSchemaDepth + 2, maxNodes: limits.maxSchemaNodes })
   try {
-    const ajv = new Ajv2020({ strict: true, ownProperties: true, $data: false, allErrors: false,
-      coerceTypes: false, useDefaults: false, removeAdditional: false, validateSchema: true,
-      addUsedSchema: false, inlineRefs: false })
-    ajv.compile(validationSchema(candidate))
+    compileInlineValidator(candidate)
   } catch { invalidDefinition('schema-compilation') }
   return candidate
 }

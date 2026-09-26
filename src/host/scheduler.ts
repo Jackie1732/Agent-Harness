@@ -16,6 +16,7 @@ type HostSchedulerLane = 'delivery' | 'maintenance' | 'business'
 export interface HostSchedulerState {
   cursor: number
   protocolNext: boolean
+  protocolCursor: number
   readonly laneOrder: HostSchedulerLane[]
   readonly memberCursors: Record<HostSchedulerLane, number>
   readonly faults: Set<string>
@@ -127,9 +128,11 @@ export async function runHostScheduler(input: HostSchedulerInput): Promise<HostR
         if (stopping || batches >= scheduling.maxBatchesPerRun) break
         if (lane === 'delivery' && delivery !== undefined || lane === 'maintenance' && maintenance !== undefined || lane === 'business' && business !== undefined) continue
         if (lane === 'maintenance' && state.protocolNext) {
-          const operation = input.assembly.subagents?.nextAction()
+          const domains = state.protocolCursor % 2 === 0 ? [input.assembly.subagents, business === undefined ? input.assembly.workflows : undefined]
+            : [business === undefined ? input.assembly.workflows : undefined, input.assembly.subagents]
+          const operation = domains[0]?.nextAction() ?? domains[1]?.nextAction()
           if (operation !== undefined) {
-            batches++; maintenanceRuns++; admitted = true; state.protocolNext = false
+            batches++; maintenanceRuns++; admitted = true; state.protocolNext = false; state.protocolCursor++
             maintenance = accepted.run(() => Promise.resolve().then(operation).then(() => undefined).finally(() => { maintenance = undefined }))
             state.laneOrder.splice(state.laneOrder.indexOf(lane), 1); state.laneOrder.push(lane)
             continue
@@ -174,9 +177,10 @@ export async function runHostScheduler(input: HostSchedulerInput): Promise<HostR
               batches++; maintenanceRuns++; admitted = true
               maintenance = accepted.run(() => work(execution, () => execution.agent.maintain({ signal: accepted.signal })).finally(() => { maintenance = undefined }))
             } else {
-              if (input.paused.has(slot.member.agentKey) || !readiness.canRun) continue
+              if (input.paused.has(slot.member.agentKey) || !readiness.canRun
+                || input.assembly.workflows !== undefined && (maintenance !== undefined || !input.assembly.workflows.businessAllowed(execution))) continue
               batches++; businessRuns++; admitted = true
-              business = accepted.run(() => work(execution, () => execution.agent.start({ signal: accepted.signal })).finally(() => { business = undefined }))
+              business = accepted.run(() => work(execution, () => execution.agent.start({ signal: accepted.signal, ...(execution.selection === undefined ? {} : { selection: execution.selection }) })).finally(() => { business = undefined }))
             }
           }
           state.memberCursors[lane] = (page.indexOf(slot) + 1) % page.length
@@ -191,7 +195,7 @@ export async function runHostScheduler(input: HostSchedulerInput): Promise<HostR
       if (tasks.length === 0) {
         if (stopping || batches >= scheduling.maxBatchesPerRun) break
         scannedWithoutWork = admitted ? 0 : scannedWithoutWork + count
-        if (scannedWithoutWork >= slots.length + input.assembly.protocolSlots.length && (input.assembly.subagents?.nextAction() === undefined)) break
+        if (scannedWithoutWork >= slots.length + input.assembly.protocolSlots.length && (input.assembly.subagents?.nextAction() === undefined) && input.assembly.workflows?.nextAction() === undefined) break
         continue
       }
       scannedWithoutWork = 0

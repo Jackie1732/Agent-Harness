@@ -10,7 +10,7 @@ import { workAssignmentAcceptedEvent, sameWorkflowValue } from '../workflow/work
 import { AgentError } from './errors.js'
 import { AgentJournal } from './journal.js'
 import { decodeAgentSpec, decodeSubagentAgentSpec, decodeWorkflowAgentSpec } from './spec-codec.js'
-import { decodeAgentInput, decodeAgentCommand, referenceKey, inputReference } from './input-codec.js'
+import { decodeAgentCommand, referenceKey, inputReference } from './input-codec.js'
 import { projectAgentSession } from './projection.js'
 import { projectAgentReport } from './report.js'
 import type { AgentRunReport } from './report.js'
@@ -66,15 +66,14 @@ export class SessionAgent {
   get failure() { return this.#failure }
   snapshot() { return projectAgentSession(this.#runtime.session.snapshot()) }
   report(): AgentRunReport { return projectAgentReport(this.#runtime.session.snapshot()) }
-  readiness(observedAt = clockTimestamp(this.#runtime.clock)) {
-    return inspectAgentReadiness(this.#runtime.session.snapshot(), this.#runtime.messageCatalog, observedAt)
+  readiness(observedAt = clockTimestamp(this.#runtime.clock), selection: AgentRunSelection = { kind: 'ordinary' }) {
+    return inspectAgentReadiness(this.#runtime.session.snapshot(), this.#runtime.messageCatalog, observedAt, selection)
   }
 
   /** Acceptance persists a copied input; it does not start or interrupt a Turn. */
   submitInput(value: AgentInput) {
     this.#accepting()
-    const input = decodeAgentInput(value)
-    return this.#track(this.#runtime.journal.append(events.agentInputAcceptedEvent, state => ({ spec: state.spec!.stored.eventId, input })))
+    return this.#track(this.#runtime.journal.acceptInput(value))
   }
 
   /** Drive bounded work. Concurrent calls on this instance join its current drive, with no new cancellation authority. */

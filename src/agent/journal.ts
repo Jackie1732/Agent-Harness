@@ -12,6 +12,9 @@ import { AgentError } from './errors.js'
 import { projectAgentSession } from './projection.js'
 import { legacyAgentSessionEventDefinitions } from './session-events.js'
 import type { AgentSessionSnapshot } from './state.js'
+import type { AgentInput } from './contract.js'
+import { decodeAgentInput } from './input-codec.js'
+import { agentInputAcceptedEvent } from './session-events.js'
 
 /** Conditional local writes only; callbacks cannot invoke providers or policy. */
 export class AgentJournal {
@@ -23,6 +26,12 @@ export class AgentJournal {
     if (!Number.isSafeInteger(conflicts) || conflicts < 0) throw new AgentError('AGENT_INPUT_INVALID', 'conflict-budget')
   }
   get faulted(): boolean { return this.#faulted || this.session.status !== 'open' }
+
+  /** Input acceptance survives replacement of Model and Tool execution resources. */
+  acceptInput(value: AgentInput) {
+    const input = decodeAgentInput(value)
+    return this.append(agentInputAcceptedEvent, state => ({ spec: state.spec!.stored.eventId, input }))
+  }
 
   async append<T extends JsonValue>(definition: DurableEventDefinition<T>, decide: (state: AgentSessionSnapshot, snapshot: SessionSnapshot) => NoInfer<T>): Promise<CommittedSessionEvent<T>> {
     for (let attempt = 0; attempt <= this.conflicts; attempt++) {

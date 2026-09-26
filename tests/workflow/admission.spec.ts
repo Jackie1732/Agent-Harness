@@ -16,8 +16,8 @@ function recipe() {
   return { ...base, limits: { ...base.limits, maxProtocolMessages: 12, maxQuestions: 0, maxIncomingQuestions: 0,
     maxGroups: 0, maxGroupRecipients: 0, maxIncomingGroupMessages: 0, maxProgress: 0 } }
 }
-function capacity(maxPending = 4) {
-  return new ProtocolCapacity({ maxMessageBytes: 4096, maxPendingInbox: maxPending, maxPendingOutbox: maxPending,
+function capacity(maxPending = 4, maxMessageBytes = 128 * 1024) {
+  return new ProtocolCapacity({ maxMessageBytes, maxPendingInbox: maxPending, maxPendingOutbox: maxPending,
     maxDeliveryAttempts: 3, maxAttemptsPerRun: 3, maxSendJournalConflicts: 4 })
 }
 
@@ -64,6 +64,8 @@ describe('Workflow CP-W admission', () => {
       const denied = new WorkflowAdmission(coordinator, capacity(), systemClock)
       await expect(denied.admitRoot('read', member, channel, () => { throw new Error('host-policy-denied') }))
         .rejects.toThrow('host-policy-denied')
+      const oversized = new WorkflowAdmission(coordinator, capacity(4, 4096), systemClock)
+      await expect(oversized.admitRoot('read', member, channel, () => undefined)).rejects.toThrow('workflow-message-bytes')
       const full = new WorkflowAdmission(coordinator, capacity(2), systemClock)
       await expect(full.admitRoot('read', member, channel, () => undefined)).rejects.toThrow('reservation exceeds capacity')
       expect(projectWorkflowSession(coordinator.snapshot()).assignments).toHaveLength(0)

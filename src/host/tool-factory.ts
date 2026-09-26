@@ -27,9 +27,9 @@ export async function createHostTools(
 ): Promise<HostToolResources | undefined> {
   const { workspaceAccess: access, childTools, workspaceLease } = extensions
   const child = childTools?.kind === 'workspace-text' ? childTools : undefined
-  if (member.tools.kind === 'none' && child === undefined) return undefined
+  if ((extensions.toolConfig ?? member.tools).kind === 'none' && child === undefined) return undefined
   const configured = child !== undefined && workspaceLease !== undefined ? { ...child, rootId: workspaceLease.request.resourceId, rootPath: workspaceLease.root.path,
-    protectedRoots: [], policy: { policyId: 'delegated-workspace', version: 1, decision: 'allow' as const, reasonCode: 'delegation-grant' } } : member.tools
+    protectedRoots: [], policy: { policyId: 'delegated-workspace', version: 1, decision: 'allow' as const, reasonCode: 'delegation-grant' } } : extensions.toolConfig ?? member.tools
   if (configured.kind === 'none') return undefined
   const owner = new EffectOwner(`tools:${member.agentKey}`)
   const policyLife = new AbortController()
