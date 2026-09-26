@@ -5,6 +5,7 @@ import type { JsonObject, JsonValue } from '../foundation/json.js'
 import { boundedJson, JsonBoundaryError } from '../schema/bounded-json.js'
 import { validationData, validationSchema } from '../schema/validation-keys.js'
 import { invalidDefinition } from './errors.js'
+import { workflowProtocolDemand } from './protocol-capacity.js'
 import type { WorkflowDefinition, WorkflowNode } from './types.js'
 
 /** Check role references, direct inputs, reviewer grants, and all dependency cycles. */
@@ -66,6 +67,7 @@ export function validateWorkflowGraph(definition: WorkflowDefinition): void {
     marks.set(keyValue, 2)
   }
   for (const item of definition.nodes) visit(item.nodeKey)
+  if (workflowProtocolDemand(definition).messages > definition.limits.maxProtocolMessages) invalidDefinition('protocol-message-limit')
 }
 
 export type WorkflowUpstreamState = { readonly kind: 'accepted'; readonly value: JsonValue }

@@ -96,4 +96,11 @@ describe('fixed workflow definition', () => {
       { ...read, output: { ...read.output, artifacts } }, base.nodes[1],
     ] })).toThrow('artifacts-array')
   })
+
+  it('rejects a definition whose finite protocol allowance cannot close all attempts', () => {
+    const base = workflowFixture()
+    expect(() => decodeWorkflowDefinition({ ...base, limits: { ...base.limits, maxProtocolMessages: 11,
+      maxQuestions: 0, maxIncomingQuestions: 0, maxGroups: 0, maxGroupRecipients: 0,
+      maxIncomingGroupMessages: 0, maxProgress: 0 } })).toThrow('protocol-message-limit')
+  })
 })

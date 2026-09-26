@@ -19,6 +19,7 @@ import { scriptedModelDescriptor } from '../model/providers/scripted.js'
 import { deepSeekModelDescriptor } from '../model/providers/deepseek.js'
 import { anthropicModelDescriptor } from '../model/providers/anthropic.js'
 import type { WorkflowDefinition } from '../workflow/types.js'
+import { workflowProtocolDemand } from '../workflow/protocol-capacity.js'
 import { HostError } from './errors.js'
 
 import type { HostIdentitySource, HostAgentSpecTemplate, HostModelConfig, HostToolConfig, HostMemberConfig, HostHttpsConfig, HostSchedulingConfig, HostCliConfig, HostConfig, ResolvedHostLocalMember, ResolvedHostMember, ResolvedHostSpec } from './config-types.js'
@@ -152,6 +153,16 @@ function decodeConfig(value: unknown, baseDirectory: string, limits: JsonValidat
       return (limits.maxDefinitions as number) < workflows.definitions.length
         || (limits.maxDiscoveryEntries as number) < members.filter(member => member.kind === 'local').length + workflows.definitions.length
     })) invalid('workflow-inventory-limit')
+    const held = new Map<string, { inbox: number; outbox: number }>()
+    for (const entry of workflows.definitions) {
+      const demand = workflowProtocolDemand(entry.definition as unknown as WorkflowDefinition)
+      for (const [address, value] of demand.mailboxes) {
+        const previous = held.get(address) ?? { inbox: 0, outbox: 0 }
+        held.set(address, { inbox: previous.inbox + value.inbox, outbox: previous.outbox + value.outbox })
+      }
+    }
+    if ([...held.values()].some(value => value.inbox > communication.maxPendingInbox
+      || value.outbox > communication.maxPendingOutbox)) invalid('workflow-mailbox-capacity')
   }
   if (messages.some(message => message.type.startsWith('subagent/') || message.type.startsWith('workflow/'))) invalid('reserved-message-type')
   return snapshotJson({ schemaVersion: input.schemaVersion, ...(subagents === undefined ? {} : { subagents }),

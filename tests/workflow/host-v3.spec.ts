@@ -19,7 +19,9 @@ import { workflowFixture } from './fixtures.js'
 function config(root: string): JsonObject {
   const host = twoMemberHostConfig(root)
   const base = workflowFixture()
-  const definition = { ...base, coordinator: null, roster: [
+  const definition = { ...base, coordinator: null, limits: { ...base.limits,
+    maxProtocolMessages: 12, maxQuestions: 0, maxIncomingQuestions: 0,
+    maxGroups: 0, maxGroupRecipients: 0, maxIncomingGroupMessages: 0, maxProgress: 0 }, roster: [
     { ...base.roster[0], memberKey: 'writer', address: 'ah-session:70000000-0000-4000-8000-000000000101' },
     { ...base.roster[1], memberKey: 'reviewer', address: 'ah-session:70000000-0000-4000-8000-000000000102' },
   ], nodes: [
@@ -78,6 +80,8 @@ describe('Host v3 workflow planning', () => {
       expect(() => decodeHostConfig({ ...base, workflows: { ...workflows, definitions: [{ ...entry,
         definition: { ...definition, roster: [{ ...roster[0], address: 'ah-session:87000000-0000-4000-8000-000000000099' }, roster[1]] },
       }] } }, root)).toThrow('workflow-roster-member')
+      expect(() => decodeHostConfig({ ...base, communication: { ...(base.communication as JsonObject), maxPendingInbox: 5 } }, root))
+        .toThrow('workflow-mailbox-capacity')
     } finally { await rm(root, { recursive: true, force: true }) }
   })
 
