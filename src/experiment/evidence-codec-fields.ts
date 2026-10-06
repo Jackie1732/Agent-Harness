@@ -2,6 +2,7 @@ import { formatSessionAddress, formatSessionEventId, parseSessionAddress, parseS
 import type { WorkflowEventRef } from '../workflow/types.js'
 import type { EvidenceFileDigest, EvidenceSessionCut } from './evidence-types.js'
 import type { MetricsCoverage } from './metrics-types.js'
+import type { ExperimentLimits } from './definition-types.js'
 import { experimentArray as array, experimentDigest as digest, experimentInteger as integer, experimentKeys as exact,
   experimentObject as object, experimentRelativePath as path, experimentText as text, invalidExperiment as invalid } from './parsing.js'
 
@@ -43,14 +44,14 @@ export function decodeEvidenceEventRef(value: unknown): WorkflowEventRef {
   if (event.sessionId !== sessionId) invalid('evidence-ref-identity')
   return { address: formatSessionAddress(sessionId), eventId: formatSessionEventId(sessionId, event.sequence) }
 }
-/** Decode coverage without promoting partial counts to complete observations. */
-export function decodeMetricsCoverage(value: unknown, maximum: number): MetricsCoverage {
+/** Session counts use the inventory limit; failure reasons also include per-event Context checks and missing selections. */
+export function decodeMetricsCoverage(value: unknown, limits: Pick<ExperimentLimits, 'maxSessionCount' | 'maxEvents'>): MetricsCoverage {
   const input = object(value, 'coverage'); exact(input, ['complete', 'expectedSessions', 'observedSessions', 'reasons'], 'coverage')
   const complete = evidenceBoolean(input.complete, 'coverage-complete')
   const expectedSessions = input.expectedSessions === null ? null : integer(input.expectedSessions, 'coverage-expected', 0)
   const observedSessions = integer(input.observedSessions, 'coverage-observed', 0)
-  const reasons = array(input.reasons, 'coverage-reasons', maximum + 1).map(value => text(value, 'coverage-reason', 4096))
-  if (observedSessions > maximum || expectedSessions !== null && expectedSessions > maximum
+  const reasons = array(input.reasons, 'coverage-reasons', limits.maxEvents + 2 * limits.maxSessionCount + 1).map(value => text(value, 'coverage-reason', 4096))
+  if (observedSessions > limits.maxSessionCount || expectedSessions !== null && expectedSessions > limits.maxSessionCount
     || complete && (expectedSessions === null || expectedSessions !== observedSessions || reasons.length !== 0)) invalid('coverage-observation-counts')
   return { complete, expectedSessions, observedSessions, reasons }
 }

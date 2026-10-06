@@ -13,7 +13,7 @@ export function decodeExperimentMetrics(value: unknown, limits: Pick<ExperimentL
   if (input.definitionVersion !== 'experiment-metrics/v1') invalid('metrics-version')
   const scope = choice(input.scope, ['unit-local/v1', 'historical-local/v1'], 'metrics-scope')
   choice(input.mode, ['fixture', 'live', 'historical'], 'metrics-mode')
-  decodeMetricsCoverage(input.coverage, limits.maxSessionCount)
+  decodeMetricsCoverage(input.coverage, limits)
   let samples = 0
   const basis = (value: unknown) => {
     const item = object(value, 'metric-basis'); exact(item, ['rule', 'cuts', 'evidenceRefs', 'matchedEvents', 'truncated'], 'metric-basis')
@@ -31,7 +31,7 @@ export function decodeExperimentMetrics(value: unknown, limits: Pick<ExperimentL
   }
   const common = (item: Record<string, unknown>, version: string) => {
     if (item.definitionVersion !== version || item.scope !== scope) invalid('metric-version-or-scope')
-    const coverage = decodeMetricsCoverage(item.coverage, limits.maxSessionCount)
+    const coverage = decodeMetricsCoverage(item.coverage, limits)
     basis(item.basis)
     return coverage
   }

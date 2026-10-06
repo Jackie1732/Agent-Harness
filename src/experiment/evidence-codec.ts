@@ -41,7 +41,7 @@ function decodeEvidence(value: unknown, limits: Pick<ExperimentLimits, 'maxEvide
     || sessions.reduce((sum, item) => sum + item.through, 0) > limits.maxEvents) invalid('evidence-source-budget')
   for (const session of sessions) if ((session.role === 'selected') !== ids.includes(session.sessionId)) invalid('evidence-cut-role')
   for (const selection of selections) if (selection.through !== null && !sessions.some(session => session.sessionId === selection.sessionId && selection.through! <= session.through)) invalid('evidence-selection-cut')
-  const coverage = decodeMetricsCoverage(input.coverage, limits.maxSessionCount)
+  const coverage = decodeMetricsCoverage(input.coverage, limits)
   if (coverage.observedSessions !== selections.filter(item => item.through !== null).length || coverage.complete && selections.some(item => item.through === null)) invalid('evidence-selection-coverage')
   if (input.target !== null) decodeTarget(input.target)
   const output = decodeOutput(input.output, limits.maxEvidenceBytes)

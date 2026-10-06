@@ -102,8 +102,7 @@ export async function collectExperimentEvidence(input: CollectExperimentEvidence
   return { evidence: { version: 1, digestDomains: { files: 'raw-sha256/v1', logs: 'framed-prefix-sha256/v1', metadata: 'sorted-json-sha256/v1' },
     source: { root, maxRecordBytes: input.recipe.storage.maxRecordBytes, maxLineageDepth: input.recipe.storage.maxLineageDepth },
     scope: input.scope, mode: input.mode, selectedSessionIds: selectedIds,
-    selections: selectedIds.map(sessionId => ({ sessionId, through: snapshots.find(snapshot => snapshot.header.sessionId === sessionId)?.localPosition
-      ?? selected.find(item => item.sessionId === sessionId)?.through ?? null })),
+    selections: selectedIds.map(sessionId => ({ sessionId, through: snapshots.find(snapshot => snapshot.header.sessionId === sessionId)?.localPosition ?? null })),
     sessions: [...cuts.values()].sort((a, b) => a.sessionId.localeCompare(b.sessionId)),
     coverage, target, output, metrics }, snapshots }
 }
