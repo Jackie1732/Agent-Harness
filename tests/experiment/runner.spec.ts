@@ -172,7 +172,7 @@ describe('independent experiment execution', () => {
         output: { kind: 'workflow-artifact', nodeKey: 'write', artifactName: 'report' } }] }] })
     const result = await runExperiment(plan)
     expect(result.units[0]!.sealed?.payload.outcome).toBe('completed')
-    const unit = plan.units[0]!, actual = JSON.parse(await readFile(join(plan.storage.controlRoot, `runs/${unit.unitKey}/recipe.json`), 'utf8'))
+    const unit = plan.units[0]!, actual = JSON.parse(await readFile(join(plan.storage.controlRoot, result.units[0]!.started!.payload.recipe.path), 'utf8'))
     expect(actual.workflows.definitions[0].definition.deadline).not.toBe('2030-01-01T00:00:00.000Z')
     const evidence = JSON.parse(await readFile(join(plan.storage.controlRoot, `runs/${unit.unitKey}/evidence.json`), 'utf8'))
     expect(evidence.output.reason).toBeUndefined()

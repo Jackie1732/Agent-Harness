@@ -39,7 +39,8 @@ export async function runExperimentUnit(plan: ExperimentPlan, unit: ExperimentUn
         : { ...record.definition, deadline: new Date(Date.now() + entry.durationMs).toISOString() } })) } } : unit.config
   const recipe = resolveHostConfig(decodeHostConfig(config, unit.hostRoot))
   const recipeDigest = experimentJsonDigest(recipe as unknown as JsonValue)
-  const recipeRef = await publishExperimentFile(storage.location.controlRoot, `runs/${unit.unitKey}/recipe.json`, canonicalJsonBytes(recipe as unknown as JsonValue), plan.evidenceLimits.maxRecipeBytes)
+  const recipeName = entry.kind === 'workflow' ? `recipe-${recipeDigest}.json` : 'recipe.json'
+  const recipeRef = await publishExperimentFile(storage.location.controlRoot, `runs/${unit.unitKey}/${recipeName}`, canonicalJsonBytes(recipe as unknown as JsonValue), plan.evidenceLimits.maxRecipeBytes)
   await storage.journal.startUnit({ unitKey: unit.unitKey, templateDigest: unit.recipeDigest, recipeDigest, recipe: recipeRef })
   const controller = new AbortController()
   let host: AtomicHost | undefined
@@ -133,7 +134,7 @@ export async function runExperimentUnit(plan: ExperimentPlan, unit: ExperimentUn
   } catch (cause) {
     outcome = stopped ?? 'failed'
     reason = cause instanceof ExperimentError ? cause.message : cause instanceof Error && 'code' in cause ? String(cause.code) : 'execution-error'
-    if (cause instanceof AggregateError) closure = 'unknown'
+    if (cause instanceof AggregateError || cause instanceof HostError && cause.code === 'HOST_CLEANUP_FAILED') closure = 'unknown'
   } finally {
     businessMs = performance.now() - budgetAt
     clearTimeout(deadline)
