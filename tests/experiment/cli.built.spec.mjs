@@ -1,0 +1,89 @@
+import assert from 'node:assert/strict'
+import { spawnSync } from 'node:child_process'
+import { mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import { test } from 'node:test'
+import { fileURLToPath } from 'node:url'
+import { createExperimentFixtureDefinition } from '../../examples/experiment-fixture.mjs'
+import { decodeExperimentPlan, createNormalizedCallFixtureReplay } from '../../dist/experiment/index.js'
+import { createDurableEventCatalog, MemorySessionBackend, modelSessionEventDefinitions, SessionModelRunner, SessionRepository } from '../../dist/index.js'
+
+const bin = fileURLToPath(new URL('../../dist/host/bin.js', import.meta.url))
+function cli(args, expected = 0) {
+  const result = spawnSync(process.execPath, [bin, 'experiment', ...args],
+    { encoding: 'utf8', timeout: 30_000, windowsHide: true, maxBuffer: 8 * 1024 * 1024 })
+  assert.equal(result.status, expected, `${result.stderr}\n${result.stdout}`)
+  return result.stdout.trim().startsWith('{') ? JSON.parse(result.stdout) : result.stdout
+}
+
+test('built experiment CLI preserves argument, missing-root, and Host version behavior', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'atomic-experiment-built-input-'))
+  try {
+    assert.match(cli(['--help']), /register-evidence/)
+    cli(['inspect', '--root', root, '--unknown'], 1)
+    const missing = join(root, 'missing')
+    assert.equal(cli(['inspect', '--root', missing], 2).kind, 'uninitialized')
+    assert.equal(cli(['verify', '--root', missing], 2).complete, false)
+    await assert.rejects(stat(missing), { code: 'ENOENT' })
+    const version = spawnSync(process.execPath, [bin, '--version'], { encoding: 'utf8', timeout: 30_000, windowsHide: true })
+    assert.equal(version.status, 0, version.stderr); assert.match(version.stdout, /0\.0\.0/)
+  } finally { await rm(root, { recursive: true, force: true }) }
+})
+
+test('built experiment CLI completes all ten commands with frozen, reproducible evidence', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'atomic-experiment-built-run-'))
+  try {
+    const definitionPath = join(root, 'definition.json'), planPath = join(root, 'plan.json')
+    await writeFile(definitionPath, JSON.stringify(await createExperimentFixtureDefinition(root)))
+    const planned = cli(['plan', '--definition', definitionPath, '--output', planPath])
+    const plan = decodeExperimentPlan(JSON.parse(await readFile(planPath, 'utf8')))
+    assert.equal(planned.planDigest, plan.planDigest)
+    assert.deepEqual(plan.units.map(unit => unit.variantKey), ['a', 'b', 'b', 'a'])
+    assert.equal(cli(['run', '--plan', planPath, '--mode', 'fixture']).finalized, true)
+    const journalPath = join(plan.storage.controlRoot, 'journal-store', 'sessions', plan.journalSessionId, 'events.log')
+    const readerBytes = await readFile(journalPath)
+    const inspected = cli(['inspect', '--root', plan.storage.controlRoot])
+    assert.equal(inspected.kind, 'initialized')
+    assert.equal(cli(['verify', '--root', plan.storage.controlRoot]).complete, true)
+    const comparison = cli(['compare', '--root', plan.storage.controlRoot, '--comparison', 'a-versus-b'])
+    assert.equal(comparison.status, 'primary-fixed')
+    assert.equal(comparison.summary.a.qualityCounts.pass, 2); assert.equal(comparison.summary.b.qualityCounts.fail, 2)
+    assert.deepEqual(await readFile(journalPath), readerBytes)
+    const first = plan.units[0], primaryPath = join(plan.storage.controlRoot, 'reports', 'primary.json'), primaryBytes = await readFile(primaryPath)
+    assert.equal(cli(['evaluate', '--root', plan.storage.controlRoot, '--unit', first.unitKey]).overall, 'pass')
+    assert.equal(cli(['report', '--root', plan.storage.controlRoot, '--report-key', 'built-review', '--kind', 'posthoc']).finalized, true)
+    const fixturePath = join(root, 'fixture.json')
+    assert.equal(cli(['export-fixture', '--root', plan.storage.controlRoot, '--unit', first.unitKey,
+      '--session', first.recipe.members[0].sessionId, '--output', fixturePath]).status, 'supported')
+    const fixture = JSON.parse(await readFile(fixturePath, 'utf8'))
+    assert.equal(fixture.format, 'normalized-call-fixture/v1'); assert.equal(fixture.entries.length, 1)
+    assert.match(JSON.stringify(fixture.entries[0].request), /The answer is 42\./)
+    const measurement = JSON.parse(await readFile(join(plan.storage.controlRoot, `runs/${first.unitKey}/measurement.json`), 'utf8'))
+    assert.equal(measurement.clock, 'performance.now')
+    assert.equal(measurement.environment.nodeVersion, process.version)
+    assert.equal(measurement.environment.sourceArtifactRelationship, 'unverified')
+    const replay = createNormalizedCallFixtureReplay({ fixture, providerId: 'built-normalized-replay',
+      streamLimits: first.recipe.members[0].model.streamLimits })
+    const repository = new SessionRepository({ backend: new MemorySessionBackend({ maxRecordBytes: plan.storage.maxRecordBytes }),
+      catalog: createDurableEventCatalog(modelSessionEventDefinitions), maxLineageDepth: 0 })
+    const session = await repository.create(), model = new SessionModelRunner({ session, provider: replay.provider,
+      limits: first.recipe.members[0].model.runnerLimits })
+    try {
+      const settled = await model.invoke(fixture.entries[0].request)
+      assert.equal(settled.payload.outcome, 'completed')
+      assert.deepEqual(settled.payload.result.blocks, fixture.entries[0].result.blocks)
+      assert.equal(settled.payload.result.usage.completeness, 'unknown')
+      assert.deepEqual(replay.finish('completed'), { total: 1, consumed: 1, remaining: [] })
+    } finally { await model.dispose(); await replay.provider.dispose(); await repository.dispose() }
+    const sourcePath = join(root, 'source.json')
+    const originalUnit = inspected.state.units.find(unit => unit.unitKey === first.unitKey)
+    await writeFile(sourcePath, JSON.stringify({ kind: 'reviewed-copy/v1', actionKey: 'built-copy',
+      originalDisposition: { address: plan.experimentId, eventId: originalUnit.sealed.stored.eventId },
+      originalEvidence: originalUnit.sealed.payload.evidence, recipeDigest: originalUnit.started.payload.recipeDigest, sourceRoot: first.hostRoot }))
+    assert.equal(cli(['register-evidence', '--root', plan.storage.controlRoot, '--unit', first.unitKey,
+      '--evidence-key', 'built-copy', '--evidence', join(plan.storage.controlRoot, `runs/${first.unitKey}/evidence.json`), '--source', sourcePath]).payload.evidenceKey, 'built-copy')
+    assert.equal(cli(['close', '--root', plan.storage.controlRoot, '--predecessor-stopped']).state.finalized.payload.reportKey, 'primary')
+    assert.deepEqual(await readFile(primaryPath), primaryBytes)
+  } finally { await rm(root, { recursive: true, force: true }) }
+})
