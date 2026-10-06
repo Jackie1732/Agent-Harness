@@ -4,10 +4,13 @@ import { canonicalJsonBytes } from '../foundation/canonical-json.js'
 import type { JsonValue } from '../foundation/json.js'
 import { snapshotJson } from '../foundation/json.js'
 import { formatSessionAddress, parseSessionId } from '../session/ids.js'
+import { parseChannelId } from '../communication/ids.js'
 import { decodeHostConfig, resolveHostConfig } from '../host/config.js'
 import { exportHostConfig } from '../host/config-export.js'
 import { decodeExperimentDefinition } from './definition.js'
-import type { ExperimentPlan } from './definition-types.js'
+import type { ExperimentPlan, FrozenExperimentCase } from './definition-types.js'
+import { relocateExperimentRecipe } from './recipe-relocation.js'
+import { experimentPathsOverlap } from './materials.js'
 import { experimentArray as array, experimentKeys as exact, experimentObject as object, experimentJsonDigest,
   experimentBytesDigest, experimentInteger as integer, experimentDigest as digest, experimentText as text, invalidExperiment as invalid } from './parsing.js'
 
@@ -40,6 +43,11 @@ export function decodeExperimentPlan(value: unknown): ExperimentPlan {
   const storage = object(item.storage, 'storage')
   if (!isAbsolute(text(storage.controlRoot, 'controlRoot')) || !isAbsolute(text(storage.workspaceRoot, 'workspaceRoot'))) invalid('plan-root-absolute')
   const definition = decodeExperimentDefinition({ ...base, dataset: { datasetKey: dataset.datasetKey, version: dataset.version, cases } }, text(storage.controlRoot, 'controlRoot'))
+  if (experimentPathsOverlap(definition.storage.controlRoot, definition.storage.workspaceRoot)) invalid('experiment-roots-overlap')
+  const frozenCases = dataset.cases as unknown as readonly FrozenExperimentCase[]
+  const inputBytes = frozenCases.reduce((sum, entry) => sum + Buffer.byteLength(entry.task)
+    + entry.materials.reduce((sum, material) => sum + material.byteLength, 0), 0)
+  if (inputBytes > definition.evidenceLimits.maxInputBytes) invalid('input-bytes-limit')
   for (const frozen of dataset.cases as readonly Record<string, JsonValue>[]) {
     const evaluator = definition.evaluators.find(entry => entry.evaluatorKey === frozen.primaryEvaluatorKey)!
     if (experimentJsonDigest(evaluator as unknown as JsonValue) !== frozen.evaluatorDigest) invalid('case-evaluator-digest')
@@ -54,6 +62,7 @@ export function decodeExperimentPlan(value: unknown): ExperimentPlan {
     return variants.map(variant => ({ caseKey: item.caseKey, variantKey: variant.variantKey, repetition }))
   }).flat())
   const sessionIds = new Set<string>([journalId])
+  const channelIds = new Set<string>()
   for (const [index, value] of units.entries()) {
     const unit = object(value, 'unit')
     exact(unit, ['unitKey', 'caseKey', 'variantKey', 'repetition', 'ordinal', 'hostRoot', 'workspaceRoot', 'config', 'recipe', 'recipeDigest', 'comparisonFingerprint', 'entry'], 'unit')
@@ -64,7 +73,8 @@ export function decodeExperimentPlan(value: unknown): ExperimentPlan {
     const unitKey = `unit-${experimentJsonDigest(tuple).slice(0, 32)}`
     if (unit.unitKey !== unitKey || unit.hostRoot !== join(definition.storage.controlRoot, 'runs', unitKey, 'host-store')
       || unit.workspaceRoot !== join(definition.storage.workspaceRoot, journalId, unitKey)) invalid('unit-allocation')
-    const binding = definition.variants.find(variant => variant.variantKey === unit.variantKey)!.bindings.find(binding => binding.caseKey === unit.caseKey)!
+    const variant = definition.variants.find(variant => variant.variantKey === unit.variantKey)!
+    const binding = variant.bindings.find(binding => binding.caseKey === unit.caseKey)!
     if (experimentJsonDigest(binding as unknown as JsonValue) !== experimentJsonDigest(unit.entry as JsonValue)) invalid('unit-binding')
     const config = decodeHostConfig(unit.config, text(unit.hostRoot, 'hostRoot'))
     const resolved = resolveHostConfig(config)
@@ -73,9 +83,29 @@ export function decodeExperimentPlan(value: unknown): ExperimentPlan {
     if (resolved.storage.root !== unit.hostRoot || exportHostConfig(resolved).fingerprint !== unit.comparisonFingerprint) invalid('unit-recipe-location-or-comparison')
     const identities = [...resolved.members.map(member => member.sessionId), ...(resolved.schemaVersion === 3 && resolved.workflows.kind === 'enabled'
       ? resolved.workflows.definitions.map(workflow => workflow.sessionId) : [])]
+    let sessionIndex = 0, channelIndex = 0
+    const expectedConfig = relocateExperimentRecipe(frozenCases.find(entry => entry.caseKey === unit.caseKey)!, variant,
+      { hostRoot: text(unit.hostRoot, 'hostRoot'), workspaceRoot: text(unit.workspaceRoot, 'workspaceRoot'), controlRoot: definition.storage.controlRoot },
+      definition.evidenceLimits, {
+        nextSessionId: () => {
+          const id = identities[sessionIndex++]
+          if (id === undefined) invalid('unit-recipe-template')
+          return parseSessionId(id)
+        },
+        nextChannelId: () => {
+          const channel = resolved.channels[channelIndex++]
+          if (channel === undefined) invalid('unit-recipe-template')
+          return parseChannelId(channel.channelId)
+        },
+      })
+    if (experimentJsonDigest(expectedConfig as unknown as JsonValue) !== experimentJsonDigest(config as unknown as JsonValue)) invalid('unit-recipe-template')
     for (const id of identities) {
       if (sessionIds.has(id)) invalid('unit-session-reused')
       sessionIds.add(id)
+    }
+    for (const channel of resolved.channels) {
+      if (channelIds.has(channel.channelId)) invalid('unit-channel-reused')
+      channelIds.add(channel.channelId)
     }
   }
   const { planDigest: _digest, ...unsigned } = item
