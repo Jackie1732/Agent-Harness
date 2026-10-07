@@ -112,9 +112,48 @@ test('built CLI classifies unavailable authenticated evidence separately from ex
       for (const command of commands) cli(command, 2)
       await writeFile(path, bytes)
     }
+    for (const [path, bytes] of [[evidencePath, evidenceBytes], [logPath, logBytes]]) {
+      await writeFile(path, Buffer.alloc(plan.evidenceLimits.maxEvidenceBytes + 1))
+      cli(['verify', '--root', plan.storage.controlRoot], 1)
+      cli(['report', '--root', plan.storage.controlRoot, '--report-key', 'over-budget', '--kind', 'posthoc'], 1)
+      await writeFile(path, bytes)
+    }
     await unlink(join(plan.storage.controlRoot, inspected.state.reports[0].payload.report.path))
     cli(['report', '--root', plan.storage.controlRoot, '--report-key', 'primary', '--kind', 'primary'], 2)
     assert.deepEqual(await readFile(journalPath), journalBytes)
     await assert.rejects(stat(join(root, 'unused.json')), { code: 'ENOENT' })
+  } finally { await rm(root, { recursive: true, force: true }) }
+})
+
+test('built close releases the controller marker left by a process exit after finalization', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'atomic-experiment-built-finalized-exit-'))
+  try {
+    const script = `
+      import { createExperimentFixtureDefinition } from ${JSON.stringify(new URL('../../examples/experiment-fixture.mjs', import.meta.url).href)}
+      import { planExperiment } from ${JSON.stringify(new URL('../../dist/experiment/definition.js', import.meta.url).href)}
+      import { createExperimentStorage } from ${JSON.stringify(new URL('../../dist/experiment/storage.js', import.meta.url).href)}
+      import { recordExperimentReport } from ${JSON.stringify(new URL('../../dist/experiment/report.js', import.meta.url).href)}
+      const definition = await createExperimentFixtureDefinition(process.argv[1])
+      const plan = await planExperiment({ ...definition, repetitions: 1 })
+      const storage = await createExperimentStorage(plan)
+      const report = await recordExperimentReport(storage, { reportKey: 'primary', kind: 'primary', finalize: true, unstartedReason: 'cancelled-before-start' })
+      process.stdout.write(JSON.stringify({ root: plan.storage.controlRoot, journalSessionId: plan.journalSessionId, token: storage.lockToken, report: report.reference, cut: report.state.position }))
+      process.exit(0)
+    `
+    const child = spawnSync(process.execPath, ['--input-type=module', '--eval', script, root],
+      { encoding: 'utf8', timeout: 30_000, windowsHide: true })
+    assert.equal(child.status, 0, child.stderr)
+    const info = JSON.parse(child.stdout), marker = join(info.root, '.atomic-harness.lock')
+    const markerBytes = await readFile(marker), reportBytes = await readFile(join(info.root, info.report.path))
+    const journal = join(info.root, 'journal-store', 'sessions', info.journalSessionId, 'events.log'), journalBytes = await readFile(journal)
+    cli(['close', '--root', info.root, '--predecessor-stopped', '--expected-token', 'wrong'], 1)
+    assert.deepEqual(await readFile(marker), markerBytes)
+    const args = ['close', '--root', info.root, '--predecessor-stopped', '--expected-token', info.token]
+    assert.equal(cli(args, 2).state.position, info.cut)
+    assert.equal(cli(args, 2).state.position, info.cut)
+    await assert.rejects(stat(marker), { code: 'ENOENT' })
+    assert.deepEqual(await readFile(journal), journalBytes)
+    assert.deepEqual(await readFile(join(info.root, info.report.path)), reportBytes)
+    assert.equal(cli(['report', '--root', info.root, '--report-key', 'after-exit', '--kind', 'posthoc'], 2).finalized, true)
   } finally { await rm(root, { recursive: true, force: true }) }
 })
