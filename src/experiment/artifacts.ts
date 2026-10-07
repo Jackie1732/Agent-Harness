@@ -9,9 +9,14 @@ import { ExperimentError } from './errors.js'
 
 /** Read only bytes authenticated by one committed file reference. */
 export async function readExperimentArtifact(root: string, reference: ExperimentFileRef, maximum: number): Promise<unknown> {
-  const bytes = await readExperimentFile(join(root, reference.path), maximum)
+  let bytes: Uint8Array
+  try { bytes = await readExperimentFile(join(root, reference.path), maximum) }
+  catch (cause) {
+    if ((cause as NodeJS.ErrnoException).code !== 'ENOENT') throw cause
+    throw new ExperimentError('EXPERIMENT_EVIDENCE_INCOMPLETE', 'referenced-artifact-missing')
+  }
   if (bytes.byteLength !== reference.byteLength || experimentBytesDigest(bytes) !== reference.sha256) {
-    throw new ExperimentError('EXPERIMENT_CONFLICT', 'referenced-artifact-changed')
+    throw new ExperimentError('EXPERIMENT_EVIDENCE_INCOMPLETE', 'referenced-artifact-changed')
   }
   return parseBoundedJson(new TextDecoder('utf-8', { fatal: true }).decode(bytes), { maxBytes: maximum, maxDepth: 64, maxNodes: maximum })
 }

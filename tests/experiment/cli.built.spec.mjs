@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import { spawnSync } from 'node:child_process'
-import { mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises'
+import { appendFile, mkdtemp, readFile, rm, stat, unlink, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { test } from 'node:test'
@@ -85,5 +85,36 @@ test('built experiment CLI completes all ten commands with frozen, reproducible 
       '--evidence-key', 'built-copy', '--evidence', join(plan.storage.controlRoot, `runs/${first.unitKey}/evidence.json`), '--source', sourcePath]).payload.evidenceKey, 'built-copy')
     assert.equal(cli(['close', '--root', plan.storage.controlRoot, '--predecessor-stopped']).state.finalized.payload.reportKey, 'primary')
     assert.deepEqual(await readFile(primaryPath), primaryBytes)
+  } finally { await rm(root, { recursive: true, force: true }) }
+})
+
+test('built CLI classifies unavailable authenticated evidence separately from execution errors', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'atomic-experiment-built-authentication-'))
+  try {
+    const definition = await createExperimentFixtureDefinition(root)
+    const definitionPath = join(root, 'definition.json'), planPath = join(root, 'plan.json')
+    await writeFile(definitionPath, JSON.stringify({ ...definition, repetitions: 1 }))
+    cli(['plan', '--definition', definitionPath, '--output', planPath])
+    const plan = decodeExperimentPlan(JSON.parse(await readFile(planPath, 'utf8')))
+    cli(['run', '--plan', planPath, '--mode', 'fixture'])
+    const inspected = cli(['inspect', '--root', plan.storage.controlRoot]), first = inspected.state.units[0]
+    const sessionId = plan.units[0].recipe.members[0].sessionId
+    const logPath = join(plan.units[0].hostRoot, 'sessions', sessionId, 'events.log'), logBytes = await readFile(logPath)
+    const evidencePath = join(plan.storage.controlRoot, first.sealed.payload.evidence.path), evidenceBytes = await readFile(evidencePath)
+    const journalPath = join(plan.storage.controlRoot, 'journal-store', 'sessions', plan.journalSessionId, 'events.log'), journalBytes = await readFile(journalPath)
+    const commands = [
+      ['compare', '--root', plan.storage.controlRoot, '--comparison', 'a-versus-b'],
+      ['evaluate', '--root', plan.storage.controlRoot, '--unit', first.unitKey],
+      ['export-fixture', '--root', plan.storage.controlRoot, '--unit', first.unitKey, '--session', sessionId, '--output', join(root, 'unused.json')],
+    ]
+    for (const [path, bytes] of [[logPath, logBytes], [evidencePath, evidenceBytes]]) {
+      await appendFile(path, Buffer.from([1]))
+      for (const command of commands) cli(command, 2)
+      await writeFile(path, bytes)
+    }
+    await unlink(join(plan.storage.controlRoot, inspected.state.reports[0].payload.report.path))
+    cli(['report', '--root', plan.storage.controlRoot, '--report-key', 'primary', '--kind', 'primary'], 2)
+    assert.deepEqual(await readFile(journalPath), journalBytes)
+    await assert.rejects(stat(join(root, 'unused.json')), { code: 'ENOENT' })
   } finally { await rm(root, { recursive: true, force: true }) }
 })

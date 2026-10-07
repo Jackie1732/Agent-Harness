@@ -32,7 +32,7 @@ export async function loadExperimentResultSet(root: string, state?: ExperimentJo
     try {
     const evidence = decodeExperimentEvidence(await readExperimentArtifact(root, unit.sealed.payload.evidence, plan.evidenceLimits.maxEvidenceBytes), plan.evidenceLimits)
     if (experimentJsonDigest(evidence as unknown as JsonValue) !== unit.sealed.payload.evidenceDigest) throw new ExperimentError('EXPERIMENT_CONFLICT', 'sealed-evidence-digest')
-    if ((await verifyExperimentEvidence(evidence, plan.evidenceLimits.maxEvidenceBytes)).length > 0) throw new ExperimentError('EXPERIMENT_CONFLICT', 'sealed-source-changed')
+    if ((await verifyExperimentEvidence(evidence, plan.evidenceLimits.maxEvidenceBytes)).length > 0) throw new ExperimentError('EXPERIMENT_EVIDENCE_INCOMPLETE', 'sealed-source-changed')
     const reference = unit.sealed.payload.measurement
     const measurement = reference === null ? null : { reference, value: decodeExperimentMeasurement(await readExperimentArtifact(root, reference, plan.evidenceLimits.maxReportBytes)) }
     observations.push({ unitKey: unit.unitKey, evidenceDigest: unit.sealed.payload.evidenceDigest, metrics: evidence.metrics, measurement })
@@ -78,7 +78,7 @@ export async function evaluateStoredExperimentUnit(storage: ExperimentStorage,
   if (evaluator === undefined) throw new ExperimentError('EXPERIMENT_INPUT_INVALID', 'evaluator-not-declared')
   const evidence = decodeExperimentEvidence(await readExperimentArtifact(storage.location.controlRoot, reference, plan.evidenceLimits.maxEvidenceBytes), plan.evidenceLimits)
   if (experimentJsonDigest(evidence as unknown as JsonValue) !== evidenceDigest) throw new ExperimentError('EXPERIMENT_CONFLICT', 'evaluation-evidence-digest')
-  if ((await verifyExperimentEvidence(evidence, plan.evidenceLimits.maxEvidenceBytes)).length > 0) throw new ExperimentError('EXPERIMENT_CONFLICT', 'evaluation-source-changed')
+  if ((await verifyExperimentEvidence(evidence, plan.evidenceLimits.maxEvidenceBytes)).length > 0) throw new ExperimentError('EXPERIMENT_EVIDENCE_INCOMPLETE', 'evaluation-source-changed')
   const result = evaluateExperimentOutput({ unitKey: unit.unitKey, case: item, evaluator, evidenceDigest, output: evidence.output, maxJsonBytes: plan.evidenceLimits.maxEvidenceBytes })
   await storage.journal.settleEvaluation({ unitKey: unit.unitKey, evidenceDigest, evaluatorDigest: result.evaluatorDigest,
     evaluatorVersion: evaluator.version, result: result as unknown as JsonObject })
@@ -124,7 +124,7 @@ export async function exportExperimentFixture(root: string, options: { readonly 
   const unit = state.units.find(unit => unit.unitKey === options.unitKey)
   if (unit?.sealed === null || unit?.sealed === undefined) throw new ExperimentError('EXPERIMENT_STATE_INVALID', 'fixture-unit-not-sealed')
   const evidence = decodeExperimentEvidence(await readExperimentArtifact(root, unit.sealed.payload.evidence, plan.evidenceLimits.maxEvidenceBytes), plan.evidenceLimits)
-  if ((await verifyExperimentEvidence(evidence, plan.evidenceLimits.maxEvidenceBytes)).length > 0) throw new ExperimentError('EXPERIMENT_CONFLICT', 'fixture-source-changed')
+  if ((await verifyExperimentEvidence(evidence, plan.evidenceLimits.maxEvidenceBytes)).length > 0) throw new ExperimentError('EXPERIMENT_EVIDENCE_INCOMPLETE', 'fixture-source-changed')
   const selected = evidence.selections.find(item => item.sessionId === options.sessionId)
   if (selected?.through === null || selected?.through === undefined) throw new ExperimentError('EXPERIMENT_INPUT_INVALID', 'fixture-session-not-selected')
   const recipe = plan.units.find(item => item.unitKey === unit.unitKey)!.recipe
