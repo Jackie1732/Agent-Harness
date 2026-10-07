@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto'
+import type { ClientRequest } from 'node:http'
 import { Agent, request as httpsRequest } from 'node:https'
 import type { TLSSocket } from 'node:tls'
 import { parseBoundedJson, inspectBoundedJson } from '../schema/bounded-json.js'
@@ -68,10 +69,8 @@ export function createHarnessClient(options: HarnessClientOptions): HarnessClien
     const signal = call.signal === undefined ? closing.signal : AbortSignal.any([closing.signal, call.signal])
     const task = new Promise<Result<M>>((resolve, reject) => {
       let sent = false, settled = false
-      const deadline = setTimeout(() => finish(new ClientTransportError(acceptance(sent))), config.limits.requestTimeoutMs)
-      const connectDeadline = setTimeout(() => finish(new ClientTransportError(acceptance(sent))), config.limits.connectTimeoutMs)
-      const abort = (): void => finish(new ClientAbortError(acceptance(sent)))
-      const outgoing = httpsRequest(new URL(CONTROL_PATH, config.origin), { method: 'POST', agent, servername: config.servername,
+      let outgoing: ClientRequest
+      try { outgoing = httpsRequest(new URL(CONTROL_PATH, config.origin), { method: 'POST', agent, servername: config.servername,
         headers: { 'content-type': 'application/json', 'content-length': body.byteLength } }, response => {
         const chunks: Buffer[] = []; let bytes = 0
         response.on('data', (chunk: Buffer) => {
@@ -91,17 +90,21 @@ export function createHarnessClient(options: HarnessClientOptions): HarnessClien
             if (decoded.kind === 'error') finish(new ApiError(decoded.error.code, decoded.error.message, decoded.error.acceptance, decoded.error.domainCode))
             else {
               if (method === 'session.events') {
-                const query = params as Params<'session.events'>, page = decoded.result as Result<'session.events'>
+                const query = input.params as Params<'session.events'>, page = decoded.result as Result<'session.events'>
                 const firstSequence = query.cursor?.nextSequence ?? (query.after ?? 0) + 1
                 if (query.cursor !== undefined && (page.sessionId !== query.cursor.sessionId || page.through !== query.cursor.through)
-                  || page.through < firstSequence - 1 || page.events.length > 0 && page.events[0]!.sequence !== firstSequence
+                  || page.through < firstSequence - 1 || page.events.length > query.maxEvents
+                  || page.events.length > 0 && page.events[0]!.sequence !== firstSequence
                   || page.events.length === 0 && firstSequence <= page.through) throw new TypeError('Event page does not match requested prefix')
               }
               finish(undefined, decoded.result)
             }
           } catch (error) { finish(error instanceof ApiError ? error : new ClientTransportError(acceptance(sent))) }
         })
-      })
+      }) } catch { reject(new ClientTransportError(acceptance(false))); return }
+      const deadline = setTimeout(() => finish(new ClientTransportError(acceptance(sent))), config.limits.requestTimeoutMs)
+      const connectDeadline = setTimeout(() => finish(new ClientTransportError(acceptance(sent))), config.limits.connectTimeoutMs)
+      const abort = (): void => finish(new ClientAbortError(acceptance(sent)))
       function finish(error?: Error, value?: Result<M>): void {
         if (settled) return
         settled = true; clearTimeout(deadline); clearTimeout(connectDeadline); signal.removeEventListener('abort', abort)
