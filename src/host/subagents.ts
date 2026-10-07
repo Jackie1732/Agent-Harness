@@ -279,7 +279,9 @@ export class HostSubagents {
 
   /** Runtime faults are independent of the persisted delegation's business outcome. */
   flags(id: SessionEventId) {
-    return { suspended: this.#suspended.has(id), recoveryRequired: this.#blocked.has(id), failed: this.#failed.has(id), failureCode: this.#blocked.get(id) ?? null }
+    const child = this.#children.get(id), failure = child?.slot?.agent.failure
+    const faulted = child?.session?.status === 'faulted' || child?.journal?.faulted === true || failure !== undefined
+    return { suspended: this.#suspended.has(id), recoveryRequired: this.#blocked.has(id) || faulted, failed: this.#failed.has(id), failureCode: this.#blocked.get(id) ?? failure?.code ?? null }
   }
 
   #action(accepted: AcceptedDelegation): ProtocolAction | undefined {

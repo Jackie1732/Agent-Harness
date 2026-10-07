@@ -12,6 +12,7 @@ import { projectCommunicationFacts } from '../communication/projection.js'
 import type { MessageId } from '../communication/ids.js'
 import { delegationReport } from '../subagent/report.js'
 import { selectWorkflowArtifact, selectWorkflowOutput } from '../workflow/observation.js'
+import { projectWorkflowSession } from '../workflow/projection.js'
 import type { WorkflowEventRef } from '../workflow/types.js'
 import type { SessionTarget } from '../protocol/references.js'
 import type { AgentObservation, InputObservation, RootObservation, MessageObservation, DelegationObservation, WorkflowObservation, WorkflowOutputResult, WorkflowArtifactResult, HostStatusResult } from '../protocol/results.js'
@@ -49,6 +50,11 @@ export class HostReads {
   #evidence(snapshot: SessionSnapshot, recoveryRequired: boolean) {
     return { instanceId: this.#options.instanceId, cuts: snapshotCuts(snapshot), recoveryRequired }
   }
+  #childrenRequireRecovery(snapshot: SessionSnapshot, roots: ReadonlySet<SessionEventId>): boolean {
+    const domain = this.#options.assembly.subagents
+    return projectAgentSession(snapshot).subagents.delegations.some(item => roots.has(item.payload.parentRoot)
+      && domain?.flags(item.stored.eventId).recoveryRequired === true)
+  }
   status(): HostStatusResult {
     this.#options.assertReady()
     const report = this.#options.currentReport()
@@ -75,7 +81,8 @@ export class HostReads {
       throw cause
     }
     if (root === null) throw new HostError(recoveryRequired ? 'HOST_RECOVERY_REQUIRED' : 'HOST_TARGET_NOT_FOUND', 'root-not-certified')
-    return { agentKey, sessionId: snapshot.header.sessionId, ...root, ...this.#evidence(snapshot, recoveryRequired) }
+    return { agentKey, sessionId: snapshot.header.sessionId, ...root,
+      ...this.#evidence(snapshot, recoveryRequired || this.#childrenRequireRecovery(snapshot, new Set([rootId]))) }
   }
   answerRoot(agentKey: string, wait: AgentActionReference): RootObservation {
     const { snapshot, recoveryRequired } = this.#member(agentKey), id = rootForWait(snapshot, wait)
@@ -107,9 +114,15 @@ export class HostReads {
     if (domain === undefined) throw new HostError('HOST_TARGET_NOT_FOUND', 'workflow-not-installed')
     const captured = domain.capture(workflowKey), report = workflowReport(captured.session, captured.peers, captured.resumed)
     const cuts = mergeCuts([captured.session, ...captured.peers].flatMap(snapshotCuts))
+    const assignments = new Set(projectWorkflowSession(captured.session).assignments.map(item => item.stored.eventId))
+    const childRecovery = captured.peers.some(peer => {
+      const roots = projectAgentSession(peer).roots.filter(root => root.source.kind === 'workflow'
+        && root.source.assignment.address === captured.session.header.address && assignments.has(root.source.assignment.eventId))
+      return this.#childrenRequireRecovery(peer, new Set(roots.map(root => root.id)))
+    })
     const faulted = this.#options.flags(captured.coordinatorKey).faulted || this.#options.assembly.local.some(member =>
       captured.participants.has(member.session.header.address) && this.#options.flags(member.member.agentKey).faulted)
-    const recoveryRequired = captured.faulted || faulted || report.counts.pendingRecoveries > 0 || report.counts.cleanupIncomplete > 0
+    const recoveryRequired = captured.faulted || faulted || childRecovery || report.counts.pendingRecoveries > 0 || report.counts.cleanupIncomplete > 0
       || captured.peers.some(peer => captured.participants.has(peer.header.address) && recoveryBlocked(peer))
     return { ...captured, report, evidence: { instanceId: this.#options.instanceId, cuts, recoveryRequired } }
   }
