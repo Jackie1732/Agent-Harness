@@ -4,6 +4,7 @@ import { ExperimentError } from './errors.js'
 import { recordExperimentReport } from './report.js'
 import { openExperimentStorage, readExperimentStorage } from './storage.js'
 import { experimentKey } from './parsing.js'
+import { unlockHostStorage } from '../host/storage-lock.js'
 
 /** Committed metadata status; an active unit does not establish that its old controller is alive. */
 export type ExperimentStatus = { readonly kind: 'uninitialized'; readonly location: ExperimentLocation | null } | {
@@ -49,6 +50,13 @@ export async function closeInterruptedExperiment(input: string | ExperimentLocat
   if (read.kind === 'uninitialized') throw new ExperimentError('EXPERIMENT_STATE_INVALID', 'experiment-uninitialized')
   if (read.state.finalized !== null) {
     reportKeyFor(read.state, requestedReportKey)
+    if (options.expectedToken !== undefined) {
+      try { await unlockHostStorage(read.location.controlRoot, { predecessorStopped: true, expectedToken: options.expectedToken }) }
+      catch (cause) {
+        // An already released marker makes a repeated finalized close a read-only result.
+        if ((cause as NodeJS.ErrnoException).code !== 'ENOENT') throw cause
+      }
+    }
     const report = read.state.reports.find(report => report.payload.reportKey === read.state.finalized!.payload.reportKey)!
     return { location: read.location, state: read.state, report: report.payload.report }
   }
