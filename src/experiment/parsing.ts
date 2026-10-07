@@ -3,6 +3,9 @@ import { canonicalJsonBytes } from '../foundation/canonical-json.js'
 import type { JsonValue } from '../foundation/json.js'
 import { ExperimentError } from './errors.js'
 
+/** Durable Plan JSON ceilings apply to generated matrices and frozen input alike. */
+export const experimentPlanJsonLimits = Object.freeze({ maxBytes: 64 * 1024 * 1024, maxDepth: 64, maxNodes: 1_000_000 })
+
 export function invalidExperiment(reason: string): never { throw new ExperimentError('EXPERIMENT_INPUT_INVALID', reason) }
 export function experimentObject(value: unknown, label: string): Record<string, unknown> {
   if (value === null || typeof value !== 'object' || Array.isArray(value)) invalidExperiment(`${label}-object`)
@@ -34,6 +37,15 @@ export function experimentChoice<const T extends string>(value: unknown, choices
 }
 export function experimentUnique(values: readonly string[], label: string): void {
   if (new Set(values).size !== values.length) invalidExperiment(`${label}-duplicate`)
+}
+/** Require distinct portable files; a file cannot also be another file's parent directory. */
+export function experimentFilePaths(values: readonly string[], label: string): void {
+  const paths = values.map(value => value.toLowerCase())
+  experimentUnique(paths, label)
+  const files = new Set(paths)
+  for (const path of paths) for (let slash = path.indexOf('/'); slash !== -1; slash = path.indexOf('/', slash + 1)) {
+    if (files.has(path.slice(0, slash))) invalidExperiment(`${label}-file-directory-overlap`)
+  }
 }
 export function experimentDigest(value: unknown, label: string): string {
   const result = experimentText(value, label, 64)

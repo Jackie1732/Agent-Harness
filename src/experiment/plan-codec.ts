@@ -11,12 +11,12 @@ import { decodeExperimentDefinition } from './definition.js'
 import type { ExperimentPlan, FrozenExperimentCase } from './definition-types.js'
 import { relocateExperimentRecipe } from './recipe-relocation.js'
 import { experimentPathsOverlap } from './materials.js'
-import { experimentArray as array, experimentKeys as exact, experimentObject as object, experimentJsonDigest,
+import { experimentArray as array, experimentKeys as exact, experimentObject as object, experimentJsonDigest, experimentPlanJsonLimits,
   experimentBytesDigest, experimentInteger as integer, experimentDigest as digest, experimentText as text, invalidExperiment as invalid } from './parsing.js'
 
 /** Decode the frozen durable plan without reopening material sources or allocating identities. */
 export function decodeExperimentPlan(value: unknown): ExperimentPlan {
-  const data = boundedJson(value, { maxBytes: 64 * 1024 * 1024, maxDepth: 64, maxNodes: 1_000_000 })
+  const data = boundedJson(value, experimentPlanJsonLimits)
   const item = object(data, 'plan')
   exact(item, ['version', 'experimentKey', 'dataset', 'variants', 'comparisons', 'repetitions', 'order', 'evaluators', 'runPolicy', 'storage',
     'evidenceLimits', 'provenance', 'experimentId', 'journalSessionId', 'units', 'planDigest'], 'plan')

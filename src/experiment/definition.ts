@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto'
 import { resolve } from 'node:path'
-import { boundedJson, parseBoundedJson } from '../schema/bounded-json.js'
+import { boundedJson, inspectBoundedJson, JsonBoundaryError, parseBoundedJson } from '../schema/bounded-json.js'
 import { snapshotJson } from '../foundation/json.js'
 import type { JsonObject, JsonValue } from '../foundation/json.js'
 import { canonicalJsonBytes } from '../foundation/canonical-json.js'
@@ -11,7 +11,7 @@ import type { ExperimentBinding, ExperimentCase, ExperimentDefinition, Experimen
   ExperimentPlan, ExperimentRule, ExperimentVariant, FrozenExperimentCase } from './definition-types.js'
 import { experimentArray as array, experimentChoice as choice, experimentDigest as digest, experimentInteger as integer,
   experimentKey as key, experimentKeys as exact, experimentObject as object, experimentRelativePath as path,
-  experimentText as text, experimentUnique as unique, experimentJsonDigest, invalidExperiment as invalid } from './parsing.js'
+  experimentText as text, experimentUnique as unique, experimentFilePaths, experimentJsonDigest, experimentPlanJsonLimits, invalidExperiment as invalid } from './parsing.js'
 import { freezeExperimentMaterials, canonicalExperimentPath, experimentPathsOverlap } from './materials.js'
 import { planExperimentUnit } from './recipe.js'
 import { preflightExperimentRecordBudget } from './journal-events.js'
@@ -81,7 +81,7 @@ function decodeCase(value: unknown, baseDirectory: string): ExperimentCase {
       source: kind === 'file' ? { kind, path: resolve(baseDirectory, text(source.path, 'source-path')) } : { kind, text: text(source.text, 'source-text', inputLimits.maxBytes, true) },
       expectedSha256: material.expectedSha256 === null ? null : digest(material.expectedSha256, 'material-digest') } satisfies ExperimentMaterial
   })
-  unique(materials.map(item => item.logicalPath.toLowerCase()), 'material-path')
+  experimentFilePaths(materials.map(item => item.logicalPath), 'material-path')
   const caseKey = key(item.caseKey, 'caseKey')
   path(caseKey, 'case-directory')
   return { caseKey, task: text(item.task, 'task', inputLimits.maxBytes), materials,
@@ -134,7 +134,7 @@ function decodeBinding(value: unknown): ExperimentBinding {
     return { logicalPath: path(material.logicalPath, 'binding-logicalPath'), relativePath: path(material.relativePath, 'binding-relativePath'),
       resourceId: material.resourceId === null ? null : key(material.resourceId, 'binding-resourceId') }
   })
-  unique(materials.map(item => `${item.resourceId ?? ''}:${item.relativePath.toLowerCase()}`), 'binding-path')
+  experimentFilePaths(materials.map(item => `${item.resourceId ?? ''}:${item.relativePath}`), 'binding-path')
   unique(materials.map(item => item.logicalPath), 'binding-logicalPath')
   const common = { caseKey: key(item.caseKey, 'binding-caseKey'), inputMode: choice(item.inputMode, ['inline', 'workspace'], 'binding-inputMode'), materials }
   const output = object(item.output, 'selector')
@@ -228,6 +228,11 @@ export async function planExperiment(value: unknown, options: { readonly baseDir
   const unsigned = { ...definition, storage, dataset, journalSessionId, experimentId: formatSessionAddress(journalSessionId), units }
   const plan = snapshotJson({ ...unsigned, planDigest: experimentJsonDigest(unsigned as unknown as JsonValue) }) as unknown as ExperimentPlan
   if (canonicalJsonBytes(plan as unknown as JsonValue).byteLength > definition.evidenceLimits.maxPlanBytes) invalid('plan-bytes-limit')
+  try { inspectBoundedJson(plan, experimentPlanJsonLimits) }
+  catch (cause) {
+    if (!(cause instanceof JsonBoundaryError) || cause.reason === 'invalid') throw cause
+    throw new ExperimentError('EXPERIMENT_LIMIT_EXCEEDED', `plan-json-${cause.reason}-limit`)
+  }
   preflightExperimentRecordBudget(plan)
   return plan
 }
