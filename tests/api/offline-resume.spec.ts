@@ -25,8 +25,10 @@ it('rejects API resume of a retained offline slot while preserving the original 
       method: 'agent.resume', params: { agentKey: 'writer', expectedInstanceId: host.instanceId } },
     { maxBytes: apiLimits.maxRequestBytes, maxDepth: apiLimits.maxJsonDepth, maxNodes: apiLimits.maxJsonNodes })
     await authorizeRequest(principal, request, host, spec)
+    const progress = { domainReturned: false }
     await expect(dispatchControl(host, spec, principal, request, apiLimits, new AbortController().signal,
-      mode => host.shutdown({ mode }))).rejects.toMatchObject({ code: 'API_INACTIVE', acceptance: 'not-accepted' })
+      mode => host.shutdown({ mode }), progress)).rejects.toMatchObject({ code: 'API_INACTIVE', acceptance: 'not-accepted' })
+    expect(progress.domainReturned).toBe(false)
     expect(host.read().agent('writer')).toEqual(before)
     expect(() => host.resume('writer')).not.toThrow()
     expect(host.read().agent('writer').mailbox).toBe('known-offline')

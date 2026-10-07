@@ -10,11 +10,11 @@ export class ApiRejection extends Error {
 export function readMethod(method: ControlMethod): boolean {
   return method.endsWith('.get') || method.endsWith('.wait') || ['host.status', 'session.events', 'workflow.output', 'workflow.artifact'].includes(method)
 }
-/** Map structured, owner-defined diagnostics without matching private error messages. */
-export function apiFailure(error: unknown, method: ControlMethod | undefined, invoked: boolean) {
+/** Map owner-defined diagnostics; a failure after the mutation returns cannot prove non-acceptance. */
+export function apiFailure(error: unknown, method: ControlMethod | undefined, invoked: boolean, domainReturned: boolean) {
   const read = method !== undefined && readMethod(method)
-  if (error instanceof ApiRejection) return { code: error.code, message: 'Request rejected', acceptance: read ? 'not-applicable' as const : error.acceptance, domainCode: null }
-  if (error instanceof ProtocolError) return { code: error.code, message: 'Invalid control request', acceptance: 'not-accepted' as const, domainCode: null }
+  if (error instanceof ApiRejection) return { code: error.code, message: 'Request rejected', acceptance: read ? 'not-applicable' as const : domainReturned ? 'unknown' as const : error.acceptance, domainCode: null }
+  if (error instanceof ProtocolError) return { code: error.code, message: 'Invalid control request', acceptance: domainReturned ? 'unknown' as const : 'not-accepted' as const, domainCode: null }
   const domainCode = error instanceof HarnessError && /^[A-Z0-9_]{1,128}$/.test(error.code) ? error.code : null
   let code: ApiErrorCode = 'API_INTERNAL_ERROR'
   let knownRejection = false
@@ -35,7 +35,8 @@ export function apiFailure(error: unknown, method: ControlMethod | undefined, in
     }
     else if (domainCode.includes('EVIDENCE_INCOMPLETE') || domainCode.includes('SOURCE_INVALID')) code = 'API_EVIDENCE_INCOMPLETE'
   }
+  // Agent cancellation can reach an inactive journal after its stop request commits.
   if (invoked && method !== undefined && ['root.cancel', 'delegation.cancel', 'workflow.cancel'].includes(method)
-    && code !== 'API_BUSY' && code !== 'API_INACTIVE' && code !== 'API_KEY_CONFLICT') knownRejection = false
-  return { code, message: 'Request failed', acceptance: read ? 'not-applicable' as const : !invoked || knownRejection ? 'not-accepted' as const : 'unknown' as const, domainCode }
+    && code !== 'API_BUSY' && code !== 'API_KEY_CONFLICT' && (code !== 'API_INACTIVE' || domainCode === 'AGENT_INACTIVE')) knownRejection = false
+  return { code, message: 'Request failed', acceptance: read ? 'not-applicable' as const : domainReturned ? 'unknown' as const : !invoked || knownRejection ? 'not-accepted' as const : 'unknown' as const, domainCode }
 }

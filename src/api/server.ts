@@ -99,6 +99,7 @@ export async function openHarnessApiServer(options: OpenHarnessApiServerOptions)
     const disconnect = (): void => { if (!response.writableFinished) disconnected.abort() }
     response.once('close', disconnect)
     let decoded: AnyControlRequest | undefined, invoked = false
+    const progress = { domainReturned: false }
     try {
       if (frozen) { response.destroy(); return }
       const tls = incoming.socket as TLSSocket
@@ -117,7 +118,7 @@ export async function openHarnessApiServer(options: OpenHarnessApiServerOptions)
       const captured = decoded
       let result = await admission.run(captured.method, async () => {
         invoked = true
-        return await dispatchControl(host, options.host, principal, captured, limits, disconnected.signal, close)
+        return await dispatchControl(host, options.host, principal, captured, limits, disconnected.signal, close, progress)
       })
       const envelope = () => ({ protocol: CONTROL_PROTOCOL, version: CONTROL_VERSION, requestId: captured.requestId, kind: 'result' as const, result })
       let body = Buffer.from(JSON.stringify(envelope()))
@@ -138,7 +139,7 @@ export async function openHarnessApiServer(options: OpenHarnessApiServerOptions)
       }
       await writeResponse(response, 200, body, limits.responseWriteTimeoutMs)
     } catch (error) {
-      const failure = apiFailure(error, decoded?.method, invoked)
+      const failure = apiFailure(error, decoded?.method, invoked, progress.domainReturned)
       if (!incoming.complete) response.setHeader('connection', 'close')
       const envelope = { protocol: CONTROL_PROTOCOL, version: CONTROL_VERSION, requestId: decoded?.requestId ?? null, kind: 'error', error: failure }
       let body = Buffer.from(JSON.stringify(envelope))

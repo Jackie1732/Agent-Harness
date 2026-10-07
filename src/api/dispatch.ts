@@ -9,7 +9,8 @@ import { formatSessionAddress, parseSessionAddress, parseSessionId } from '../se
 
 /** Map each closed method to its original owner; this adapter owns no durable business state. */
 export async function dispatchControl(host: AtomicHost, spec: ResolvedHostSpec, principal: ApiPrincipal, request: AnyControlRequest,
-  limits: ApiLimits, signal: AbortSignal, shutdown: (mode: HostShutdownMode) => Promise<void>): Promise<Result<ControlMethod>> {
+  limits: ApiLimits, signal: AbortSignal, shutdown: (mode: HostShutdownMode) => Promise<void>,
+  progress: { domainReturned: boolean }): Promise<Result<ControlMethod>> {
   if (request.method === 'host.shutdown') {
     await shutdown(request.params.mode)
     return { instanceId: host.instanceId, mode: host.shutdownState.mode!, hostStatus: 'stopped', serviceStatus: 'closing' }
@@ -52,6 +53,7 @@ export async function dispatchControl(host: AtomicHost, spec: ResolvedHostSpec, 
       observation => observation.outcome !== null, { timeoutMs: request.params.timeoutMs, scanIntervalMs: limits.observerScanIntervalMs, signal })
     case 'root.cancel': {
       await host.cancel(request.params.agentKey, request.params.rootId, request.params.reason)
+      progress.domainReturned = true
       const root = await reads.root(request.params.agentKey, request.params.rootId)
       return { agentKey: root.agentKey, sessionId: root.sessionId, rootId: root.rootId, stopControl: root.stopControl,
         outcome: root.outcome, instanceId: root.instanceId, cuts: root.cuts, recoveryRequired: root.recoveryRequired }
@@ -81,6 +83,7 @@ export async function dispatchControl(host: AtomicHost, spec: ResolvedHostSpec, 
     case 'delegation.spawn': {
       const p = request.params
       const receipt = await host.bindParent(parentAddress(spec, p.parentAgentKey), p.parentRoot).spawn(principalControlKey(principal, p.requestKey), p.request)
+      progress.domainReturned = true
       const observation = await reads.delegation(p.parentAgentKey, p.parentRoot, receipt.delegationId)
       return { delegationId: receipt.delegationId, childSessionId: parseSessionId(receipt.childSessionId), childAddress: formatSessionAddress(parseSessionAddress(receipt.childAddress)), instanceId: host.instanceId, cuts: observation.cuts }
     }
@@ -92,6 +95,7 @@ export async function dispatchControl(host: AtomicHost, spec: ResolvedHostSpec, 
     case 'delegation.cancel': {
       const p = request.params
       const result = await host.bindParent(parentAddress(spec, p.parentAgentKey), p.parentRoot).cancel(p.delegationId, principalControlKey(principal, p.requestKey))
+      progress.domainReturned = true
       const observation = await reads.delegation(p.parentAgentKey, p.parentRoot, p.delegationId)
       return 'eventId' in result ? { status: 'requested', eventId: result.eventId, instanceId: host.instanceId, cuts: observation.cuts }
         : { status: 'already-closed', instanceId: host.instanceId, cuts: observation.cuts }
@@ -108,11 +112,13 @@ export async function dispatchControl(host: AtomicHost, spec: ResolvedHostSpec, 
       const p = request.params, workflow = host.workflow(p.workflowKey)
       const input = { requestKey: principalControlKey(principal, p.requestKey), reason: p.reason }
       const result = await (request.method === 'workflow.pause' ? workflow.pause(input) : request.method === 'workflow.resume' ? workflow.resume(input) : workflow.cancel(input))
+      progress.domainReturned = true
       return { ...result, instanceId: host.instanceId, cuts: (await reads.workflow(p.workflowKey)).cuts }
     }
     case 'workflow.retry': {
       const p = request.params
       const result = await host.workflow(p.workflowKey).retry({ requestKey: principalControlKey(principal, p.requestKey), nodeKey: p.nodeKey, failedAssignment: p.failedAssignment })
+      progress.domainReturned = true
       return { ...result, instanceId: host.instanceId, cuts: (await reads.workflow(p.workflowKey)).cuts }
     }
     case 'workflow.output': return await reads.output(request.params.workflowKey, request.params.nodeKey)
