@@ -50,7 +50,7 @@ test('built experiment CLI completes all ten commands with frozen, reproducible 
     assert.equal(comparison.status, 'primary-fixed')
     assert.equal(comparison.summary.a.qualityCounts.pass, 2); assert.equal(comparison.summary.b.qualityCounts.fail, 2)
     assert.deepEqual(await readFile(journalPath), readerBytes)
-    const first = plan.units[0], primaryPath = join(plan.storage.controlRoot, 'reports', 'primary.json'), primaryBytes = await readFile(primaryPath)
+    const first = plan.units[0], primaryPath = join(plan.storage.controlRoot, inspected.state.reports[0].payload.report.path), primaryBytes = await readFile(primaryPath)
     assert.equal(cli(['evaluate', '--root', plan.storage.controlRoot, '--unit', first.unitKey]).overall, 'pass')
     assert.equal(cli(['report', '--root', plan.storage.controlRoot, '--report-key', 'built-review', '--kind', 'posthoc']).finalized, true)
     const fixturePath = join(root, 'fixture.json')

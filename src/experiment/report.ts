@@ -53,7 +53,7 @@ export async function recordExperimentReport(storage: ExperimentStorage, options
       numericMetrics, evaluations: state.evaluations, derivedEvidence: state.evidence,
       units: state.units, comparisons, observations: results.observations, artifactFailures: results.artifactFailures,
       verification: { cloudApi: 'not-run-by-report', modelJudge: 'not-supported', pricing: 'not-measured', performance: 'local-monotonic-only' } }
-    const reference = await publishExperimentArtifact(storage.location.controlRoot, `reports/${reportKey}.json`, report as unknown as JsonValue, plan.evidenceLimits.maxReportBytes)
+    const reference = await publishExperimentArtifact(storage.location.controlRoot, `reports/${reportKey}-${experimentJsonDigest(report as unknown as JsonValue)}.json`, report as unknown as JsonValue, plan.evidenceLimits.maxReportBytes)
     event = await storage.journal.recordReport({ reportKey, kind: options.kind, report: reference, cut: results.cut,
       selections: selections as unknown as readonly JsonObject[] })
   }
