@@ -3,10 +3,12 @@ import type { SessionEventId } from '../session/ids.js'
 import { projectAgentSession } from '../agent/projection.js'
 import { delegationClosure } from './closure.js'
 import { effectiveResourceRelease } from './resource-evidence.js'
+import type { DelegationReport } from './report-data.js'
+export type { DelegationReport, DelegationReportEntry } from './report-data.js'
 
 /** Public parent facts only; counters use the full set before applying the presentation limit. */
 export function delegationReport(parents: readonly { parentKey: string; snapshot: SessionSnapshot }[], limit: number,
-  flags: (id: SessionEventId) => { suspended: boolean; recoveryRequired: boolean; failed: boolean; failureCode?: string | null }) {
+  flags: (id: SessionEventId) => { suspended: boolean; recoveryRequired: boolean; failed: boolean; failureCode?: string | null }): DelegationReport {
   const delegations = parents.flatMap(({ parentKey, snapshot }) => {
     const state = projectAgentSession(snapshot)
     return state.subagents.delegations.map(event => {

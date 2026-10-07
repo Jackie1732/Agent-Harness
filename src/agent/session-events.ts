@@ -1,4 +1,5 @@
 import { invalidAgent } from './errors.js'
+import { decodeKeyedInputAccepted } from './input-submission.js'
 import { createDurableEventDefinition } from '../session/event-catalog.js'
 import type { AgentEventPayloads, AgentMaintenanceRunSettled, AgentMaintenanceRunStarted } from './event-contract.js'
 import { decodeAgentSpec, decodeSubagentAgentSpec, decodeWorkflowAgentSpec } from './spec-codec.js'
@@ -24,6 +25,10 @@ export const workflowWaitSettledEvent = createDurableEventDefinition({ type: 'ag
 export const workflowInputAbandonRequestedEvent = createDurableEventDefinition({ type: 'agent/control-requested', payloadVersion: 4, ignorable: false,
   decode: (value: unknown) => { const request = decodeControlRequest(value, 3); if (request.kind !== 'abandon-input') invalidAgent('abandon-request-version'); return request } })
 export const agentInputAcceptedEvent = definition('input-accepted', decodeInputAccepted)
+/** Keyed inputs extend the payload without changing the physical Session format. */
+export const agentKeyedInputAcceptedEvent = createDurableEventDefinition({
+  type: 'agent/input-accepted', payloadVersion: 2, ignorable: false, decode: decodeKeyedInputAccepted,
+})
 export const agentRunStartedEvent = definition('run-started', decodeRunStarted)
 export const agentRunSettledEvent = definition('run-settled', decodeRunSettled)
 /** Maintenance owns management writes without admitting Turns, commands, Models or Tools. */
@@ -65,7 +70,7 @@ export const legacyAgentSessionEventDefinitions = Object.freeze([
   agentTurnStartedEvent, agentTurnSettledEvent, agentStepOpenedEvent, agentStepDecidedEvent,
   agentActionSettledEvent, agentWaitSettledEvent, agentCommandAcceptedEvent, agentControlRequestedEvent, agentControlSettledEvent, agentInputAbandonRequestedEvent, agentLegacyAbandonSettledEvent,
 ])
-export const agentSessionEventDefinitions = Object.freeze([...legacyAgentSessionEventDefinitions, subagentAgentSpecRecordedEvent,
+export const agentSessionEventDefinitions = Object.freeze([...legacyAgentSessionEventDefinitions, agentKeyedInputAcceptedEvent, subagentAgentSpecRecordedEvent,
   subagentTurnStartedEvent, subagentTurnSettledEvent, subagentStepDecidedEvent, subagentActionSettledEvent, subagentWaitSettledEvent, subagentInputAbandonRequestedEvent, workflowAgentSpecRecordedEvent, workflowRunStartedEvent, workflowRunSettledEvent,
   workflowTurnStartedEvent, workflowTurnSettledEvent, workflowStepDecidedEvent, workflowActionSettledEvent, workflowWaitSettledEvent, workflowInputAbandonRequestedEvent])
 

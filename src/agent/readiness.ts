@@ -12,24 +12,8 @@ import { selectAgentInput } from './scheduling.js'
 import { runnableAgentInputs } from './scheduling.js'
 import { assertAgentExecutionQuiescent } from './execution-health.js'
 
-export type AgentReadinessBlock =
-  | 'none' | 'ended' | 'recovery-required' | 'closing' | 'driver-active'
-  | 'unsupported-input' | 'review-required' | 'waiting' | 'idle' | 'cleanup-incomplete' | 'capacity'
-
-/** Pure Host-facing observation; actual Agent operations revalidate every fact. */
-export interface AgentReadiness {
-  readonly sourcePosition: number
-  readonly canRun: boolean
-  readonly canMaintain: boolean
-  readonly nextWakeAt: string | null
-  readonly blockedBy: AgentReadinessBlock
-  readonly counts: {
-    readonly runnableInputs: number
-    readonly pendingMaintenance: number
-    readonly unsupportedInputs: number
-    readonly reviewRequiredInputs: number
-  }
-}
+import type { AgentReadiness, AgentReadinessBlock } from './readiness-data.js'
+export type { AgentReadiness, AgentReadinessBlock } from './readiness-data.js'
 
 /** Derive scheduling eligibility from one immutable committed view. */
 export function inspectAgentReadiness(

@@ -15,6 +15,10 @@ import type { AgentSessionSnapshot } from './state.js'
 import type { AgentInput } from './contract.js'
 import { decodeAgentInput } from './input-codec.js'
 import { agentInputAcceptedEvent } from './session-events.js'
+import { agentKeyedInputAcceptedEvent } from './session-events.js'
+import { decodeInputSubmission } from './input-submission.js'
+import type { AgentInputSubmission, AgentKeyedInputAccepted } from './input-submission.js'
+import { equal } from './validation.js'
 
 /** Conditional local writes only; callbacks cannot invoke providers or policy. */
 export class AgentJournal {
@@ -31,6 +35,32 @@ export class AgentJournal {
   acceptInput(value: AgentInput) {
     const input = decodeAgentInput(value)
     return this.append(agentInputAcceptedEvent, state => ({ spec: state.spec!.stored.eventId, input }))
+  }
+
+  /** Reuse an identical local submission before checking mutable Wait disposition. */
+  async acceptKeyedInput(value: AgentInput, identity: AgentInputSubmission): Promise<{ readonly event: CommittedSessionEvent<AgentKeyedInputAccepted>; readonly reused: boolean }> {
+    const input = decodeAgentInput(value); const submission = decodeInputSubmission(identity)
+    if (!this.session.supportsEventDefinition(agentKeyedInputAcceptedEvent)) throw new AgentError('AGENT_CATALOG_INCOMPATIBLE', 'keyed-input-events-required')
+    for (let attempt = 0; attempt <= this.conflicts; attempt++) {
+      const snapshot = this.session.snapshot(); const state = projectAgentSession(snapshot)
+      const prior = state.inputs.find(item => item.submission?.namespace === submission.namespace && item.submission.key === submission.key)
+      if (prior !== undefined) {
+        if (!equal(prior.input, input)) throw new AgentError('AGENT_KEY_CONFLICT', 'submission-content-conflict')
+        const local = snapshot.history.find(segment => segment.header.sessionId === snapshot.header.sessionId)!
+        const event = local.events.find(item => item.stored.eventId === prior.reference.eventId)!
+        return { event: { kind: 'known', stored: event.stored, payload: agentKeyedInputAcceptedEvent.decode(event.stored.payload) }, reused: true }
+      }
+      if (this.faulted) throw new AgentError('AGENT_RECOVERY_REQUIRED', 'submission-absence-not-certified')
+      const payload = agentKeyedInputAcceptedEvent.decode({ spec: state.spec!.stored.eventId, input, submission })
+      this.#preflight(snapshot, agentKeyedInputAcceptedEvent, payload)
+      try { return { event: await this.session.appendIfPosition(snapshot.localPosition, agentKeyedInputAcceptedEvent, payload), reused: false } }
+      catch (error) {
+        if (error instanceof SessionError && error.code === 'SESSION_PRECONDITION_FAILED') continue
+        this.#faulted = true
+        throw new AgentError(error instanceof SessionError && error.code === 'SESSION_APPEND_OUTCOME_UNKNOWN' ? 'AGENT_COMMIT_UNKNOWN' : 'AGENT_WRITE_FAILED', 'agent-event-not-confirmed')
+      }
+    }
+    throw new AgentError('AGENT_JOURNAL_CONFLICT', 'local-conflict-budget')
   }
 
   async append<T extends JsonValue>(definition: DurableEventDefinition<T>, decide: (state: AgentSessionSnapshot, snapshot: SessionSnapshot) => NoInfer<T>): Promise<CommittedSessionEvent<T>> {

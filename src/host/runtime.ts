@@ -6,7 +6,11 @@ import { AsyncLocalStorage } from 'node:async_hooks'
 import type { Clock } from '../foundation/clock.js'
 import { systemClock } from '../foundation/clock.js'
 import type { SessionEventId, SessionAddress } from '../session/ids.js'
-import type { AgentActionReference, AgentSendCommand } from '../agent/contract.js'
+import type { AgentActionReference, AgentSendCommand, AgentInput } from '../agent/contract.js'
+import type { AgentInputSubmission } from '../agent/input-submission.js'
+import { HostReads } from './reads.js'
+import { observeFinite } from './finite-observer.js'
+import type { FiniteObservationQuery } from './finite-observer.js'
 import type { OutboxMessageSnapshot } from '../communication/types.js'
 import type { CommunicationError } from '../communication/errors.js'
 import { isLocalHostMember } from './config.js'
@@ -81,6 +85,26 @@ class HostRuntime {
   }
   get status(): HostStatus { return this.#status }
   get instanceId(): string { return this.#assembly.lock.record.instanceId }
+  get activity(): 'idle' | 'run' | 'command' { return this.#activity !== undefined ? 'run' : this.#command !== undefined ? 'command' : 'idle' }
+  /** Scalar lifecycle data remains readable after owned Session resources have released. */
+  get shutdownState() { return Object.freeze({ status: this.#status, mode: this.#shutdownMode ?? null, releasing: this.#releasing }) }
+
+  /** Read current immutable facts without opening another root lock or Session Writer. */
+  read(): HostReads {
+    this.#assertReady()
+    return new HostReads({ assembly: this.#assembly, clock: this.#clock, instanceId: this.instanceId,
+      assertReady: () => this.#assertReady(), currentReport: () => this.report(), activity: () => this.activity,
+      track: task => this.#track(task),
+      flags: key => ({ paused: this.#paused.has(key) || this.#offline.has(key), routingPaused: this.#routingPaused.has(key),
+        faulted: this.#memberFaulted(key) }) })
+  }
+
+  /** Observation is tracked by the existing Host owner and never starts a business task. */
+  observe<T extends { readonly recoveryRequired: boolean }>(read: () => T, condition: (value: T) => boolean, query: FiniteObservationQuery) {
+    this.#assertReady()
+    if ([...hostTasks.getStore() ?? []].some(token => this.#tokens.has(token))) throw new HostError('HOST_REENTRANT_WAIT', 'host-observer-self-wait')
+    return observeFinite(this.#observers.bind('control-api', task => this.#track(task)), this.#timer, read, condition, query)
+  }
 
   /** Bind explicit Host control to an existing configured parent root. */
   bindParent(parentAddress: SessionAddress, parentRoot: SessionEventId) {
@@ -90,6 +114,7 @@ class HostRuntime {
     if (parent === undefined || this.#offline.has(parent.member.agentKey) || domain === undefined || !domain.options.config.parents.some(item => item.agentKey === parent.member.agentKey)
       || !projectAgentSession(parent.session.snapshot()).roots.some(root => root.id === parentRoot)) throw new HostError('HOST_NOT_READY', 'parent-control-not-authorized')
     return bindParentSubagents({ domain, parent, root: parentRoot, timer: this.#timer, scanIntervalMs: this.#spec.scheduling.scanIntervalMs,
+      observe: delegation => this.read().delegation(parent.member.agentKey, parentRoot, delegation),
       ...this.#observers.bind(parent.member.agentKey, task => this.#track(task)),
       assertReady: () => this.#assertReady(), assertExternalWait: () => {
         if ([...hostTasks.getStore() ?? []].some(token => this.#tokens.has(token))) throw new HostError('HOST_REENTRANT_WAIT', 'parent-cannot-wait-on-own-business-lane')
@@ -104,11 +129,11 @@ class HostRuntime {
     const domain = this.#assembly.workflows
     if (domain === undefined) throw new HostError('HOST_NOT_READY', 'workflows-disabled')
     domain.report(workflowKey)
-    const wait = workflowObserver(domain, workflowKey, this.#timer, this.#spec.scheduling.scanIntervalMs,
+    const wait = workflowObserver(this.#timer, this.#spec.scheduling.scanIntervalMs,
       this.#observers.bind(`workflow:${workflowKey}`, task => this.#track(task)), () => {
         this.#assertReady()
         if ([...hostTasks.getStore() ?? []].some(token => this.#tokens.has(token))) throw new HostError('HOST_REENTRANT_WAIT', 'workflow-cannot-wait-on-own-driver')
-      })
+      }, () => this.read().workflow(workflowKey))
     const control = (kind: 'pause' | 'resume' | 'cancel', input: { readonly requestKey: string; readonly reason?: string }) => this.#track(async () => {
       this.#assertReady()
       const result = await domain.controls.request(workflowKey, kind, input)
@@ -149,13 +174,23 @@ class HostRuntime {
       return Object.freeze({ agentKey, eventId: accepted.stored.eventId })
     })
   }
+  /** Stable input identity survives transport attempts and preserves the original receipt. */
+  submitKeyedInput(agentKey: string, input: AgentInput, submission: AgentInputSubmission) {
+    const slot = this.#slot(agentKey)
+    return this.#track(async () => {
+      const accepted = await this.#inputs.get(agentKey)!.acceptKeyedInput(input, submission)
+      this.#assembly.wakeup.notify()
+      return Object.freeze({ agentKey, sessionId: slot.session.header.sessionId, inputEventId: accepted.event.stored.eventId, reused: accepted.reused })
+    })
+  }
   /** Stop new business turns; receipt, maintenance and delivery remain enabled. */
   pause(agentKey: string): void {
     const slot = this.#slot(agentKey); this.#paused.add(agentKey); slot.agent.pause()
   }
-  /** Explicit resumption also rechecks a slot stopped for lack of domain progress. */
+  /** Resume retained member state; an offline or failed execution owner still requires explicit reattachment. */
   resume(agentKey: string) {
-    this.#slot(agentKey)
+    this.#assertReady()
+    if (!this.#assembly.slots.some(slot => slot.member.agentKey === agentKey)) throw new HostError('HOST_INACTIVE', 'agent-slot-unavailable', { agentKey })
     const resumed = this.#assembly.subagents?.resume(agentKey) ?? []
     if (resumed.every(item => item.status === 'resumed')) this.#paused.delete(agentKey)
     this.#scheduler.stalled.delete(agentKey)
@@ -173,7 +208,7 @@ class HostRuntime {
     if (!this.#assembly.local.some(entry => entry.member.agentKey === agentKey)) throw new HostError('HOST_NOT_READY', 'agent-slot-unavailable')
     if (this.#mailboxTransitions.has(agentKey)) throw new HostError('HOST_BUSY', 'mailbox-transition-active')
     if (online === !this.#offline.has(agentKey)) return Promise.resolve()
-    if (!online) { this.#offline.add(agentKey); this.#paused.add(agentKey); slot?.agent.pause(); this.#assembly.subagents?.stopParent(agentKey) }
+    if (!online) { this.#offline.add(agentKey); this.#paused.add(agentKey); if (slot?.agent.status === 'accepting') slot.agent.pause(); this.#assembly.subagents?.stopParent(agentKey) }
     const observers = online ? undefined : this.#observers.closeParent(agentKey)
     const task = this.#track(async () => {
       if (online) {
@@ -224,7 +259,7 @@ class HostRuntime {
       unfinishedOperations: this.#operations.size,
       shutdownOverdue: this.#status === 'stopping' && this.#stoppingAt !== undefined && this.#timer.now() - this.#stoppingAt >= this.#spec.shutdown.diagnosticAfterMs,
       blockedRoutes: Object.freeze([...this.#blockedRoutes]),
-      ...observeHostMembers(this.#assembly.slots.filter(slot => this.#assembly.local.some(item => item.session === slot.session)), this.#paused, this.#scheduler.faults, this.#clock, this.#spec.scheduling.maxReportEntries, this.#scheduler.observations, this.#assembly, this.#routingPaused) })
+      ...observeHostMembers(this.#assembly.slots.filter(slot => this.#assembly.local.some(item => item.session === slot.session)), this.#paused, key => this.#memberFaulted(key), this.#clock, this.#spec.scheduling.maxReportEntries, this.#scheduler.observations, this.#assembly, this.#routingPaused) })
   }
 
   /** Close admission synchronously; drain can upgrade to cancel until resource release begins. */
@@ -282,6 +317,7 @@ class HostRuntime {
         report = await runHostScheduler({ slots: this.#assembly.slots, paused: this.#paused, routingPaused: this.#routingPaused, offline: this.#offline,
           scheduling: this.#spec.scheduling, clock: this.#clock, timer: this.#timer, signal, wakeSignal: this.#wake.signal,
           isStopping: () => this.#status !== 'ready', canAttempt: message => this.#canAttempt(message),
+          memberFaulted: key => this.#memberFaulted(key),
           blockRoute: error => this.#blockRoute(error), blockedRoutes: () => [...this.#blockedRoutes], state: this.#scheduler,
           scanWake: () => this.#assembly.wakeup.scan(), assembly: this.#assembly })
         if (!continuous || signal.aborted || this.#status !== 'ready') return report
@@ -318,8 +354,12 @@ class HostRuntime {
   #slot(agentKey: string): HostSlot {
     this.#assertReady()
     const slot = this.#assembly.slots.find(slot => slot.member.agentKey === agentKey)
-    if (slot === undefined) throw new HostError('HOST_NOT_READY', 'agent-slot-unavailable', { agentKey })
+    if (slot === undefined || this.#offline.has(agentKey)) throw new HostError('HOST_INACTIVE', 'agent-slot-unavailable', { agentKey })
     return slot
+  }
+  #memberFaulted(agentKey: string): boolean {
+    return this.#scheduler.faults.has(agentKey) || this.#inputs.get(agentKey)?.faulted === true
+      || this.#assembly.slots.find(slot => slot.member.agentKey === agentKey)?.agent.failure !== undefined
   }
   #assertReady(): void {
     if (this.#status !== 'ready') throw new HostError('HOST_INACTIVE', 'host-not-ready', { status: this.#status })
@@ -334,6 +374,11 @@ export async function openHost(spec: ResolvedHostSpec, options: OpenHostOptions 
   for (const member of spec.members.filter(isLocalHostMember)) {
     if (options.bindings?.createModelProvider === undefined && member.enabled && member.model.kind !== 'scripted-fixed'
       && credentials[member.model.credentialRef] === undefined) throw new HostError('HOST_CONFIG_INVALID', 'model-credential-missing')
+  }
+  if (options.bindings?.createModelProvider === undefined && spec.schemaVersion !== 1 && spec.subagents.kind === 'enabled') {
+    for (const template of spec.subagents.templates) if (template.model.kind !== 'scripted-fixed' && credentials[template.model.credentialRef] === undefined) {
+      throw new HostError('HOST_CONFIG_INVALID', 'child-model-credential-missing')
+    }
   }
   const assembly = await assembleHost(spec, clock, credentials, options.bindings ?? {})
   return new HostRuntime(spec, clock, options.timer ?? nodeHostTimer, assembly)

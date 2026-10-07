@@ -1,5 +1,5 @@
 import type { JsonObject, JsonValue } from '../foundation/json.js'
-import type { SessionAddress, SessionEventId, SessionId, SessionSequence } from '../session/index.js'
+import type { SessionAddress, SessionEventId, SessionId, SessionSequence } from '../session/ids.js'
 import type { ChannelId, ChannelSequence, MessageId } from './ids.js'
 import type { MessageSendCommand, MessageSendKey } from './send-command.js'
 

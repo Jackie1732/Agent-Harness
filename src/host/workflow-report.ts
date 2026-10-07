@@ -4,11 +4,11 @@ import { projectWorkflowSession } from '../workflow/projection.js'
 import { workflowAssignmentClosed } from '../workflow/closure.js'
 import { workExecutionReports } from '../workflow/work-report.js'
 
-export type WorkflowReport = ReturnType<typeof workflowReport>
-export type WorkflowReportSummary = ReturnType<typeof workflowReportSummary>
+import type { WorkflowReport, WorkflowReportSummary } from './workflow-report-data.js'
+export type { WorkflowReport, WorkflowReportSummary } from './workflow-report-data.js'
 
 /** Count the whole run before truncating the operator's entry vectors. */
-export function workflowReport(session: SessionSnapshot, peers: readonly SessionSnapshot[], resumed: boolean) {
+export function workflowReport(session: SessionSnapshot, peers: readonly SessionSnapshot[], resumed: boolean): WorkflowReport {
   const state = projectWorkflowSession(session)
   const definition = state.definition!.payload
   const maximum = definition.limits.maxReportEntries
@@ -79,7 +79,7 @@ export function workflowReport(session: SessionSnapshot, peers: readonly Session
 }
 
 /** Full-run outcome totals are independent of the displayed Workflow prefix. */
-export function workflowReportSummary(reports: readonly ReturnType<typeof workflowReport>[], maximum: number) {
+export function workflowReportSummary(reports: readonly WorkflowReport[], maximum: number): WorkflowReportSummary {
   return Object.freeze({ count: reports.length, failed: reports.filter(item => item.state === 'failed').length,
     unknown: reports.reduce((sum, item) => sum + item.counts.unknown, 0),
     blocked: reports.filter(item => item.counts.cleanupIncomplete > 0 || item.counts.pendingRecoveries > 0).length,

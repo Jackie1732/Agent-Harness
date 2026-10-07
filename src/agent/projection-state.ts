@@ -25,6 +25,7 @@ export interface AgentProjectionState {
   readonly controls: Map<SessionEventId, Mutable<AgentControlState>>
   readonly commands: Map<SessionEventId, CommittedSessionEvent<AgentCommandAccepted>>
   readonly inputs: Map<string, Mutable<AgentInputState>>
+  readonly inputSubmissions: Map<string, Map<string, SessionEventId>>
   readonly roots: Map<SessionEventId, Mutable<AgentRootState>>
   readonly lanes: Map<string, number>
   openRun: SessionEventId | null
@@ -34,7 +35,7 @@ export interface AgentProjectionState {
 }
 export function initialAgentState(): AgentProjectionState {
   return { spec: null, subagents: initialSubagentState(), sources: new Map(), runs: new Map(), turns: new Map(), steps: new Map(), actions: new Map(),
-    waits: new Map(), controls: new Map(), commands: new Map(), inputs: new Map(), roots: new Map(), lanes: new Map(),
+    waits: new Map(), controls: new Map(), commands: new Map(), inputs: new Map(), inputSubmissions: new Map(), roots: new Map(), lanes: new Map(),
     openRun: null, openTurn: null, openRecovery: null, closing: null }
 }
 export function requireEntry<K, V>(map: ReadonlyMap<K, V>, key: K, reason: string): V {

@@ -11,6 +11,8 @@ import { clockTimestamp } from '../foundation/clock.js'
 import type { SessionEventId } from '../session/ids.js'
 import type { SessionRepository } from '../session/repository.js'
 import type { SessionHandle } from '../session/session-handle.js'
+import type { SessionSnapshot } from '../session/types.js'
+import { SessionError } from '../session/errors.js'
 import { projectAgentSession } from '../agent/projection.js'
 import { agentControlRequestedEvent } from '../agent/session-events.js'
 import { AgentError } from '../agent/errors.js'
@@ -143,11 +145,15 @@ export class HostSubagents {
   /** Abort notification does not wait for the parent's or child's next journal acknowledgement. */
   notifyParentStop(parentKey: string, root: SessionEventId): void {
     for (const accepted of this.admission.accepted.filter(item => item.parentKey === parentKey && item.event.payload.parentRoot === root && !this.#retired.has(item.event.stored.eventId))) {
-      this.options.communication.delegationChannels.revoke(accepted.lease)
-      const child = this.#children.get(accepted.event.stored.eventId)
-      const childRoot = child?.slot?.agent.snapshot().roots[0]
-      if (childRoot !== undefined) child?.slot?.agent.notifyStop(childRoot.id)
+      this.#notifyStop(accepted)
     }
+  }
+
+  #notifyStop(accepted: AcceptedDelegation): void {
+    this.options.communication.delegationChannels.revoke(accepted.lease)
+    const child = this.#children.get(accepted.event.stored.eventId)
+    const childRoot = child?.slot?.agent.snapshot().roots[0]
+    if (childRoot !== undefined) child?.slot?.agent.notifyStop(childRoot.id)
   }
 
   /** Cancel only the children of one owning work root after closing new Host admissions. */
@@ -210,6 +216,29 @@ export class HostSubagents {
     if (entry === undefined) throw new HostError('HOST_NOT_READY', 'delegation-not-owned')
     return entry
   }
+  /** A ready installed Child is readable after its execution and protocol resources retire. */
+  async readChild(parentKey: string, root: SessionEventId, id: SessionEventId) {
+    const parent = this.options.localMembers.find(item => item.member.agentKey === parentKey)
+    if (parent === undefined) throw new HostError('HOST_TARGET_NOT_FOUND', 'parent-not-local')
+    const state = projectAgentSession(parent.session.snapshot())
+    const accepted = state.subagents.delegations.find(item => item.stored.eventId === id && item.payload.parentRoot === root)
+    const provision = state.subagents.provisions.find(item => item.payload.delegation === id && item.payload.outcome === 'installed')
+    if (accepted === undefined || provision === undefined) throw new HostError(parent.session.status === 'faulted' ? 'HOST_RECOVERY_REQUIRED' : 'HOST_TARGET_NOT_FOUND', 'child-not-installed')
+    const owned = this.#children.get(id)?.session ?? this.#suspended.get(id) ?? this.#restored.get(id)
+    let snapshot: SessionSnapshot
+    if (owned !== null && owned !== undefined && owned.status !== 'disposed') snapshot = owned.snapshot()
+    else {
+      try { snapshot = await this.options.repository.read(accepted.payload.childSessionId) }
+      catch (cause) {
+        if (cause instanceof SessionError && cause.code === 'SESSION_NOT_FOUND') throw new HostError('HOST_EVIDENCE_INCOMPLETE', 'installed-child-log-missing')
+        throw cause
+      }
+    }
+    const child = projectAgentSession(snapshot)
+    if (child.subagents.bound?.payload.delegation !== id || child.subagents.ready === null
+      || provision.payload.child?.ready !== child.subagents.ready.stored.eventId) throw new HostError('HOST_EVIDENCE_INCOMPLETE', 'child-ready-missing')
+    return snapshot
+  }
   async cancel(parentKey: string, root: SessionEventId, id: SessionEventId, requestKey: string) {
     text(requestKey, 128)
     const entry = this.inspect(parentKey, root, id)
@@ -229,7 +258,7 @@ export class HostSubagents {
     if (prior !== undefined) return prior
     if (entry.closed) return { kind: 'already-closed' as const }
     const accepted = this.admission.accepted.find(item => item.event.stored.eventId === id)!
-    this.notifyParentStop(parentKey, root)
+    this.#notifyStop(accepted)
     try {
       const event = await accepted.journal.append(events.subagentControlRequestedV2Event, () => ({ delegation: id,
         parentAddress: accepted.event.payload.parentAddress, childAddress: accepted.event.payload.childAddress, kind: 'cancel' as const,
@@ -245,7 +274,12 @@ export class HostSubagents {
   report(limit: number) {
     const parents = this.options.localMembers
       .map(item => ({ parentKey: item.member.agentKey, snapshot: item.session.snapshot() }))
-    return delegationReport(parents, limit, id => ({ suspended: this.#suspended.has(id), recoveryRequired: this.#blocked.has(id), failed: this.#failed.has(id), failureCode: this.#blocked.get(id) ?? null }))
+    return delegationReport(parents, limit, id => this.flags(id))
+  }
+
+  /** Runtime faults are independent of the persisted delegation's business outcome. */
+  flags(id: SessionEventId) {
+    return { suspended: this.#suspended.has(id), recoveryRequired: this.#blocked.has(id), failed: this.#failed.has(id), failureCode: this.#blocked.get(id) ?? null }
   }
 
   #action(accepted: AcceptedDelegation): ProtocolAction | undefined {
@@ -295,7 +329,7 @@ export class HostSubagents {
     const session = child.session; const journal = child.journal
     const state = projectAgentSession(session.snapshot())
     if (stopped && state.subagents.bound !== null && state.subagents.controls.length === 0) return async () => {
-      this.notifyParentStop(accepted.parentKey, root.id)
+      this.#notifyStop(accepted)
       await journal.append(events.subagentControlRequestedV2Event, () => ({ ...child.identity, kind: 'cancel' as const,
         source: root.stopControl === null ? { kind: 'controller' as const, requestKey: 'parent-stop:' + root.id } : { kind: 'parent-stop' as const, eventId: root.stopControl },
         reasonCode: 'parent-stopped-or-deadline', observedAt: clockTimestamp(this.options.clock) }))

@@ -126,11 +126,11 @@ export class HostWorkflowControls {
       if (prior !== undefined && !sameWorkflowValue(prior.requested.payload, payload)) throw new HostError('HOST_BINDING_CONFLICT', 'workflow-request-key-conflict')
       if (prior === undefined) {
         const reason = retryRequestFailure(state, input, clockTimestamp(this.options.clock))
-        if (this.#stopping.has(key) || reason !== undefined) throw new HostError('HOST_NOT_READY', reason ?? 'workflow-stopping')
+        if (this.#stopping.has(key) || reason !== undefined) throw new HostError('HOST_NOT_READY', reason ?? 'workflow-stopping', { reasonCode: 'operation-rejected' })
         const previous = state.assignments.filter(item => item.stored.eventId === input.failedAssignment.eventId
           || item.payload.kind === 'review' && item.payload.reviewOf.assignment.eventId === input.failedAssignment.eventId)
         if (previous.some(item => !this.options.retired.has(item.stored.eventId) || !workflowAssignmentClosed(entry.slot.session.snapshot(),
-          assignmentMember(this.options.slots, item.payload).session.snapshot(), item.stored.eventId, this.options.slots.map(slot => slot.session.snapshot())))) throw new HostError('HOST_NOT_READY', 'workflow-retry-still-closing')
+          assignmentMember(this.options.slots, item.payload).session.snapshot(), item.stored.eventId, this.options.slots.map(slot => slot.session.snapshot())))) throw new HostError('HOST_NOT_READY', 'workflow-retry-still-closing', { reasonCode: 'operation-rejected' })
       }
       const requested = prior?.requested ?? await entry.journal.append(workflowControlRequestedEvent, () => payload)
       const settled = prior?.settled ?? await entry.journal.append(workflowControlSettledEvent, () => ({ request: requested.stored.eventId,

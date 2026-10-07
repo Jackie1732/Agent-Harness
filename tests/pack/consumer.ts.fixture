@@ -1,0 +1,25 @@
+import { createHarnessClient } from '@atomic-harness/core/client'
+import type { ControlMethod, Params, Result } from '@atomic-harness/core/protocol'
+
+async function typed(client: ReturnType<typeof createHarnessClient>) {
+  const method: ControlMethod = 'input.submit'
+  const params: Params<typeof method> = { agentKey: 'writer', submissionKey: 'paper-1', text: 'Summarize the experiment' }
+  const receipt: Result<typeof method> = await client.request(method, params)
+  const input = await client.request('input.get', { agentKey: 'writer', inputEventId: receipt.inputEventId })
+  if (input.rootId !== null) {
+    const root = await client.request('root.get', { agentKey: 'writer', rootId: input.rootId })
+    if (root.final !== null) root.final.text?.toUpperCase()
+  }
+  for await (const page of client.events({ target: { kind: 'member', agentKey: 'writer' }, maxEvents: 3 })) {
+    const through: number = page.through
+    void through
+    page.events.forEach(event => { const id: string = event.eventId; void id })
+  }
+  // @ts-expect-error A durable submission key is required.
+  await client.request('input.submit', { agentKey: 'writer', text: 'missing key' })
+  // @ts-expect-error A method cannot be replaced with an arbitrary operation.
+  await client.request('host.serve', {})
+  // @ts-expect-error Send parameters cannot smuggle a reply command.
+  await client.request('message.send', { agentKey: 'writer', kind: 'reply', messageId: 'arbitrary', type: 'test/note', payloadVersion: 1, payloadJson: '{}' })
+}
+void typed

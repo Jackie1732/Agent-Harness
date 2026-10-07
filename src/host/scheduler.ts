@@ -38,6 +38,7 @@ export interface HostSchedulerInput {
   readonly signal: AbortSignal
   readonly wakeSignal: AbortSignal
   readonly isStopping: () => boolean
+  readonly memberFaulted: (agentKey: string) => boolean
   readonly canAttempt: (message: OutboxMessageSnapshot) => boolean
   readonly blockRoute: (error: CommunicationError) => boolean
   readonly blockedRoutes: () => readonly string[]
@@ -212,7 +213,7 @@ export async function runHostScheduler(input: HostSchedulerInput): Promise<HostR
       try { await Promise.race([...tasks, input.timer.wait(scheduling.scanIntervalMs, waitSignal)]) }
       finally { wake.abort() }
     }
-    const observed = observeHostMembers(slots.filter(slot => input.assembly.local.some(item => item.session === slot.session)), input.paused, state.faults, input.clock, scheduling.maxReportEntries, state.observations, input.assembly, input.routingPaused)
+    const observed = observeHostMembers(slots.filter(slot => input.assembly.local.some(item => item.session === slot.session)), input.paused, input.memberFaulted, input.clock, scheduling.maxReportEntries, state.observations, input.assembly, input.routingPaused)
     const remaining = new Set<string>([...slots, ...input.assembly.protocolSlots].flatMap(slot => projectCommunicationFacts(slot.session.snapshot()).outbox.filter(item => item.status === 'pending').map(item => item.messageId)))
     for (const id of state.cooldowns.keys()) if (!remaining.has(id)) state.cooldowns.delete(id)
     if (stoppedBy === 'quiescent' && (observed.counts.pendingOutbox > 0 || state.faults.size > 0

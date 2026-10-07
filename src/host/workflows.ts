@@ -76,7 +76,20 @@ export class HostWorkflows {
     }
   }
 
-  report(key: string): WorkflowReport { return workflowReport(this.#entry(key).slot.session.snapshot(), this.slots.map(slot => slot.session.snapshot()), this.controls.active(key)) }
+  /** Capture coordinator and participant prefixes before constructing any report. */
+  capture(key: string) {
+    const entry = this.#entry(key)
+    const session = entry.slot.session.snapshot(), peers = this.slots.map(slot => slot.session.snapshot())
+    const participants = new Set(projectWorkflowSession(session).assignments.map(item => item.payload.memberAddress))
+    return { session, peers, participants, coordinatorKey: entry.slot.member.agentKey, resumed: this.controls.active(key),
+      faulted: entry.slot.session.status === 'faulted' || this.slots.some(slot => participants.has(slot.session.header.address)
+        && (slot.agent.status === 'faulted' || slot.session.status === 'faulted')) }
+  }
+
+  report(key: string): WorkflowReport {
+    const captured = this.capture(key)
+    return workflowReport(captured.session, captured.peers, captured.resumed)
+  }
 
   reportAll(maximum: number): WorkflowReportSummary { return workflowReportSummary([...this.#entries.keys()].map(key => this.report(key)), maximum) }
 

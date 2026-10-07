@@ -1,6 +1,7 @@
-import type { HostWorkflows } from './workflows.js'
 import type { HostTimer } from './timer.js'
 import { HostError } from './errors.js'
+import type { WorkflowObservation } from '../protocol/results.js'
+import { observeFinite } from './finite-observer.js'
 
 export interface WorkflowWaitQuery {
   readonly until: 'settled' | 'closed'
@@ -9,27 +10,18 @@ export interface WorkflowWaitQuery {
 }
 
 /** Observation owns a finite timer and Host task; it never drives or cancels the durable workflow. */
-export function workflowObserver(domain: HostWorkflows, key: string, timer: HostTimer, scanIntervalMs: number,
+export function workflowObserver(timer: HostTimer, scanIntervalMs: number,
   owner: { readonly stopSignal: AbortSignal; trackObservation<T>(task: () => Promise<T>): Promise<T> },
-  assertExternalWait: () => void) {
+  assertExternalWait: () => void, observe: () => WorkflowObservation) {
   return (query: WorkflowWaitQuery) => {
     assertExternalWait()
     if (!['settled', 'closed'].includes(query.until) || !Number.isSafeInteger(query.timeoutMs) || query.timeoutMs < 1 || query.timeoutMs > 2_147_483_647) {
       throw new HostError('HOST_PROTOCOL_INVALID', 'workflow-wait-query')
     }
-    const deadline = timer.now() + query.timeoutMs
-    const signal = query.signal === undefined ? owner.stopSignal : AbortSignal.any([owner.stopSignal, query.signal])
-    return owner.trackObservation(async () => {
-      let report = domain.report(key)
-      while (true) {
-        if (owner.stopSignal.aborted) return { status: 'host-closed' as const, report }
-        signal.throwIfAborted()
-        report = domain.report(key)
-        if (query.until === 'closed' ? report.closed : report.settled) return { status: 'condition-met' as const, report }
-        const remaining = deadline - timer.now()
-        if (remaining <= 0) return { status: 'timeout' as const, report }
-        await timer.wait(Math.min(scanIntervalMs, remaining), signal)
-      }
+    return observeFinite(owner, timer, observe, report => query.until === 'closed' ? report.closed : report.settled,
+      { timeoutMs: query.timeoutMs, scanIntervalMs, ...(query.signal === undefined ? {} : { signal: query.signal }) }).then(result => {
+      const { instanceId: _instanceId, cuts: _cuts, recoveryRequired: _recoveryRequired, ...report } = result.observation
+      return { ...result, report }
     })
   }
 }

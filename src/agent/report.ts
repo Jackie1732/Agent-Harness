@@ -2,9 +2,11 @@ import type { SessionSnapshot } from '../session/types.js'
 import { projectModelSession } from '../model/projection.js'
 import { projectAgentSession } from './projection.js'
 import { projectCommunicationFacts } from '../communication/projection.js'
+import type { AgentRunReport } from './report-data.js'
+export type { AgentRunReport, AgentCommandReport, AgentCommandReceipt } from './report-data.js'
 
 /** Bounded public data only; reports neither wake a peer nor execute a model. */
-export function projectAgentReport(snapshot: SessionSnapshot) {
+export function projectAgentReport(snapshot: SessionSnapshot): AgentRunReport {
   const state = projectAgentSession(snapshot)
   const maximum = state.spec?.payload.limits.maxReportEntries ?? 0
   const pendingWaits = state.waits.filter(wait => wait.settled === null)
@@ -55,4 +57,3 @@ export function projectAgentReport(snapshot: SessionSnapshot) {
         text: textBytes <= (state.spec?.payload.limits.maxResultBytes ?? 0) ? finalText : null, textBytes,
         textOmitted: textBytes > (state.spec?.payload.limits.maxResultBytes ?? 0) } : null })
 }
-export type AgentRunReport = ReturnType<typeof projectAgentReport>

@@ -14,6 +14,8 @@ import { decodeAgentCommand, referenceKey, inputReference } from './input-codec.
 import { projectAgentSession } from './projection.js'
 import { projectAgentReport } from './report.js'
 import type { AgentRunReport } from './report.js'
+import type { AgentCommandReport } from './report-data.js'
+import type { AgentCommandReceipt } from './report-data.js'
 import { selectAgentInput } from './scheduling.js'
 import { driveAgentTurn } from './turn-driver.js'
 import { executeAgentSend } from './action-driver.js'
@@ -187,7 +189,7 @@ export class SessionAgent {
   }
 
   /** Accept one quota-limited outbox command without a root task or automatic delivery. */
-  sendMessage(value: AgentSendCommand): Promise<AgentRunReport> {
+  sendMessage(value: AgentSendCommand): Promise<AgentCommandReport> {
     this.#accepting()
     const command = decodeAgentCommand(value)
     if (this.#task !== undefined) throw new AgentError('AGENT_BUSY', 'driver-active')
@@ -203,15 +205,26 @@ export class SessionAgent {
       runtime = this.#runtime
       const state = this.snapshot()
       if (state.commands.length >= state.spec!.payload.maxDirectSendCommandsPerSession) {
-        await runtime.journal.append(events.agentBusinessEvents(this.snapshot().spec!.payload.protocolVersion).settled, () => ({ run: run.stored.eventId, stoppedBy: 'command-budget' as const, reason: 'direct-send-budget' })); return this.report()
+        await runtime.journal.append(events.agentBusinessEvents(this.snapshot().spec!.payload.protocolVersion).settled, () => ({ run: run.stored.eventId, stoppedBy: 'command-budget' as const, reason: 'direct-send-budget' }))
+        return this.#commandReport({ status: 'not-accepted', runId: run.stored.eventId,
+          commandEventId: null, action: null, outboxAcceptedEventId: null, messageId: null, reason: 'direct-send-budget' })
       }
       const accepted = await runtime.journal.append(events.agentCommandAcceptedEvent, state => ({ run: run.stored.eventId, spec: state.spec!.stored.eventId, root: null, command }))
       const action = { eventId: accepted.stored.eventId, index: 0 }
       const result = await executeAgentSend(runtime, action, command)
       await runtime.journal.append(runtime.events.actionSettled, () => ({ action, result }))
       await runtime.journal.append(events.agentBusinessEvents(this.snapshot().spec!.payload.protocolVersion).settled, () => ({ run: run.stored.eventId, stoppedBy: 'command-settled' as const, reason: result.kind }))
-      return this.report()
+      const outbox = result.kind === 'outbox' ? projectCommunicationFacts(runtime.session.snapshot()).outbox.find(item => item.acceptedEventId === result.accepted)! : null
+      return this.#commandReport({ status: outbox === null ? 'not-accepted' : 'outbox-accepted',
+        runId: run.stored.eventId, commandEventId: accepted.stored.eventId, action,
+        outboxAcceptedEventId: outbox?.acceptedEventId ?? null, messageId: outbox?.messageId ?? null,
+        reason: result.kind === 'outbox' ? null : result.kind === 'communication-not-accepted' || result.kind === 'not-started' ? result.reason : result.kind })
     })
+  }
+
+  #commandReport(command: AgentCommandReceipt): AgentCommandReport {
+    const snapshot = this.#runtime.session.snapshot()
+    return Object.freeze({ ...projectAgentReport(snapshot), command, cuts: snapshot.history.map(segment => ({ sessionId: segment.header.sessionId, through: segment.through })) })
   }
 
   /** Join this instance's current Turn and end only after all durable work and communication are settled. */
@@ -289,7 +302,7 @@ export class SessionAgent {
     })
     return task
   }
-  #launch(kind: 'drive' | 'command' | 'maintenance', operation: () => Promise<AgentRunReport>): Promise<AgentRunReport> {
+  #launch<T extends AgentRunReport>(kind: 'drive' | 'command' | 'maintenance', operation: () => Promise<T>): Promise<T> {
     this.#token = Symbol('Agent task')
     const chain = new Set(driverTask.getStore()); chain.add(this.#token)
     const task = driverTask.run(chain, () => Promise.resolve().then(operation))

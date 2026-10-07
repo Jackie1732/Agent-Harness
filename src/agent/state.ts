@@ -9,6 +9,7 @@ import type { AgentActionSettled, AgentCommandAccepted, AgentControlRequest, Age
   AgentStepDecided, AgentStepOpened, AgentTurnSettled, AgentTurnStarted, AgentWaitSettled } from './event-contract.js'
 
 export type AgentInputState = {
+  readonly submission?: import('./input-submission.js').AgentInputSubmission
   readonly protocol?: { readonly delegation: SessionEventId; readonly kind: SubagentMessageKind | 'failure'; readonly inbox: SessionEventId }
   readonly work?: import('../workflow/work-binding.js').WorkAssignmentAccepted
   readonly workMessage?: { readonly assignment: import('../workflow/types.js').WorkflowEventRef; readonly inbox: SessionEventId } & (

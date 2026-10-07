@@ -40,7 +40,10 @@ import { workRecoveryRequestedEvent, workRecoverySettledEvent } from '../workflo
 import { applyWorkRecoveryEvent, projectWorkRecoveries } from '../workflow/recovery-projection.js'
 
 function applyInput(state: AgentProjectionState, event: CommittedSessionEvent): void {
-  const p = events.agentInputAcceptedEvent.decode(event.payload)
+  const keyed = event.stored.payloadVersion === 2 ? events.agentKeyedInputAcceptedEvent.decode(event.payload) : undefined
+  const p = keyed ?? events.agentInputAcceptedEvent.decode(event.payload)
+  const submission = keyed?.submission
+  if (submission !== undefined && state.inputSubmissions.get(submission.namespace)?.has(submission.key)) invalidAgent('duplicate-local-submission')
   const spec = requireSpec(state)
   if (spec.payload.protocolVersion !== 1 && spec.payload.subagents.role === 'child') invalidAgent('child-input-requires-protocol')
   if (p.spec !== spec.stored.eventId || state.openRecovery !== null || state.closing !== null) invalidAgent('input-not-admissible')
@@ -55,7 +58,12 @@ function applyInput(state: AgentProjectionState, event: CommittedSessionEvent): 
     if (root.outcome !== null || root.stopControl !== null) invalidAgent('answer-root-stopped')
   }
   const reference = { kind: 'user' as const, eventId: event.stored.eventId }
-  state.inputs.set(inputKey(reference), { reference, input: p.input, message: null, acceptedAt: event.stored.recordedAt,
+  if (submission !== undefined) {
+    let keys = state.inputSubmissions.get(submission.namespace)
+    if (keys === undefined) { keys = new Map(); state.inputSubmissions.set(submission.namespace, keys) }
+    keys.set(submission.key, event.stored.eventId)
+  }
+  state.inputs.set(inputKey(reference), { reference, input: p.input, ...(submission === undefined ? {} : { submission }), message: null, acceptedAt: event.stored.recordedAt,
     sequence: event.stored.sequence, lane: 'user', status: 'queued', claimedBy: null, reservedBy: null, everMatched: false, reason: null })
 }
 function applyAgentEvent(state: AgentProjectionState, event: CommittedSessionEvent): void {

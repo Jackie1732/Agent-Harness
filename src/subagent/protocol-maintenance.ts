@@ -69,8 +69,10 @@ export function taskProtocolAction(accepted: AcceptedDelegation, clock: Clock): 
 
 export function resultProtocolAction(accepted: AcceptedDelegation, session: SessionHandle, journal: AgentJournal, clock: Clock): ProtocolAction | undefined {
   const state = projectAgentSession(session.snapshot())
+  const execution = state.subagents.resources.filter(item => item.opened.payload.component === 'execution').at(-1)
+  const release = execution === undefined ? null : effectiveResourceRelease(execution, state.subagents.recoveries)
   if (state.roots[0]?.outcome == null || state.openTurn !== null || state.subagents.protocol.some(item => item.payload.kind === 'result')
-    || !state.subagents.resources.filter(item => item.opened.payload.component === 'execution').some(item => effectiveResourceRelease(item, state.subagents.recoveries) !== null)) return undefined
+    || release === null || release.outcome === 'unknown') return undefined
   const id = { delegation: accepted.event.stored.eventId, parentAddress: accepted.event.payload.parentAddress, childAddress: accepted.event.payload.childAddress }
   const task = state.inputs.find(item => item.protocol?.kind === 'task')?.message
   if (task == null) throw new SubagentError('SUBAGENT_STATE_INVALID', 'missing-result-task')

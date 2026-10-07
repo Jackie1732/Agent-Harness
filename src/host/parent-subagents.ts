@@ -6,6 +6,8 @@ import type { HostTimer } from './timer.js'
 import { HostError } from './errors.js'
 import { decodeDelegationRequest } from '../subagent/request.js'
 import { text } from '../agent/validation.js'
+import type { DelegationObservation, WaitResult } from '../protocol/results.js'
+import { observeFinite } from './finite-observer.js'
 
 export interface ParentSubagentOptions {
   readonly domain: HostSubagents
@@ -19,11 +21,34 @@ export interface ParentSubagentOptions {
   track<T>(task: () => Promise<T>): Promise<T>
   trackObservation<T>(task: () => Promise<T>): Promise<T>
   wake(): void
+  observe(delegation: SessionEventId): DelegationObservation
 }
+export interface DelegationWaitQuery { readonly until: 'business' | 'closed'; readonly signal?: AbortSignal }
+export interface FiniteDelegationWaitQuery extends DelegationWaitQuery { readonly timeoutMs: number }
 /** The Host facade itself is the caller's control capability; IDs only select work already owned by this parent. */
 export function bindParentSubagents(options: ParentSubagentOptions) {
   const { domain, parent, root } = options
   const inspect = (delegation: SessionEventId) => { options.assertReady(); return domain.inspect(parent.member.agentKey, root, delegation) }
+  function wait(delegation: SessionEventId, query: FiniteDelegationWaitQuery): Promise<WaitResult<DelegationObservation>>
+  function wait(delegation: SessionEventId, query: DelegationWaitQuery): Promise<ReturnType<typeof inspect>>
+  async function wait(delegation: SessionEventId, query: DelegationWaitQuery | FiniteDelegationWaitQuery): Promise<WaitResult<DelegationObservation> | ReturnType<typeof inspect>> {
+    options.assertReady()
+    options.assertExternalWait()
+    if (query.until !== 'business' && query.until !== 'closed') throw new HostError('HOST_PROTOCOL_INVALID', 'delegation-wait-mode')
+    const condition = (result: Pick<DelegationObservation, 'closed' | 'inputDisposed' | 'adopted' | 'resultAvailable'>) => query.until === 'closed' ? result.closed : result.inputDisposed || result.adopted || result.resultAvailable
+    if ('timeoutMs' in query) return observeFinite(options, options.timer, () => options.observe(delegation), condition,
+      { timeoutMs: query.timeoutMs, scanIntervalMs: options.scanIntervalMs, ...(query.signal === undefined ? {} : { signal: query.signal }) })
+    const signal = query.signal === undefined ? options.stopSignal : AbortSignal.any([query.signal, options.stopSignal])
+    return options.trackObservation(async () => {
+      while (true) {
+        signal.throwIfAborted()
+        const result = inspect(delegation)
+        if (condition(result)) return result
+        if (result.recoveryRequired || result.suspended) throw new HostError('HOST_RECOVERY_REQUIRED', 'delegation-wait-blocked')
+        await options.timer.wait(options.scanIntervalMs, signal)
+      }
+    })
+  }
   return Object.freeze({
     spawn(requestKey: string, request: DelegationRequest) {
       options.assertReady()
@@ -39,21 +64,7 @@ export function bindParentSubagents(options: ParentSubagentOptions) {
       options.assertReady()
       return options.track(async () => { const result = await domain.cancel(parent.member.agentKey, root, delegation, requestKey); options.wake(); return result })
     },
-    async wait(delegation: SessionEventId, query: { readonly until: 'business' | 'closed'; readonly signal?: AbortSignal }) {
-      options.assertReady()
-      options.assertExternalWait()
-      if (query.until !== 'business' && query.until !== 'closed') throw new HostError('HOST_PROTOCOL_INVALID', 'delegation-wait-mode')
-      const signal = query.signal === undefined ? options.stopSignal : AbortSignal.any([query.signal, options.stopSignal])
-      return options.trackObservation(async () => {
-        while (true) {
-          signal.throwIfAborted()
-          const result = inspect(delegation)
-          if (query.until === 'closed' ? result.closed : result.inputDisposed || result.adopted || result.resultAvailable) return result
-          if (result.recoveryRequired || result.suspended) throw new HostError('HOST_RECOVERY_REQUIRED', 'delegation-wait-blocked')
-          await options.timer.wait(options.scanIntervalMs, signal)
-        }
-      })
-    },
+    wait,
   })
 }
 export type ParentSubagents = ReturnType<typeof bindParentSubagents>

@@ -38,7 +38,7 @@ export type { HostCliIo } from './cli.js'
 export { recoverHost } from './recovery.js'
 export type { RecoverHostOptions } from './recovery.js'
 
-export type { ParentSubagents } from './parent-subagents.js'
+export type { ParentSubagents, DelegationWaitQuery, FiniteDelegationWaitQuery } from './parent-subagents.js'
 export type { HostSubagentConfig, HostSubagentConfigV3, HostParentSubagentConfig, HostWorkspaceResource } from './subagent-config.js'
 export type { HostConfigV1, HostConfigV2, HostConfigV3 } from './config-types.js'
 export type { HostWorkflowConfig, ResolvedHostWorkflowConfig } from './workflow-config.js'
