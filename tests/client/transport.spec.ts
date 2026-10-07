@@ -1,11 +1,19 @@
 import { createServer } from 'node:https'
-import { readFile } from 'node:fs/promises'
+import { mkdtemp, readFile, rm } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import type { Server } from 'node:https'
 import { afterEach, expect, it, vi } from 'vitest'
 import { createHarnessClient } from '../../src/client/client.js'
 import { CONTROL_PROTOCOL, CONTROL_VERSION } from '../../src/protocol/index.js'
+import type { InputReceipt, SessionEventPage } from '../../src/protocol/index.js'
 import { formatSessionEventId, parseSessionId, sessionLogPosition, sessionSequence } from '../../src/session/ids.js'
-import { certificateDirectory, clientOptions } from '../api/fixtures.js'
+import { decodeHostConfig, resolveHostConfig } from '../../src/host/config.js'
+import { initializeHost } from '../../src/host/initialization.js'
+import { decodeApiConfig, resolveApiConfig } from '../../src/api/config.js'
+import { openHarnessApiServer } from '../../src/api/server.js'
+import { twoMemberHostConfig } from '../host/fixtures.js'
+import { apiConfig, certificateDirectory, clientOptions } from '../api/fixtures.js'
 
 const cleanup: Array<() => Promise<void>> = []
 afterEach(async () => { for (const dispose of cleanup.splice(0).reverse()) await dispose() })
@@ -126,4 +134,37 @@ it('iterates legal pages within the requested event count to their fixed cut', a
   expect(pages.map(page => page.events.map(event => event.sequence))).toEqual([[1], [2]])
   expect(pages.map(page => page.through)).toEqual([2, 2])
   expect(calls).toBe(2)
+})
+
+it('retains an advanced iterator target and page budget when the caller reuses its query template', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'atomic-client-iterator-'))
+  cleanup.push(() => rm(directory, { recursive: true, force: true }))
+  const host = resolveHostConfig(decodeHostConfig(twoMemberHostConfig(join(directory, 'store')), directory))
+  await initializeHost(host)
+  const raw = await apiConfig()
+  const api = resolveApiConfig(decodeApiConfig({ ...raw, principals: [{ ...raw.principals[0]!, agentKeys: ['writer', 'reviewer'] }] }), host, directory)
+  const service = await openHarnessApiServer({ host, api, credentials: {} })
+  cleanup.push(() => service.dispose())
+  const client = createHarnessClient(await clientOptions(service.ready.listen.port))
+  cleanup.push(() => client.dispose())
+  const query = { target: { kind: 'member' as const, agentKey: 'writer' }, maxEvents: 1 }
+  const pages: SessionEventPage[] = []
+  let appended: InputReceipt | undefined
+  for await (const page of client.events(query)) {
+    pages.push(page)
+    if (pages.length === 1) {
+      expect(page.hasMore).toBe(true)
+      query.target.agentKey = 'reviewer'
+      query.maxEvents = 2
+      appended = await client.request('input.submit', { agentKey: 'writer', submissionKey: 'after-cut', text: 'After the captured cut' })
+    }
+  }
+  const first = pages[0]!, events = pages.flatMap(page => page.events)
+  expect(pages.every(page => page.sessionId === first.sessionId && page.through === first.through && page.events.length === 1)).toBe(true)
+  expect(events).toHaveLength(first.through)
+  expect(events.at(-1)?.sequence).toBe(first.through)
+  expect(pages.at(-1)?.nextCursor).toBeNull()
+  expect(events.map(event => event.eventId)).not.toContain(appended!.inputEventId)
+  const later = await client.request('session.events', { target: { kind: 'member', agentKey: 'writer' }, after: first.through, maxEvents: 10 })
+  expect(later.events.map(event => event.eventId)).toContain(appended!.inputEventId)
 })

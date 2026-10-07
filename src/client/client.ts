@@ -21,7 +21,7 @@ export interface HarnessClient {
    */
   request<M extends ControlMethod>(method: M, params: Params<M>, options?: { readonly signal?: AbortSignal }): Promise<Result<M>>
   /**
-   * Read a finite event prefix with a fixed Session identity and upper sequence cut.
+   * Capture the target and page budget on first advance, then read one fixed Session prefix.
    * @param params Target, page budget and optional starting position or cursor.
    * @param options Optional signal for this client's page requests.
    * @returns Pages requested only as the iterator advances; reaching the captured cut ends iteration.
@@ -127,12 +127,12 @@ export function createHarnessClient(options: HarnessClientOptions): HarnessClien
   }
   return Object.freeze({ request: execute, close, dispose: close,
     async *events(params: Params<'session.events'>, call: { readonly signal?: AbortSignal } = {}) {
-      let query = params
+      let query: Params<'session.events'> = { ...params, target: { ...params.target } }
       while (true) {
         const page = await execute('session.events', query, call)
         yield page
         if (!page.hasMore || page.nextCursor === null) return
-        query = { target: params.target, maxEvents: params.maxEvents, cursor: page.nextCursor }
+        query = { target: query.target, maxEvents: query.maxEvents, cursor: page.nextCursor }
       }
     } })
 }
