@@ -11,12 +11,13 @@ import { observeFinite } from './finite-observer.js'
 
 export interface ParentSubagentOptions {
   readonly domain: HostSubagents
-  readonly parent: HostSlot
+  readonly parent: Pick<HostSlot, 'member' | 'session'>
   readonly root: SessionEventId
   readonly timer: HostTimer
   readonly scanIntervalMs: number
   readonly stopSignal: AbortSignal
   assertReady(): void
+  assertControlReady(): void
   assertExternalWait(): void
   track<T>(task: () => Promise<T>): Promise<T>
   trackObservation<T>(task: () => Promise<T>): Promise<T>
@@ -55,6 +56,7 @@ export function bindParentSubagents(options: ParentSubagentOptions) {
       text(requestKey, 128)
       const captured = decodeDelegationRequest(request, domain.options.config.limits)
       return options.track(async () => {
+        options.assertControlReady()
         const result = await domain.admission.spawn(parent.member.agentKey, parent.session, root, { kind: 'programmatic', requestKey }, captured)
         options.wake(); return result
       })
@@ -62,7 +64,7 @@ export function bindParentSubagents(options: ParentSubagentOptions) {
     inspect,
     cancel(delegation: SessionEventId, requestKey: string) {
       options.assertReady()
-      return options.track(async () => { const result = await domain.cancel(parent.member.agentKey, root, delegation, requestKey); options.wake(); return result })
+      return options.track(async () => { options.assertControlReady(); const result = await domain.cancel(parent.member.agentKey, root, delegation, requestKey); options.wake(); return result })
     },
     wait,
   })

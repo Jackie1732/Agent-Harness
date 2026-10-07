@@ -106,17 +106,20 @@ class HostRuntime {
     return observeFinite(this.#observers.bind('control-api', task => this.#track(task)), this.#timer, read, condition, query)
   }
 
-  /** Bind explicit Host control to an existing configured parent root. */
+  /** Observe an existing local Parent root; mutations require this binding's online execution slot. Rebind after reattachment to control it. */
   bindParent(parentAddress: SessionAddress, parentRoot: SessionEventId) {
     this.#assertReady()
-    const parent = this.#assembly.slots.find(slot => slot.session.header.address === parentAddress && this.#assembly.local.some(item => item.session === slot.session))
+    const parent = this.#assembly.local.find(item => item.session.header.address === parentAddress)
     const domain = this.#assembly.subagents
-    if (parent === undefined || this.#offline.has(parent.member.agentKey) || domain === undefined || !domain.options.config.parents.some(item => item.agentKey === parent.member.agentKey)
+    if (parent === undefined || domain === undefined || !domain.options.config.parents.some(item => item.agentKey === parent.member.agentKey)
       || !projectAgentSession(parent.session.snapshot()).roots.some(root => root.id === parentRoot)) throw new HostError('HOST_NOT_READY', 'parent-control-not-authorized')
+    const execution = this.#assembly.slots.find(slot => slot.session === parent.session)
     return bindParentSubagents({ domain, parent, root: parentRoot, timer: this.#timer, scanIntervalMs: this.#spec.scheduling.scanIntervalMs,
       observe: delegation => this.read().delegation(parent.member.agentKey, parentRoot, delegation),
       ...this.#observers.bind(parent.member.agentKey, task => this.#track(task)),
-      assertReady: () => this.#assertReady(), assertExternalWait: () => {
+      assertReady: () => this.#assertReady(), assertControlReady: () => {
+        if (this.#slot(parent.member.agentKey) !== execution) throw new HostError('HOST_INACTIVE', 'parent-binding-retired')
+      }, assertExternalWait: () => {
         if ([...hostTasks.getStore() ?? []].some(token => this.#tokens.has(token))) throw new HostError('HOST_REENTRANT_WAIT', 'parent-cannot-wait-on-own-business-lane')
       }, track: task => this.#track(task), wake: () => this.#assembly.wakeup.notify() })
   }

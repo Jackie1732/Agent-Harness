@@ -41,6 +41,36 @@ it('queries the exact local input and completed Root through their persistent id
   } finally { await f.close() }
 })
 
+it('observes a closed delegation after its Parent goes offline and rejects mutations through either binding', async () => {
+  const f = await waitingDelegations({ count: 1 })
+  try {
+    await f.host.run()
+    const root = f.host.read().agent('writer').report.roots[0]!.id, id = f.receipts[0]!.delegationId
+    await f.host.cancel('writer', root)
+    await f.host.run()
+    expect(f.host.read().delegation('writer', root, id)).toMatchObject({ closed: true, recoveryRequired: false })
+    const online = f.parents[0]!
+    await f.host.setMailboxOnline('writer', false)
+    expect(f.host.read().agent('writer').mailbox).toBe('known-offline')
+    await expect(online.spawn('same-spawn-key', controlRequest)).rejects.toMatchObject({ code: 'HOST_INACTIVE' })
+    await expect(online.cancel(id, 'after-offline')).rejects.toMatchObject({ code: 'HOST_INACTIVE' })
+    const offline = f.host.bindParent(formatSessionAddress(parseSessionId(f.spec.members[0]!.sessionId)), root)
+    expect(offline.inspect(id)).toMatchObject({ closed: true })
+    expect(await offline.wait(id, { until: 'closed', timeoutMs: 1 })).toMatchObject({ status: 'condition-met', observation: { closed: true, recoveryRequired: false } })
+    await expect(offline.spawn('same-spawn-key', controlRequest)).rejects.toMatchObject({ code: 'HOST_INACTIVE' })
+    await expect(offline.cancel(id, 'after-offline')).rejects.toMatchObject({ code: 'HOST_INACTIVE' })
+    await f.host.setMailboxOnline('writer', true)
+    f.host.resume('writer')
+    for (const previous of [online, offline]) {
+      await expect(previous.spawn('same-spawn-key', controlRequest)).rejects.toMatchObject({ code: 'HOST_INACTIVE' })
+      await expect(previous.cancel(id, 'after-reattach')).rejects.toMatchObject({ code: 'HOST_INACTIVE' })
+    }
+    const current = f.host.bindParent(formatSessionAddress(parseSessionId(f.spec.members[0]!.sessionId)), root)
+    expect(await current.spawn('same-spawn-key', controlRequest)).toEqual(f.receipts[0])
+    expect(await current.cancel(id, 'after-reattach')).toEqual({ kind: 'already-closed' })
+  } finally { await f.close() }
+}, 30000)
+
 it('reads a fixed event cut while new inputs append and rejects cross-target or byte-limited cursors', async () => {
   const f = await fixture()
   try {
