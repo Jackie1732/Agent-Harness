@@ -100,7 +100,8 @@ describe('finite experiment CLI', () => {
     expect(await runExperimentCli(['compare', '--root', plan.storage.controlRoot, '--comparison', 'a-versus-b'], compare, {})).toBe(0)
     expect(compare.json()).toMatchObject({ status: 'primary-fixed', summary: { a: { qualityCounts: { pass: 2 } }, b: { qualityCounts: { fail: 2 } } } })
     expect(await fingerprint(root)).toEqual(beforeReaders)
-    const first = plan.units[0]!, primaryPath = join(plan.storage.controlRoot, 'reports', 'primary.json'), primaryBytes = await readFile(primaryPath)
+    const first = plan.units[0]!, primaryRef = (await readExperimentStorage(plan.storage.controlRoot)).state!.reports[0]!.payload.report
+    const primaryPath = join(plan.storage.controlRoot, primaryRef.path), primaryBytes = await readFile(primaryPath)
     const evaluated = streams()
     expect(await runExperimentCli(['evaluate', '--root', plan.storage.controlRoot, '--unit', first.unitKey], evaluated)).toBe(0)
     expect(evaluated.json().overall).toBe('pass')
@@ -146,7 +147,7 @@ describe('finite experiment CLI', () => {
     await expect(stat(plan.storage.controlRoot)).rejects.toMatchObject({ code: 'ENOENT' })
   })
 
-  it('resolves live credentials from the frozen reference before calling the runner', async () => {
+  it('passes only frozen credential references and rejects missing active credentials before creating storage', async () => {
     const root = await directory(), base = answered(root)
     const definition = { ...base, runPolicy: { ...(base.runPolicy as JsonObject), mode: 'live' },
       variants: (base.variants as readonly JsonObject[]).map(variant => ({ ...variant, recipe: { ...(variant.recipe as JsonObject),
@@ -156,10 +157,10 @@ describe('finite experiment CLI', () => {
         }) } })) }
     const plan = await planExperiment(definition), planPath = join(root, 'plan.json')
     await writeFile(planPath, JSON.stringify(plan))
-    const execute = vi.spyOn(runner, 'runExperiment').mockRejectedValue(new ExperimentError('EXPERIMENT_INPUT_INVALID', 'test-stopped-before-host'))
     const args = ['run', '--plan', planPath, '--mode', 'live']
-    await expect(runExperimentCli(args, streams(), {})).rejects.toThrow('cli-live-credential-missing')
-    expect(execute).not.toHaveBeenCalled()
+    await expect(runExperimentCli(args, streams(), {})).rejects.toThrow('credential-reference-unavailable')
+    await expect(stat(plan.storage.controlRoot)).rejects.toMatchObject({ code: 'ENOENT' })
+    const execute = vi.spyOn(runner, 'runExperiment').mockRejectedValue(new ExperimentError('EXPERIMENT_INPUT_INVALID', 'test-stopped-before-host'))
     const io = streams()
     await expect(runExperimentCli(args, io, { EXPERIMENT_TEST_CREDENTIAL: 'private-credential', UNUSED_CREDENTIAL: 'ignored' })).rejects.toThrow('test-stopped-before-host')
     expect(execute).toHaveBeenCalledWith(expect.objectContaining({ planDigest: plan.planDigest }), expect.objectContaining({ mode: 'live', credentials: { EXPERIMENT_TEST_CREDENTIAL: 'private-credential' } }))
@@ -206,7 +207,8 @@ describe('finite experiment CLI', () => {
       variants: [(base.variants as readonly JsonObject[])[0]!], comparisons: [] }), path = join(root, 'plan.json')
     await writeFile(path, JSON.stringify(plan))
     expect(await runExperimentCli(['run', '--plan', path, '--mode', 'fixture'], streams())).toBe(0)
-    const unit = plan.units[0]!, primaryPath = join(plan.storage.controlRoot, 'reports', 'primary.json'), primaryBytes = await readFile(primaryPath)
+    const unit = plan.units[0]!, primaryRef = (await readExperimentStorage(plan.storage.controlRoot)).state!.reports[0]!.payload.report
+    const primaryPath = join(plan.storage.controlRoot, primaryRef.path), primaryBytes = await readFile(primaryPath)
     await appendFile(join(unit.hostRoot, 'sessions', unit.recipe.members[0]!.sessionId, 'events.log'), Buffer.from([1]))
     const review = streams()
     expect(await runExperimentCli(['report', '--root', plan.storage.controlRoot, '--report-key', 'changed-source', '--kind', 'posthoc'], review)).toBe(2)

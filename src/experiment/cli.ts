@@ -148,10 +148,9 @@ function credentialsFor(plan: ExperimentPlan, environment: Readonly<Record<strin
       for (const template of unit.recipe.subagents.templates) if (template.model.kind !== 'scripted-fixed') references.add(template.model.credentialRef)
     }
   }
-  return Object.fromEntries([...references].map(reference => {
+  return Object.fromEntries([...references].flatMap(reference => {
     const credential = environment[reference]
-    if (credential === undefined || credential.trim().length === 0) invalid('cli-live-credential-missing')
-    return [reference, credential]
+    return credential === undefined ? [] : [[reference, credential]]
   }))
 }
 
@@ -205,7 +204,6 @@ export async function runExperimentCli(args: readonly string[], io: HostCliIo,
       && (!flags.has('--continue-unstarted') || !flags.has('--predecessor-stopped'))) invalid('cli-continuation-confirmation')
     const plan = path === undefined ? await requirePlan(resolve(root!)) : decodeExperimentPlan(await readJson(path, 64 * 1024 * 1024))
     if (plan.runPolicy.mode !== mode) invalid('cli-mode-differs-from-plan')
-    if (mode === 'fixture' && plan.variants.some(variant => variant.fixture.kind !== 'builtin')) invalid('cli-fixture-binding-unsupported')
     const result = await runExperiment(path === undefined ? resolve(root!) : plan, { mode,
       credentials: mode === 'live' ? credentialsFor(plan, environment) : {}, continueUnstarted: flags.has('--continue-unstarted'),
       ...(flags.has('--predecessor-stopped') ? { predecessorStopped: true } : {}),
