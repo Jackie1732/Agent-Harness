@@ -3,11 +3,13 @@ import { join } from 'node:path'
 import { FileSessionBackend } from '../session/file-backend.js'
 import { loadSessionHistory } from '../session/lineage.js'
 import { freezeSessionSnapshot } from '../session/session-handle.js'
-import { parseSessionId, sessionLogPosition } from '../session/ids.js'
+import { parseSessionEventId, parseSessionId, sessionLogPosition } from '../session/ids.js'
 import type { SessionId, SessionLogPosition } from '../session/ids.js'
 import type { SessionSnapshot } from '../session/types.js'
 import { FrameScanner } from '../session/frame.js'
 import { hostRuntimeEventCatalog } from '../host/initialization.js'
+import { projectAgentSession } from '../agent/projection.js'
+import { validateDelegationCausality } from '../subagent/causality.js'
 import { collectExperimentMetrics } from './metrics.js'
 import { verifyExperimentContexts } from './context-verification.js'
 import type { CollectExperimentEvidenceInput, CollectedExperimentEvidence, EvidenceSessionCut } from './evidence-types.js'
@@ -24,6 +26,11 @@ export async function collectExperimentEvidence(input: CollectExperimentEvidence
   const snapshots: SessionSnapshot[] = []
   const cuts = new Map<SessionId, EvidenceSessionCut>()
   const selected: { sessionId: SessionId; through?: SessionLogPosition }[] = []
+  const includeSession = (sessionId: SessionId): void => {
+    if (selected.some(item => item.sessionId === sessionId)) return
+    if (selected.length >= limits.maxSessionCount) throw new ExperimentError('EXPERIMENT_LIMIT_EXCEEDED', 'session-count-limit')
+    selected.push({ sessionId })
+  }
   const fail = (cause: unknown) => reasons.push(cause instanceof ExperimentError ? cause.message
     : cause instanceof Error && 'code' in cause ? String(cause.code) : 'evidence-unreadable')
   let totalBytes = 0
@@ -36,13 +43,17 @@ export async function collectExperimentEvidence(input: CollectExperimentEvidence
     }
     if (input.selected !== undefined) selected.push(...input.selected)
     else {
+      for (const member of input.recipe.members) if (member.kind === 'local') includeSession(parseSessionId(member.sessionId))
+      if (input.recipe.schemaVersion === 3 && input.recipe.workflows.kind === 'enabled') {
+        for (const workflow of input.recipe.workflows.definitions) includeSession(parseSessionId(workflow.sessionId))
+      }
       const directory = await opendir(join(root, 'sessions'))
       let entries = 0
       for await (const entry of directory) {
         if (++entries > limits.maxSessionCount) throw new ExperimentError('EXPERIMENT_LIMIT_EXCEEDED', 'session-count-limit')
         if (!/^[0-9a-f]{8}-[0-9a-f-]{27}$/.test(entry.name)) continue
         if (!entry.isDirectory() || entry.isSymbolicLink()) throw new ExperimentError('EXPERIMENT_EVIDENCE_INCOMPLETE', 'session-directory-invalid')
-        selected.push({ sessionId: parseSessionId(entry.name) })
+        includeSession(parseSessionId(entry.name))
       }
     }
     if (selected.length > limits.maxSessionCount) throw new ExperimentError('EXPERIMENT_LIMIT_EXCEEDED', 'session-count-limit')
@@ -51,23 +62,27 @@ export async function collectExperimentEvidence(input: CollectExperimentEvidence
     try {
       // Size checks precede Backend reads; ancestry is checked through bounded Headers first.
       const checked = new Set<SessionId>()
+      const checkFailures = new Map<SessionId, unknown>()
       const precheck = async (sessionId: SessionId, depth: number): Promise<void> => {
+        if (checkFailures.has(sessionId)) throw checkFailures.get(sessionId)
         if (checked.has(sessionId)) return
         if (checked.size >= limits.maxSessionCount || depth > input.recipe.storage.maxLineageDepth) throw new ExperimentError('EXPERIMENT_LIMIT_EXCEEDED', 'lineage-session-limit')
         checked.add(sessionId)
-        const directory = join(root, 'sessions', sessionId)
-        for (const name of ['header.frame', 'events.log']) {
-          const entry = await lstat(join(directory, name))
-          if (!entry.isFile() || entry.isSymbolicLink()) throw new ExperimentError('EXPERIMENT_EVIDENCE_INCOMPLETE', 'source-file-invalid')
-          totalBytes += entry.size
-          if (totalBytes > limits.maxEvidenceBytes) throw new ExperimentError('EXPERIMENT_LIMIT_EXCEEDED', 'evidence-byte-limit')
-        }
-        const header = await backend.readPrefix(sessionId, sessionLogPosition(0))
-        if (header.header.parent !== undefined) await precheck(header.header.parent.sessionId, depth + 1)
+        try {
+          const directory = join(root, 'sessions', sessionId)
+          for (const name of ['header.frame', 'events.log']) {
+            const entry = await lstat(join(directory, name))
+            if (!entry.isFile() || entry.isSymbolicLink()) throw new ExperimentError('EXPERIMENT_EVIDENCE_INCOMPLETE', 'source-file-invalid')
+            totalBytes += entry.size
+            if (totalBytes > limits.maxEvidenceBytes) throw new ExperimentError('EXPERIMENT_LIMIT_EXCEEDED', 'evidence-byte-limit')
+          }
+          const header = await backend.readPrefix(sessionId, sessionLogPosition(0))
+          if (header.header.parent !== undefined) await precheck(header.header.parent.sessionId, depth + 1)
+        } catch (cause) { checkFailures.set(sessionId, cause); throw cause }
       }
-      for (const item of selected) await precheck(item.sessionId, 0)
       for (const item of selected) {
         try {
+          await precheck(item.sessionId, 0)
           const local = await backend.readPrefix(item.sessionId, item.through)
           const history = await loadSessionHistory(backend, hostRuntimeEventCatalog, local, input.recipe.storage.maxLineageDepth)
           const snapshot = freezeSessionSnapshot(history)
@@ -82,12 +97,28 @@ export async function collectExperimentEvidence(input: CollectExperimentEvidence
             cuts.set(segment.header.sessionId, { ...cut, role: selected.some(chosen => chosen.sessionId === segment.header.sessionId) ? 'selected' : 'context' })
           }
           snapshots.push(snapshot)
+          if (input.selected === undefined && history.at(-1)!.events.some(event => event.stored.type === 'agent/spec-recorded')) {
+            for (const provision of projectAgentSession(snapshot).subagents.provisions) {
+              if (provision.payload.outcome === 'installed' && provision.payload.child !== null) {
+                includeSession(parseSessionEventId(provision.payload.child.ready).sessionId)
+              }
+            }
+          }
         } catch (cause) { fail(cause) }
       }
     } finally { await backend.dispose() }
   } catch (cause) { fail(cause) }
+  if (input.selected === undefined) for (const parent of snapshots) {
+    if (!parent.history.at(-1)!.events.some(event => event.stored.type === 'agent/spec-recorded')) continue
+    try {
+      for (const requested of projectAgentSession(parent).subagents.delegations) {
+        const child = snapshots.find(snapshot => snapshot.header.sessionId === requested.payload.childSessionId) ?? null
+        validateDelegationCausality(parent, child, requested)
+      }
+    } catch (cause) { fail(cause) }
+  }
   reasons.push(...verifyExperimentContexts(snapshots).reasons)
-  const selectedIds = [...new Set(selected.map(item => item.sessionId))]
+  const selectedIds = [...new Set(selected.map(item => item.sessionId))].sort()
   const coverage = { complete: reasons.length === 0 && snapshots.length === selectedIds.length,
     expectedSessions: input.selected === undefined && reasons.length > 0 ? null : selectedIds.length,
     observedSessions: snapshots.length, reasons: [...new Set(reasons)] }
@@ -132,11 +163,15 @@ export async function verifyExperimentEvidence(evidence: import('./evidence-type
         const path = join(evidence.source.root, item.path)
         const entry = await lstat(path)
         total += entry.size
-        if (!entry.isFile() || entry.isSymbolicLink() || total > maxBytes) { reasons.push('file-or-byte-limit'); continue }
+        if (!entry.isFile() || entry.isSymbolicLink()) { reasons.push('source-file-invalid'); continue }
+        if (total > maxBytes) throw new ExperimentError('EXPERIMENT_LIMIT_EXCEEDED', 'evidence-byte-limit')
         const bytes = await readExperimentFile(path, maxBytes - (total - entry.size))
         if (bytes.byteLength !== item.byteLength || experimentBytesDigest(bytes) !== item.sha256) reasons.push(`file-changed:${item.path}`)
         if (item === session.log && experimentBytesDigest(bytes.subarray(0, session.committedBytes)) !== session.committedSha256) reasons.push(`prefix-changed:${item.path}`)
-      } catch { reasons.push(`file-unreadable:${item.path}`) }
+      } catch (cause) {
+        if (cause instanceof ExperimentError && cause.code === 'EXPERIMENT_LIMIT_EXCEEDED') throw cause
+        reasons.push(`file-unreadable:${item.path}`)
+      }
     }
   }
   return [...new Set(reasons)]
