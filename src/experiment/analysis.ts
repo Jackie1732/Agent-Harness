@@ -21,24 +21,24 @@ export { registerDerivedEvidence } from './derived-evidence.js'
 /** Observe committed metadata without opening any Host or Writer. */
 export const inspectExperiment = readExperimentStorage
 
-/** Load only original sealed observations; posthoc records never replace them. */
-export async function loadExperimentResultSet(root: string, state?: ExperimentJournalSnapshot, tolerateMissing = false): Promise<ExperimentResultSet & { readonly artifactFailures: readonly { unitKey: string; reason: string }[] }> {
+/** Load original sealed observations; an existing report's cut may restrict source authentication. */
+export async function loadExperimentResultSet(root: string, state?: ExperimentJournalSnapshot, tolerateMissing = false, sealedThrough?: number): Promise<ExperimentResultSet & { readonly artifactFailures: readonly { unitKey: string; reason: string }[] }> {
   const journal = state ?? (await requireExperiment(root)).state
   const plan = journal.plan!
   const observations: ComparisonObservation[] = []
   const artifactFailures: { unitKey: string; reason: string }[] = []
   for (const unit of journal.units) {
-    if (unit.sealed === null) continue
+    if (unit.sealed === null || sealedThrough !== undefined && unit.sealed.stored.sequence > sealedThrough) continue
     try {
-    const evidence = decodeExperimentEvidence(await readExperimentArtifact(root, unit.sealed.payload.evidence, plan.evidenceLimits.maxEvidenceBytes), plan.evidenceLimits)
-    if (experimentJsonDigest(evidence as unknown as JsonValue) !== unit.sealed.payload.evidenceDigest) throw new ExperimentError('EXPERIMENT_CONFLICT', 'sealed-evidence-digest')
-    if ((await verifyExperimentEvidence(evidence, plan.evidenceLimits.maxEvidenceBytes)).length > 0) throw new ExperimentError('EXPERIMENT_EVIDENCE_INCOMPLETE', 'sealed-source-changed')
-    const reference = unit.sealed.payload.measurement
-    const measurement = reference === null ? null : { reference, value: decodeExperimentMeasurement(await readExperimentArtifact(root, reference, plan.evidenceLimits.maxReportBytes)) }
-    observations.push({ unitKey: unit.unitKey, evidenceDigest: unit.sealed.payload.evidenceDigest, metrics: evidence.metrics, measurement })
+      const evidence = decodeExperimentEvidence(await readExperimentArtifact(root, unit.sealed.payload.evidence, plan.evidenceLimits.maxEvidenceBytes), plan.evidenceLimits)
+      if (experimentJsonDigest(evidence as unknown as JsonValue) !== unit.sealed.payload.evidenceDigest) throw new ExperimentError('EXPERIMENT_CONFLICT', 'sealed-evidence-digest')
+      if ((await verifyExperimentEvidence(evidence, plan.evidenceLimits.maxEvidenceBytes)).length > 0) throw new ExperimentError('EXPERIMENT_EVIDENCE_INCOMPLETE', 'sealed-source-changed')
+      const reference = unit.sealed.payload.measurement
+      const measurement = reference === null ? null : { reference, value: decodeExperimentMeasurement(await readExperimentArtifact(root, reference, plan.evidenceLimits.maxReportBytes)) }
+      observations.push({ unitKey: unit.unitKey, evidenceDigest: unit.sealed.payload.evidenceDigest, metrics: evidence.metrics, measurement })
     } catch (cause) {
-      if (!tolerateMissing) throw cause
-      artifactFailures.push({ unitKey: unit.unitKey, reason: cause instanceof ExperimentError ? cause.message : 'artifact-unreadable' })
+      if (!tolerateMissing || !(cause instanceof ExperimentError) || cause.code !== 'EXPERIMENT_EVIDENCE_INCOMPLETE') throw cause
+      artifactFailures.push({ unitKey: unit.unitKey, reason: cause.message })
     }
   }
   return { plan, journal, cut: journal.position, observations, artifactFailures }
@@ -96,7 +96,11 @@ export async function verifyExperiment(root: string) {
     try {
       const bytes = await readExperimentFile(join(root, path), plan.evidenceLimits.maxInputBytes)
       if (bytes.byteLength !== material.byteLength || experimentBytesDigest(bytes) !== material.sha256) reasons = ['frozen-input-changed']
-    } catch (cause) { reasons = [cause instanceof ExperimentError ? cause.message : 'frozen-input-unreadable'] }
+    } catch (cause) {
+      if (cause instanceof ExperimentError && cause.code === 'EXPERIMENT_EVIDENCE_INCOMPLETE') reasons = [cause.message]
+      else if ((cause as NodeJS.ErrnoException).code === 'ENOENT') reasons = ['frozen-input-unreadable']
+      else throw cause
+    }
     files.push({ path, verified: reasons.length === 0, reasons })
   }
   const references = read.state.units.flatMap(unit => [unit.started?.payload.recipe, unit.sealed?.payload.evidence,
@@ -110,7 +114,10 @@ export async function verifyExperiment(root: string) {
         const evidence = decodeExperimentEvidence(raw, plan.evidenceLimits)
         reasons = [...evidence.coverage.reasons, ...await verifyExperimentEvidence(evidence, plan.evidenceLimits.maxEvidenceBytes)]
       }
-    } catch (cause) { reasons = [cause instanceof ExperimentError ? cause.message : 'artifact-unreadable'] }
+    } catch (cause) {
+      if (!(cause instanceof ExperimentError) || cause.code !== 'EXPERIMENT_EVIDENCE_INCOMPLETE') throw cause
+      reasons = [cause.message]
+    }
     files.push({ path: reference.path, verified: reasons.length === 0, reasons })
   }
   const unresolved = read.state.units.some(unit => unit.unresolved !== null || unit.started !== null && unit.sealed === null)
