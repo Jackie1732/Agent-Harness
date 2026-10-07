@@ -13,7 +13,7 @@ export function readMethod(method: ControlMethod): boolean {
 /** Map structured, owner-defined diagnostics without matching private error messages. */
 export function apiFailure(error: unknown, method: ControlMethod | undefined, invoked: boolean) {
   const read = method !== undefined && readMethod(method)
-  if (error instanceof ApiRejection) return { code: error.code, message: 'Request rejected', acceptance: error.acceptance, domainCode: null }
+  if (error instanceof ApiRejection) return { code: error.code, message: 'Request rejected', acceptance: read ? 'not-applicable' as const : error.acceptance, domainCode: null }
   if (error instanceof ProtocolError) return { code: error.code, message: 'Invalid control request', acceptance: 'not-accepted' as const, domainCode: null }
   const domainCode = error instanceof HarnessError && /^[A-Z0-9_]{1,128}$/.test(error.code) ? error.code : null
   let code: ApiErrorCode = 'API_INTERNAL_ERROR'

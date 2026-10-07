@@ -71,7 +71,9 @@ async function serve(spec: ResolvedHostSpec, directory: string, workflows: reado
   }
   const api = resolveApiConfig(decodeApiConfig({ ...raw, principals }), spec, directory)
   const service = await openHarnessApiServer({ host: spec, api, credentials: {} })
-  const client = createHarnessClient(await clientOptions(service.ready.listen.port))
+  const researcherOptions = await clientOptions(service.ready.listen.port)
+  // The researcher also completes a full Workflow run with real durable protocol writes.
+  const client = createHarnessClient({ ...researcherOptions, limits: { ...researcherOptions.limits, requestTimeoutMs: 20000 } })
   const peer = viewer ? createHarnessClient(await clientOptions(service.ready.listen.port, 'client-b')) : undefined
   return { service, client, peer, async close() { await client.close(); await peer?.close(); await service.dispose() } }
 }

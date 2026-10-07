@@ -9,7 +9,7 @@ import { EffectOwner } from '../effect/owner.js'
 import { openHost } from '../host/runtime.js'
 import type { AtomicHost, HostShutdownMode } from '../host/runtime.js'
 import type { ResolvedHostSpec } from '../host/config.js'
-import { CONTROL_PATH, CONTROL_PROTOCOL, CONTROL_VERSION, API_HTTP_STATUS, METHOD_CATEGORIES, decodeControlRequest, decodeControlResponse } from '../protocol/index.js'
+import { CONTROL_PATH, CONTROL_PROTOCOL, CONTROL_VERSION, API_HTTP_STATUS, METHOD_CATEGORIES, ProtocolError, decodeControlRequest, decodeControlResponse } from '../protocol/index.js'
 import type { AnyControlRequest, RootObservation, Result } from '../protocol/index.js'
 import type { ApiLimits, ResolvedApiConfig } from './config.js'
 import { authorizeRequest } from './authorization.js'
@@ -132,7 +132,10 @@ export async function openHarnessApiServer(options: OpenHarnessApiServerOptions)
       if (body.byteLength > limits.maxResponseBytes) throw new ApiRejection('API_LIMIT_EXCEEDED', readMethod(captured.method) ? 'not-applicable' : 'unknown')
       try { decodeControlResponse(captured.method, envelope(), captured.requestId, 200,
         { maxBytes: limits.maxResponseBytes, maxDepth: limits.maxJsonDepth, maxNodes: limits.maxJsonNodes }) }
-      catch { throw new ApiRejection('API_INTERNAL_ERROR', readMethod(captured.method) ? 'not-applicable' : 'unknown') }
+      catch (error) {
+        throw new ApiRejection(error instanceof ProtocolError && error.code === 'API_LIMIT_EXCEEDED' ? 'API_LIMIT_EXCEEDED' : 'API_INTERNAL_ERROR',
+          readMethod(captured.method) ? 'not-applicable' : 'unknown')
+      }
       await writeResponse(response, 200, body, limits.responseWriteTimeoutMs)
     } catch (error) {
       const failure = apiFailure(error, decoded?.method, invoked)
