@@ -57,7 +57,12 @@ export class AutomationDriver {
     }
     if (this.#journal.blockedRuns.length > 0) return
     trigger = this.#journal.get(triggerKey)!
-    if (trigger.observation?.recoveryRequired) return
+    if (trigger.observation !== null && (trigger.observation.recoveryRequired || trigger.observation.readErrorCode !== null)) {
+      await this.#observeSources(triggerKey)
+      trigger = this.#journal.get(triggerKey)!
+      if (trigger.observation!.recoveryRequired || trigger.observation!.readErrorCode !== null
+        || automationExecutionStatus(trigger.observation) === 'closed') return
+    }
     await this.#journal.append({ kind: 'run-intent', triggerKey })
     try {
       const result = await this.#client.request('host.run', { expectedInstanceId: status.instanceId })
