@@ -4,6 +4,8 @@ import { decodeHostSubagents, decodeHostWorkspaceResources, parentSubagentRole }
 import { decodeHostWorkflows } from './workflow-config.js'
 import { decodeHostWorkflowTools } from './workflow-tools.js'
 import { decodeAgentSpec, decodeSubagentAgentSpec, decodeWorkflowAgentSpec } from '../agent/spec-codec.js'
+import { AgentError } from '../agent/errors.js'
+import type { AgentSpecV1 } from '../agent/contract.js'
 import type { MailboxLimits } from '../communication/types.js'
 import { parseChannelId } from '../communication/ids.js'
 import { decodeAgentContextProfile, decodeSubagentContextProfile, decodeWorkflowContextProfile } from '../context/profile.js'
@@ -69,7 +71,7 @@ export function decodeHostConfig(value: unknown, baseDirectory: string, limits: 
   try { return decodeConfig(value, baseDirectory, limits) }
   catch (cause) {
     if (cause instanceof HostError) throw cause
-    throw new HostError('HOST_CONFIG_INVALID', 'invalid-config-field', {}, { cause })
+    throw new HostError('HOST_CONFIG_INVALID', cause instanceof AgentError ? cause.message : 'invalid-config-field', {}, { cause })
   }
 }
 
@@ -168,11 +170,15 @@ function decodeConfig(value: unknown, baseDirectory: string, limits: JsonValidat
       || value.outbox > communication.maxPendingOutbox)) invalid('workflow-mailbox-capacity')
   }
   if (messages.some(message => message.type.startsWith('subagent/') || message.type.startsWith('workflow/'))) invalid('reserved-message-type')
-  return snapshotJson({ schemaVersion: input.schemaVersion, ...(subagents === undefined ? {} : { subagents }),
+  const config = snapshotJson({ schemaVersion: input.schemaVersion, ...(subagents === undefined ? {} : { subagents }),
     ...(workspaceResources === undefined ? {} : { workspaceResources }), ...(workflows === undefined ? {} : { workflows }),
     hostKey, storage: { root, maxRecordBytes: integer(storage.maxRecordBytes, 'maxRecordBytes', 4096),
     maxLineageDepth: integer(storage.maxLineageDepth, 'maxLineageDepth', 0) }, members, messages, channels, routes,
     https, communication, scheduling, cli, shutdown }) as unknown as HostConfig
+  for (const member of config.members) if (member.kind === 'local') decodeMemberSpec(member,
+    member.spec.peers.map(peer => ({ key: peer.key, address: formatSessionAddress(parseSessionId('00000000-0000-4000-8000-000000000000')),
+      channelId: parseChannelId('00000000-0000-4000-8000-000000000000') })), config)
+  return config
 }
 
 function decodeHttps(value: unknown, baseDirectory: string): HostHttpsConfig {
@@ -351,16 +357,9 @@ export function resolveHostConfig(config: HostConfig): ResolvedHostSpec {
   const channels = new Map(config.channels.map(channel => [channel.channelKey, channel.channelId!]))
   const resolved = config.members.map(member => {
     if (member.kind === 'remote') return member
-    const descriptor = member.model.kind === 'scripted-fixed'
-      ? scriptedModelDescriptor(member.model)
-      : member.model.kind === 'deepseek' ? deepSeekModelDescriptor(member.model) : anthropicModelDescriptor(member.model)
     const peers = member.spec.peers.map(peer => ({ key: peer.key,
       address: formatSessionAddress(parseSessionId(members.get(peer.memberKey)!.sessionId!)), channelId: parseChannelId(channels.get(peer.channelKey)!) }))
-    const provisional = { ...member.spec, profileEventId: 'ah-event:00000000-0000-4000-8000-000000000000:1',
-      target: { ...member.spec.target, provider: descriptor }, peers }
-    const { profileEventId: _profileEventId, ...spec } = member.spec.protocolVersion === 1 ? decodeAgentSpec(provisional)
-      : (member.spec.protocolVersion === 3 ? decodeWorkflowAgentSpec : decodeSubagentAgentSpec)({ ...provisional, subagents: parentSubagentRole(config.schemaVersion === 1 ? undefined : config.subagents, member.agentKey) })
-    return Object.freeze({ ...member, sessionId: parseSessionId(member.sessionId!), spec })
+    return Object.freeze({ ...member, sessionId: parseSessionId(member.sessionId!), spec: decodeMemberSpec(member, peers, config) })
   })
   const routes = config.routes.map(route => ({ ...route, sessionId: members.get(route.memberKey)!.sessionId! }))
   const workflows = config.schemaVersion === 3 && config.workflows.kind === 'enabled' ? {
@@ -369,6 +368,18 @@ export function resolveHostConfig(config: HostConfig): ResolvedHostSpec {
   } : config.schemaVersion === 3 ? config.workflows : undefined
   return snapshotJson({ ...config, ...(workflows === undefined ? {} : { workflows }), members: resolved, routes,
     channels: config.channels.map(channel => ({ channelKey: channel.channelKey, channelId: channel.channelId! })) }) as unknown as ResolvedHostSpec
+}
+
+/** Identity references are supplied by the caller; draft validation never allocates or persists them. */
+function decodeMemberSpec(member: Extract<HostMemberConfig, { kind: 'local' }>, peers: AgentSpecV1['peers'], config: HostConfig): ResolvedHostLocalMember['spec'] {
+  const descriptor = member.model.kind === 'scripted-fixed' ? scriptedModelDescriptor(member.model)
+    : member.model.kind === 'deepseek' ? deepSeekModelDescriptor(member.model) : anthropicModelDescriptor(member.model)
+  const provisional = { ...member.spec, profileEventId: 'ah-event:00000000-0000-4000-8000-000000000000:1',
+    target: { ...member.spec.target, provider: descriptor }, peers }
+  const { profileEventId: _profileEventId, ...spec } = member.spec.protocolVersion === 1 ? decodeAgentSpec(provisional)
+    : (member.spec.protocolVersion === 3 ? decodeWorkflowAgentSpec : decodeSubagentAgentSpec)({ ...provisional,
+      subagents: parentSubagentRole(config.schemaVersion === 1 ? undefined : config.subagents, member.agentKey) })
+  return spec
 }
 
 export function isLocalHostMember(member: ResolvedHostMember): member is ResolvedHostLocalMember {
