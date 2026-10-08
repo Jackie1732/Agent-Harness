@@ -50,6 +50,7 @@ export async function openOperatorSession(profilePath: string, options: { readon
     hostKey, instanceId: null, sessionId: null }
   const scopeFor = async <M extends ControlMethod>(method: M, params: Params<M>): Promise<OperatorScope> => {
     const status = await link.request('host.status', {})
+    if (status.report.hostKey !== hostKey) { readOnly = true; throw new OperatorError('OPERATOR_BINDING_CHANGED', 2) }
     const target = params as { readonly agentKey?: string; readonly parentAgentKey?: string; readonly workflowKey?: string }
     const agentKey = target.agentKey ?? target.parentAgentKey
     let sessionId: string | null = null
@@ -101,7 +102,8 @@ export async function openOperatorSession(profilePath: string, options: { readon
           if (method === 'input.submit' || method === 'input.answer') {
             const receipt = actual as Result<'input.submit'>, input = params as Params<'input.submit'>
             const observation = await link.request('input.get', { agentKey: input.agentKey, submissionKey: input.submissionKey }, call.signal)
-            const same = observation.sessionId === scope.sessionId && receipt.sessionId === scope.sessionId
+            const current = await link.request('host.status', {}, call.signal)
+            const same = current.report.hostKey === scope.hostKey && observation.sessionId === scope.sessionId && receipt.sessionId === scope.sessionId
               && observation.inputEventId === receipt.inputEventId && observation.submission?.key === input.submissionKey
               && (link.callerNamespace === null || observation.submission.namespace === link.callerNamespace)
               && (call.parentIntent === undefined || link.callerNamespace !== null
@@ -112,10 +114,11 @@ export async function openOperatorSession(profilePath: string, options: { readon
             if (!same) { readOnly = true; envelope = { ...envelope, status: 'pending', error: { code: 'OPERATOR_SCOPE_CHANGED', domainCode: null, message: 'Accepted input target differs from the prepared target' } } }
           } else {
             const receiptSession = receiptOwnerSession(method, actual)
-            const same = receiptSession === null || receiptSession === scope.sessionId
+            const same = (actual as { readonly instanceId: string }).instanceId === scope.instanceId
+              && (receiptSession === null || receiptSession === scope.sessionId)
             await log.complete(intent.id, same ? outcome : { ...outcome, acceptance: 'unknown', errorCode: 'OPERATOR_SCOPE_CHANGED' })
             if (!same) { readOnly = true; envelope = { ...envelope, status: 'pending', error: { code: 'OPERATOR_SCOPE_CHANGED', domainCode: null,
-              message: 'Control receipt belongs to a different Session than its prepared target' } } }
+              message: 'Control receipt differs from its prepared instance or Session' } } }
           }
         }
         return envelope
