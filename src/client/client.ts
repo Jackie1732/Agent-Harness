@@ -101,7 +101,7 @@ export function createHarnessClient(options: HarnessClientOptions): HarnessClien
         })
       }) } catch { reject(new ClientTransportError(acceptance(false))); return }
       const deadline = setTimeout(() => finish(new ClientTransportError(acceptance(sent))), config.limits.requestTimeoutMs)
-      const connectDeadline = setTimeout(() => finish(new ClientTransportError(acceptance(sent))), config.limits.connectTimeoutMs)
+      let connectDeadline: ReturnType<typeof setTimeout> | undefined
       const abort = (): void => finish(new ClientAbortError(acceptance(sent)))
       function finish(error?: Error, value?: Result<M>): void {
         if (settled) return
@@ -113,7 +113,10 @@ export function createHarnessClient(options: HarnessClientOptions): HarnessClien
         const tls = socket as TLSSocket
         const connected = (): void => { clearTimeout(connectDeadline); sent = true }
         if (!tls.connecting && tls.authorized) connected()
-        else tls.once('secureConnect', connected)
+        else {
+          connectDeadline = setTimeout(() => finish(new ClientTransportError(acceptance(sent))), config.limits.connectTimeoutMs)
+          tls.once('secureConnect', connected)
+        }
       })
       outgoing.once('error', () => finish(new ClientTransportError(acceptance(sent))))
       signal.addEventListener('abort', abort, { once: true })

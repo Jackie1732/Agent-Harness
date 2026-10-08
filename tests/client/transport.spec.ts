@@ -1,10 +1,12 @@
 import { createServer } from 'node:https'
+import { createServer as createTcpServer } from 'node:net'
 import { mkdtemp, readFile, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import type { Server } from 'node:https'
 import { afterEach, expect, it, vi } from 'vitest'
 import { createHarnessClient } from '../../src/client/client.js'
+import type { ClientLimits } from '../../src/client/config.js'
 import { CONTROL_PROTOCOL, CONTROL_VERSION } from '../../src/protocol/index.js'
 import type { InputReceipt, SessionEventPage } from '../../src/protocol/index.js'
 import { formatSessionEventId, parseSessionId, sessionLogPosition, sessionSequence } from '../../src/session/ids.js'
@@ -17,13 +19,14 @@ import { apiConfig, certificateDirectory, clientOptions } from '../api/fixtures.
 
 const cleanup: Array<() => Promise<void>> = []
 afterEach(async () => { for (const dispose of cleanup.splice(0).reverse()) await dispose() })
-async function fake(handler: Parameters<typeof createServer>[1]) {
+async function fake(handler: Parameters<typeof createServer>[1], limits: Partial<ClientLimits> = {}) {
   const [ca, cert, key] = await Promise.all(['ca.pem', 'server.pem', 'server-key.pem'].map(name => readFile(`${certificateDirectory}${name}`)))
   const server: Server = createServer({ ca: ca!, cert: cert!, key: key!, requestCert: true, rejectUnauthorized: true }, handler)
   await new Promise<void>((resolve, reject) => { server.once('error', reject); server.listen(0, '127.0.0.1', resolve) })
   cleanup.push(() => new Promise<void>((resolve, reject) => { server.close(error => error === undefined ? resolve() : reject(error)); server.closeAllConnections() }))
   const address = server.address(); if (address === null || typeof address === 'string') throw new Error('server address')
-  const client = createHarnessClient(await clientOptions(address.port)); cleanup.push(() => client.dispose())
+  const options = await clientOptions(address.port)
+  const client = createHarnessClient({ ...options, limits: { ...options.limits, ...limits } }); cleanup.push(() => client.dispose())
   return client
 }
 it('rejects inconsistent HTTP receipts as unknown without retrying a possible mutation', async () => {
@@ -59,6 +62,88 @@ it('rejects origin downgrade and invalid deployment limits before networking', a
   expect(() => createHarnessClient({ ...options, origin: 'https://localhost/redirect' })).toThrow()
   expect(() => createHarnessClient({ ...options, limits: { ...options.limits, requestTimeoutMs: 2147483648 } })).toThrow()
   const client = createHarnessClient(options); await client.close()
+})
+it('starts a queued request connection deadline when it receives a socket', async () => {
+  let firstReceived!: () => void, releaseFirst!: () => void
+  const received = new Promise<void>(resolve => { firstReceived = resolve })
+  const release = new Promise<void>(resolve => { releaseFirst = resolve })
+  const submissions: string[] = []
+  const client = await fake((request, response) => {
+    const chunks: Buffer[] = []; request.on('data', chunk => chunks.push(chunk)); request.once('end', async () => {
+      const body = JSON.parse(Buffer.concat(chunks).toString()) as { requestId: string; params: { submissionKey: string } }
+      submissions.push(body.params.submissionKey)
+      if (submissions.length === 1) { firstReceived(); await release }
+      response.writeHead(200, { 'content-type': 'application/json', connection: 'close' })
+      response.end(JSON.stringify({ protocol: CONTROL_PROTOCOL, version: CONTROL_VERSION, requestId: body.requestId, kind: 'result',
+        result: { agentKey: 'writer', sessionId: eventSession, inputEventId: eventRecords[0]!.eventId, reused: false } }))
+    })
+  }, { maxConnections: 1, connectTimeoutMs: 500, requestTimeoutMs: 4000 })
+  const first = client.request('input.submit', { agentKey: 'writer', submissionKey: 'active', text: 'task' })
+  await received
+  const query = { agentKey: 'writer', submissionKey: 'queued', text: 'task' }
+  const second = client.request('input.submit', query).then(result => result, error => error as Error)
+  query.submissionKey = 'edited'
+  try {
+    await new Promise(resolve => setTimeout(resolve, 750))
+    expect(submissions).toEqual(['active'])
+  } finally { releaseFirst() }
+  await first
+  expect(await second).toMatchObject({ inputEventId: eventRecords[0]!.eventId })
+  expect(submissions).toEqual(['active', 'queued'])
+})
+it.each(['abort', 'close'] as const)('settles active and queued requests locally on %s without submitting the queue', async mode => {
+  let firstReceived!: () => void, releaseFirst!: () => void
+  const received = new Promise<void>(resolve => { firstReceived = resolve })
+  const release = new Promise<void>(resolve => { releaseFirst = resolve })
+  let calls = 0
+  const client = await fake((request, response) => {
+    request.resume(); request.once('end', async () => {
+      calls++; firstReceived(); await release; response.destroy()
+    })
+  }, { maxConnections: 1 })
+  const active = client.request('input.submit', { agentKey: 'writer', submissionKey: 'active', text: 'task' }).catch(error => error as Error)
+  await received
+  const abort = new AbortController()
+  const queued = client.request('input.submit', { agentKey: 'writer', submissionKey: 'queued', text: 'task' }, { signal: abort.signal })
+  const rejected = expect(queued).rejects.toMatchObject({ name: 'ClientAbortError', acceptance: 'not-accepted' })
+  try {
+    if (mode === 'abort') abort.abort()
+    else {
+      const close = client.close()
+      expect(close).toBe(client.dispose())
+      await close
+      expect(await active).toMatchObject({ name: 'ClientAbortError', acceptance: 'unknown' })
+    }
+    await rejected
+    expect(calls).toBe(1)
+  } finally { releaseFirst() }
+  await active
+  expect(calls).toBe(1)
+})
+it.each(['connect', 'request'] as const)('bounds an assigned socket stalled in TLS by its %s deadline', async mode => {
+  const sockets = new Set<import('node:net').Socket>()
+  let clientHello!: () => void
+  const hello = new Promise<void>(resolve => { clientHello = resolve })
+  const server = createTcpServer(socket => {
+    sockets.add(socket)
+    socket.once('data', clientHello)
+    socket.once('close', () => sockets.delete(socket))
+  })
+  await new Promise<void>((resolve, reject) => { server.once('error', reject); server.listen(0, '127.0.0.1', resolve) })
+  cleanup.push(() => new Promise<void>((resolve, reject) => {
+    for (const socket of sockets) socket.destroy()
+    server.close(error => error === undefined ? resolve() : reject(error))
+  }))
+  const address = server.address(); if (address === null || typeof address === 'string') throw new Error('server address')
+  const options = await clientOptions(address.port)
+  const client = createHarnessClient({ ...options, limits: { ...options.limits,
+    connectTimeoutMs: mode === 'connect' ? 200 : 1000, requestTimeoutMs: mode === 'request' ? 200 : 1000 } })
+  cleanup.push(() => client.close())
+  const failed = expect(client.request('input.submit', { agentKey: 'writer', submissionKey: 'handshake', text: 'task' }))
+    .rejects.toMatchObject({ name: 'ClientTransportError', acceptance: 'not-accepted' })
+  await hello
+  await failed
+  await client.close()
 })
 it('normalizes synchronous TLS request failures without retaining timers or close work', async () => {
   const options = await clientOptions(1)

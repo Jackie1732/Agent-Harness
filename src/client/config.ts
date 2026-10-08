@@ -1,7 +1,7 @@
 import type { SecureContextOptions } from 'node:tls'
 import { isIP } from 'node:net'
 
-/** Explicit request, response, JSON and connection budgets for one Node client. */
+/** Explicit budgets; requestTimeoutMs includes queueing, while connectTimeoutMs starts at socket assignment. */
 export interface ClientLimits {
   readonly maxRequestBytes: number; readonly maxResponseBytes: number; readonly maxJsonDepth: number; readonly maxJsonNodes: number
   readonly connectTimeoutMs: number; readonly requestTimeoutMs: number; readonly maxConnections: number
