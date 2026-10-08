@@ -2,20 +2,17 @@ import type { JsonObject, JsonValue } from '../foundation/json.js'
 import { boundedJson, JsonBoundaryError, parseBoundedJson } from '../schema/bounded-json.js'
 import type { JsonValidationLimits } from '../schema/bounded-json.js'
 import type { ValidateFunction } from 'ajv'
-import { CONTROL_METHODS, CONTROL_PROTOCOL, CONTROL_VERSION } from './constants.js'
+import { CONTROL_PROTOCOL, CONTROL_VERSION } from './constants.js'
 import type { ControlMethod } from './constants.js'
 import type { AnyControlRequest } from './envelopes.js'
 import { ProtocolError } from './errors.js'
 import type { Params } from './methods.js'
 import { PARAMS_SCHEMAS } from './params-schemas.js'
-import { choice, literal, object, requestIdSchema } from './schema-fields.js'
+import { REQUEST_ENVELOPE_SCHEMA } from './envelope-schemas.js'
 import { compileProtocolValidator } from './schema-validator.js'
 
 const envelopeValidator = compileProtocolValidator<{ readonly protocol: typeof CONTROL_PROTOCOL; readonly version: typeof CONTROL_VERSION;
-  readonly requestId: string; readonly method: ControlMethod; readonly params: JsonValue }>(object({
-  protocol: literal(CONTROL_PROTOCOL), version: literal(CONTROL_VERSION), requestId: requestIdSchema,
-  method: choice(CONTROL_METHODS), params: {},
-}))
+  readonly requestId: string; readonly method: ControlMethod; readonly params: JsonValue }>(REQUEST_ENVELOPE_SCHEMA)
 const validators = new Map<ControlMethod, ValidateFunction>()
 
 /** Snapshot JSON and reject configured bytes/depth/nodes before nested decoding. */

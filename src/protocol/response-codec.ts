@@ -11,18 +11,14 @@ import type { RequestId } from './references.js'
 import { API_HTTP_STATUS, ProtocolError } from './errors.js'
 import { RESULT_SCHEMAS, STORED_EVENT_SCHEMA } from './result-schemas.js'
 import { decodeProtocolJson } from './request-codec.js'
-import { choice, literal, nameSchema, nullable, object, requestIdSchema, stringSchema } from './schema-fields.js'
+import { ERROR_ENVELOPE_SCHEMA, RESULT_ENVELOPE_SCHEMA } from './envelope-schemas.js'
 import { compileProtocolValidator } from './schema-validator.js'
 import type { Result } from './methods.js'
 
-const errorValidator = compileProtocolValidator<ControlError>(object({ protocol: literal(CONTROL_PROTOCOL), version: literal(CONTROL_VERSION),
-  requestId: nullable(requestIdSchema), kind: literal('error'), error: object({ code: choice(Object.keys(API_HTTP_STATUS)),
-    message: { ...nameSchema, maxUtf8Bytes: 1024 }, acceptance: choice(['not-accepted', 'unknown', 'not-applicable']),
-    domainCode: nullable({ ...stringSchema, minLength: 1, maxLength: 128, pattern: '^[A-Za-z0-9._:-]+$' }) }) }))
+const errorValidator = compileProtocolValidator<ControlError>(ERROR_ENVELOPE_SCHEMA)
 const validators = new Map<ControlMethod, ValidateFunction<Result<ControlMethod>>>()
 const resultEnvelopeValidator = compileProtocolValidator<{ readonly protocol: typeof CONTROL_PROTOCOL; readonly version: typeof CONTROL_VERSION;
-  readonly requestId: RequestId; readonly kind: 'result'; readonly result: JsonValue }>(object({ protocol: literal(CONTROL_PROTOCOL), version: literal(CONTROL_VERSION),
-  requestId: requestIdSchema, kind: literal('result'), result: {} }))
+  readonly requestId: RequestId; readonly kind: 'result'; readonly result: JsonValue }>(RESULT_ENVELOPE_SCHEMA)
 
 function invalid(): never { throw new ProtocolError('API_PROTOCOL_INVALID', 'Invalid control response') }
 
