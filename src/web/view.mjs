@@ -7,6 +7,13 @@ export function selectRoot(rootId) {
   form.elements.rootId.value = rootId; document.getElementById('child-spawn-form').elements.parentRoot.value = rootId
   select.value = [...select.options].some(option => option.value === rootId) ? rootId : ''
 }
+export function renderInputIntent(input, acceptance) {
+  const form = document.getElementById('input-form'), parent = clear('input-result')
+  form.elements.lookup.value = 'key'; form.elements.value.value = input.submissionKey
+  parent.append(el('p', `本次输入身份：${input.agentKey} · ${input.submissionKey}`, 'hint'),
+    badge(acceptance === 'pending' ? '提交中：尚未取得接纳回执' : `接纳效力：${acceptance}`, acceptance !== 'not-accepted'),
+    details({ agentKey: input.agentKey, submissionKey: input.submissionKey, acceptance }))
+}
 export function factBadges(value) {
   const node = el('div')
   if (value.recoveryRequired !== undefined) node.append(badge(value.recoveryRequired ? '需要恢复' : '恢复：无需', value.recoveryRequired))
@@ -36,8 +43,10 @@ export function renderAgent(agent) {
   selectRoot(document.getElementById('root-form').elements.rootId.value)
   if (agent.report.truncated.roots) parent.append(el('p','Root 列表已截断，可直接输入精确 Root 身份查询。','hint'))
 }
-export function renderRoot(root, answer) {
-  const parent = clear('root-result'); parent.append(factBadges(root))
+export function renderRoot(result, answer) {
+  const parent = clear('root-result'), root = result.observation ?? result
+  if (result.observation !== undefined) parent.append(badge(`等待结果：${result.status}`, result.status !== 'condition-met'))
+  parent.append(factBadges(root))
   if (root.final !== null) parent.append(el('div', root.final.text ?? `终态文本已省略（${root.final.textBytes} 字节）`, 'output'))
   for (const wait of root.waits) {
     const item = el('div',undefined,'wait'); item.append(badge(`等待：${wait.descriptor.kind}`))
@@ -56,8 +65,10 @@ export function renderObservation(id, result) {
   if (result.observation !== undefined) parent.append(badge(`等待结果：${result.status}`,result.status !== 'condition-met'))
   parent.append(factBadges(value),details(value))
 }
-export function renderWorkflow(workflow, output, artifact) {
-  const parent = clear('workflow-result'); parent.append(badge(`状态：${workflow.state}`),factBadges(workflow))
+export function renderWorkflow(result, output, artifact) {
+  const parent = clear('workflow-result'), workflow = result.observation ?? result
+  if (result.observation !== undefined) parent.append(badge(`等待结果：${result.status}`, result.status !== 'condition-met'))
+  parent.append(badge(`状态：${workflow.state}`),factBadges(workflow))
   for (const node of workflow.nodes) {
     const row = el('div',undefined,'actions'); row.append(badge(`${node.nodeKey} · ${node.status}`))
     const button = el('button','读取已接受输出','quiet'); button.addEventListener('click',() => output(node.nodeKey)); row.append(button); parent.append(row)

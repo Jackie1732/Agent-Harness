@@ -1,6 +1,6 @@
 import { browserRequest, control, abortRequests } from './rpc.mjs'
 import { fields, formRequest } from './forms.mjs'
-import { el, clear, details, selectRoot, renderHost, renderAgent, renderRoot, renderObservation, renderWorkflow, renderArtifact, renderEvents, renderReceipt, notice } from './view.mjs'
+import { el, clear, details, selectRoot, renderInputIntent, renderHost, renderAgent, renderRoot, renderObservation, renderWorkflow, renderArtifact, renderEvents, renderReceipt, notice } from './view.mjs'
 
 let instanceId, page, eventQuery, busy = false
 const element = id => document.getElementById(id)
@@ -37,7 +37,13 @@ async function refresh() {
   if (agentKey()) { const agent = await control('agent.get',{agentKey:agentKey()}); instanceId = agent.instanceId; renderAgent(agent) }
 }
 function answer(member, reference, form) {
-  void perform(async () => { const value = fields(form), params = {agentKey:member,wait:reference,submissionKey:value.submissionKey,text:value.text}; display('input.answer',await control('input.answer',params),params) })
+  const value = fields(form), params = {agentKey:member,wait:reference,submissionKey:value.submissionKey,text:value.text}
+  void perform(() => submitInput('input.answer',params))
+}
+async function submitInput(method, params) {
+  renderInputIntent(params,'pending')
+  try { display(method,await control(method,params),params) }
+  catch (error) { renderInputIntent(params,error.acceptance); throw error }
 }
 function display(method,result,params) {
   renderReceipt(method,result)
@@ -50,7 +56,7 @@ function display(method,result,params) {
   if (method.startsWith('root.')) {
     const root = result.observation ?? result
     selectRoot(root.rootId)
-    if ('waits' in root) renderRoot(root,answer); else renderObservation('root-result',result)
+    if ('waits' in root) renderRoot(result,answer); else renderObservation('root-result',result)
   }
   if (method.startsWith('message.')) {
     renderObservation('message-result',result)
@@ -62,7 +68,7 @@ function display(method,result,params) {
   }
   if (method === 'workflow.get' || method === 'workflow.wait') {
     const workflow = result.observation ?? result
-    renderWorkflow(workflow, nodeKey => void perform(async () => renderArtifact(await control('workflow.output',{workflowKey:workflow.workflowKey,nodeKey}))),
+    renderWorkflow(result, nodeKey => void perform(async () => renderArtifact(await control('workflow.output',{workflowKey:workflow.workflowKey,nodeKey}))),
       artifactRef => void perform(async () => renderArtifact(await control('workflow.artifact',{workflowKey:workflow.workflowKey,artifactRef}))))
   }
   if (method === 'workflow.output' || method === 'workflow.artifact') renderArtifact(result)
@@ -75,7 +81,8 @@ element('refresh').addEventListener('click',() => void perform(refresh))
 element('member-select').addEventListener('change',() => {
   page = undefined; eventQuery = undefined; element('root-form').elements.rootId.value = ''; element('root-select').value = ''
   element('child-spawn-form').elements.parentRoot.value = ''; element('child-form').elements.parentRoot.value = ''; element('child-form').elements.delegationId.value = ''
-  clear('root-result'); clear('child-result'); clear('events-result'); void perform(refresh)
+  element('input-form').reset(); element('message-query-form').reset(); element('message-form').elements.messageId.value = ''
+  clear('input-result'); clear('message-result'); clear('root-result'); clear('child-result'); clear('events-result'); void perform(refresh)
 })
 element('workflow-select').addEventListener('change',() => { page = undefined; eventQuery = undefined; clear('workflow-result'); clear('artifact-result'); clear('events-result'); element('events-next').disabled = true })
 element('root-select').addEventListener('change',() => { selectRoot(element('root-select').value); clear('root-result') })
@@ -95,8 +102,10 @@ for (const form of document.querySelectorAll('#workspace form')) form.addEventLi
     parentRoot:element('child-form').elements.parentRoot.value,delegationId:element('child-form').elements.delegationId.value,instanceId}
   void perform(async () => {
     const [method,params] = formRequest(form.id,value,operation,context)
+    if (method === 'input.submit') { await submitInput(method,params); return }
+    const result = await control(method,params)
     if (method === 'session.events') eventQuery = { target:structuredClone(params.target),maxEvents:params.maxEvents }
-    display(method,await control(method,params),params)
+    display(method,result,params)
   })
 })
 element('events-next').addEventListener('click',() => void perform(async () => {
