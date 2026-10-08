@@ -30,6 +30,8 @@ def parse_session_event_id(value: str) -> tuple[CanonicalUuid, int]:
         raise ProtocolError()
     identity, sequence_text = matched.groups()
     identity = parse_session_id(identity)
+    if len(sequence_text) > 16:
+        raise ProtocolError()
     sequence = int(sequence_text)
     if sequence > 9_007_199_254_740_991:
         raise ProtocolError()

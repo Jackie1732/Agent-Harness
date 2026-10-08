@@ -21,6 +21,7 @@ from atomic_harness import (
     HarnessClient,
     ProtocolError,
     TlsCredentials,
+    parse_session_event_id,
 )
 from atomic_harness.codec import CONTROL_PROTOCOL, CONTROL_VERSION, decode_params, encode_json
 
@@ -155,6 +156,75 @@ class ClientTests(unittest.TestCase):
         self.assert_acceptance(failure, "unknown")
         self.assertEqual(len(self.calls), 1)
 
+    def test_truncated_content_length_rejects_complete_json_for_mutations_and_observations(self):
+        for method, params, result, acceptance in [
+            ("input.submit", {"agentKey": "writer", "submissionKey": "truncated", "text": "task"},
+             {"agentKey": "writer", "sessionId": SESSION, "inputEventId": EVENT, "reused": False}, "unknown"),
+            ("session.events", {"target": {"kind": "member", "agentKey": "writer"}, "maxEvents": 1},
+             page(1, 1), "not-applicable"),
+        ]:
+            with self.subTest(method=method):
+                def truncated(request, handler, result=result):
+                    body = json.dumps({"protocol": CONTROL_PROTOCOL, "version": CONTROL_VERSION,
+                                       "requestId": request["requestId"], "kind": "result", "result": result}).encode()
+                    handler.send_response(200)
+                    handler.send_header("content-type", "application/json")
+                    handler.send_header("content-length", str(len(body) + 5))
+                    handler.end_headers()
+                    handler.wfile.write(body)
+                    handler.close_connection = True
+
+                self.handle = truncated
+                with self.assertRaises(ClientTransportError) as failure:
+                    self.client.request(method, params)
+                self.assert_acceptance(failure, acceptance)
+                self.assertEqual(len(self.client._attempts), 0)
+        self.assertEqual(len(self.calls), 2)
+
+    def test_complete_close_delimited_response_is_accepted(self):
+        def close_delimited(request, handler):
+            body = json.dumps({"protocol": CONTROL_PROTOCOL, "version": CONTROL_VERSION,
+                               "requestId": request["requestId"], "kind": "result", "result": {
+                                   "agentKey": "writer", "sessionId": SESSION,
+                                   "inputEventId": EVENT, "reused": False}}).encode()
+            handler.send_response(200)
+            handler.send_header("content-type", "application/json")
+            handler.end_headers()
+            handler.wfile.write(body)
+            handler.close_connection = True
+
+        self.handle = close_delimited
+        self.assertEqual(self.submit()["inputEventId"], EVENT)
+        self.assertEqual(len(self.calls), 1)
+        self.assertEqual(len(self.client._attempts), 0)
+
+    def test_oversized_event_sequence_is_rejected_at_local_and_response_boundaries(self):
+        oversized = "ah-event:" + SESSION + ":" + "9" * 5000
+        with self.subTest(boundary="local"):
+            maximum = "ah-event:" + SESSION + ":9007199254740991"
+            self.assertEqual(parse_session_event_id(maximum), (SESSION, 9007199254740991))
+            with self.assertRaises(ProtocolError):
+                parse_session_event_id("ah-event:" + SESSION + ":9007199254740992")
+            with self.assertRaises(ProtocolError):
+                parse_session_event_id(oversized)
+            with self.assertRaises(ProtocolError):
+                decode_params("root.get", {"agentKey": "writer", "rootId": oversized}, LIMITS)
+        invalid_page = page(1, 1)
+        invalid_page["events"][0]["eventId"] = oversized
+        for method, params, result, acceptance in [
+            ("input.submit", {"agentKey": "writer", "submissionKey": "oversized", "text": "task"},
+             {"agentKey": "writer", "sessionId": SESSION, "inputEventId": oversized, "reused": False}, "unknown"),
+            ("session.events", {"target": {"kind": "member", "agentKey": "writer"}, "maxEvents": 1},
+             invalid_page, "not-applicable"),
+        ]:
+            with self.subTest(method=method):
+                self.handle = lambda request, handler, result=result: handler.reply(request, result)
+                with self.assertRaises(ClientTransportError) as failure:
+                    self.client.request(method, params)
+                self.assert_acceptance(failure, acceptance)
+                self.assertEqual(len(self.client._attempts), 0)
+        self.assertEqual(len(self.calls), 2)
+
     def test_response_bytes_utf8_and_correlation_are_validated(self):
         cases = [(b"x" * 129, "application/json"), (b"\xff", "application/json"), (b"{}", "text/plain")]
         with self.make_client(limits=replace(LIMITS, max_response_bytes=128)) as client:
@@ -274,6 +344,50 @@ class ClientTests(unittest.TestCase):
             server.shutdown()
             server.server_close()
             thread.join()
+
+    def test_stalled_tls_handshake_obeys_cancel_close_and_deadlines(self):
+        for mode in ("cancel", "close", "connect-deadline", "request-deadline"):
+            with self.subTest(mode=mode), socket.socket() as listener:
+                listener.bind(("127.0.0.1", 0))
+                listener.listen()
+                hello, release = threading.Event(), threading.Event()
+
+                def peer(listener, hello, release):
+                    connection, _ = listener.accept()
+                    with connection:
+                        connection.settimeout(2)
+                        connection.recv(1)
+                        hello.set()
+                        release.wait(3)
+
+                thread = threading.Thread(target=peer, args=(listener, hello, release), daemon=True)
+                thread.start()
+                limits = replace(LIMITS, connect_timeout_ms=200 if mode == "connect-deadline" else 2000,
+                                 request_timeout_ms=120 if mode == "request-deadline" else 3000)
+                client = HarnessClient(f"https://127.0.0.1:{listener.getsockname()[1]}", tls=TLS, limits=limits)
+                cancel = CancellationToken()
+                try:
+                    with ThreadPoolExecutor(max_workers=2) as pool:
+                        call = pool.submit(self.submit, client, cancel)
+                        self.assertTrue(hello.wait(2))
+                        closing = None
+                        if mode == "cancel":
+                            cancel.cancel()
+                        elif mode == "close":
+                            closing = pool.submit(client.close)
+                        error = ClientAbortError if mode in ("cancel", "close") else ClientTransportError
+                        with self.assertRaises(error) as failure:
+                            call.result(timeout=1)
+                        self.assert_acceptance(failure, "not-accepted")
+                        if closing is not None:
+                            closing.result(timeout=1)
+                    self.assertEqual(len(client._attempts), 0)
+                    self.assertEqual(len(cancel._callbacks), 0)
+                finally:
+                    release.set()
+                    client.close()
+                    thread.join(3)
+        self.assertEqual(len(self.calls), 0)
 
     def test_iterator_captures_target_and_budget_and_holds_no_connection_between_pages(self):
         self.handle = lambda request, handler: handler.reply(request, page(len(self.calls)))

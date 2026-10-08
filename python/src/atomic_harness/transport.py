@@ -17,6 +17,7 @@ class _TlsConnection(http.client.HTTPSConnection):
     def __init__(self, config: _ConnectionConfig, deadline: float, attempt: "Attempt") -> None:
         super().__init__(config.host, config.port, timeout=max(0.001, deadline - monotonic()), context=config.context)
         self._connect_deadline = deadline
+        self._attempt = attempt
         self._server_name = config.server_name
         self._tls_context = config.context
         class Response(http.client.HTTPResponse):
@@ -28,7 +29,6 @@ class _TlsConnection(http.client.HTTPSConnection):
         self.response_class = Response
 
     def connect(self) -> None:
-        # Publish the TLS socket before the handshake so cancellation can interrupt its I/O.
         http.client.HTTPConnection.connect(self)
         assert self.sock is not None
         remaining = self._connect_deadline - monotonic()
@@ -37,7 +37,16 @@ class _TlsConnection(http.client.HTTPSConnection):
         self.sock.settimeout(remaining)
         self.sock = self._tls_context.wrap_socket(
             self.sock, server_hostname=self._server_name, do_handshake_on_connect=False)
-        self.sock.do_handshake()
+        self.sock.setblocking(False)
+        while True:
+            self._attempt.check()
+            try:
+                self.sock.do_handshake()
+                break
+            except ssl.SSLWantReadError:
+                self._attempt.wait(self.sock, False, self._connect_deadline)
+            except ssl.SSLWantWriteError:
+                self._attempt.wait(self.sock, True, self._connect_deadline)
         if monotonic() >= self._connect_deadline:
             raise TimeoutError("Connection deadline elapsed")
 
@@ -92,14 +101,17 @@ class Attempt:
         if reason == "timeout" or monotonic() >= self.deadline:
             raise ClientTransportError(self.acceptance)
 
-    def wait(self, tls: ssl.SSLSocket, writing: bool) -> None:
-        """Wait for TLS readiness or the owned cancellation socket, bounded by the total deadline."""
+    def wait(self, tls: ssl.SSLSocket, writing: bool, deadline: float | None = None) -> None:
+        """Wait for TLS readiness or cancellation within the connection and total deadlines."""
         self.check()
         assert self._wake is not None
         receiver = self._wake[0]
+        expires = self.deadline if deadline is None else min(deadline, self.deadline)
         select.select([receiver] if writing else [receiver, tls], [tls] if writing else [], [],
-                      max(0, self.deadline - monotonic()))
+                      max(0, expires - monotonic()))
         self.check()
+        if monotonic() >= expires:
+            raise ClientTransportError(self.acceptance)
 
     def exchange(self, config: _ConnectionConfig, limits: ClientLimits,
                  path: str, body: bytes) -> tuple[int, str, bytes]:
@@ -124,7 +136,7 @@ class Attempt:
             try:
                 data = response.read(limits.max_response_bytes + 1)
                 self.check()
-                if len(data) > limits.max_response_bytes:
+                if len(data) > limits.max_response_bytes or response.length not in (None, 0):
                     raise ClientTransportError(self.acceptance)
                 return response.status, response.getheader("content-type", ""), data
             finally:
