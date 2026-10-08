@@ -7,6 +7,8 @@ import { runApiCli } from '../api/cli.js'
 import { runUiCli } from '../ui/cli.js'
 import { runAutomationCli } from '../automation/cli.js'
 import { AutomationError } from '../automation/validation.js'
+import { runOperatorCli, operatorHelp } from '../operator/cli.js'
+import { runProfileMaintenance } from '../operator/maintenance.js'
 
 try {
   const args = process.argv.slice(2)
@@ -14,8 +16,12 @@ try {
   process.exitCode = args[0] === 'api' ? await runApiCli(args.slice(1), io)
     : args[0] === 'ui' ? await runUiCli(args.slice(1), io)
     : args[0] === 'automate' ? await runAutomationCli(args.slice(1), io)
-    : args[0] === 'experiment' ? await runExperimentCli(args.slice(1), io) : await runHostCli(args, io)
+    : args[0] === 'experiment' ? await runExperimentCli(args.slice(1), io)
+    : args.includes('--profile') && ['init', 'inspect', 'recover', 'unlock', 'check', 'plan', 'adopt', 'adopt-empty'].includes(args[0]!) ? await runProfileMaintenance(args, io)
+    : ['tui', 'setup', 'config', 'connection', 'status', 'task', 'run-once', 'agent', 'root', 'message', 'child', 'workflow', 'events', 'host', 'intent', 'journal'].includes(args[0]!) ? await runOperatorCli(args, io)
+    : await runHostCli(args, io)
   if (args.length === 0 || ['help', '--help', '-h'].includes(args[0]!)) process.stdout.write('  api        serve explicit finite control RPC: --config <host.json> --api-config <api.json>\n  ui         open local browser gateway: --config <ui.json>\n  automate   serve webhooks and UTC triggers: --config <automation.json>\n')
+  if (args.length === 0 || ['help', '--help', '-h'].includes(args[0]!)) process.stdout.write(operatorHelp)
 } catch (error) {
   const diagnostic = process.argv[2] === 'experiment' ? experimentCliDiagnostic(error)
     : error instanceof AutomationError ? { code: error.code, message: 'automation-operation-failed' } : hostDiagnostic(error)

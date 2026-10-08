@@ -44,7 +44,8 @@ export async function* boundedJsonLines(input: Readable, maximumLineBytes: numbe
  * the stream. After a timeout, residual callbacks retain the error listener until
  * their callback or stream close, even after the disposal promise has rejected.
  */
-export function createJsonLineWriter(output: Writable, maximumBytes: number, drainTimeoutMs = 30_000) {
+export function createJsonLineWriter(output: Writable, maximumBytes: number, drainTimeoutMs = 30_000,
+  encode: (value: unknown) => string = JSON.stringify) {
   if (!Number.isSafeInteger(drainTimeoutMs) || drainTimeoutMs < 1) throw new RangeError('drainTimeoutMs must be positive')
   let queued = 0
   let tail: Promise<void> = Promise.resolve()
@@ -66,7 +67,7 @@ export function createJsonLineWriter(output: Writable, maximumBytes: number, dra
   output.on('close', streamClosed)
   const write = (value: unknown): Promise<void> => {
     if (!accepting) return Promise.reject(new HostError('HOST_OUTPUT_FAILED', 'cli-writer-disposed'))
-    const line = `${JSON.stringify(value)}\n`
+    const line = `${encode(value)}\n`
     const bytes = Buffer.byteLength(line)
     if (queued + bytes > maximumBytes) return Promise.reject(new HostError('HOST_OUTPUT_FAILED', 'cli-output-budget'))
     queued += bytes

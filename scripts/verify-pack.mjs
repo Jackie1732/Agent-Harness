@@ -3,13 +3,13 @@ import { spawnSync } from 'node:child_process'
 import { copyFile, mkdir, mkdtemp, readFile, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
-import { fileURLToPath } from 'node:url'
+import { fileURLToPath, pathToFileURL } from 'node:url'
 import { packNode } from './pack-node.mjs'
 
 const root = fileURLToPath(new URL('../', import.meta.url))
 const pnpm = process.env.npm_execpath
 assert.ok(pnpm, 'Run this gate with pnpm run test:pack')
-const out = resolve(root, '.tmp', 'step14-package.tgz')
+const out = resolve(root, '.tmp', 'step15-package.tgz')
 await mkdir(dirname(out), { recursive: true })
 
 function run(command, args, cwd) {
@@ -24,6 +24,10 @@ assert.ok(entries.includes('package/dist/api/index.js'))
 assert.ok(entries.includes('package/dist/protocol/index.d.ts'))
 assert.ok(entries.includes('package/dist/ui/index.js') && entries.includes('package/dist/web/app.mjs'))
 assert.ok(entries.includes('package/dist/automation/index.js'))
+for (const path of ['operator/cli.js', 'operator/session.js', 'operator/intents.js', 'operator/profile.d.ts',
+  'control/dispatch.js', 'tui/index.js', 'tui/lifecycle.js', 'tui/wizards.js', 'tui/app.js']) {
+  assert.ok(entries.includes(`package/dist/${path}`), `Pack missing terminal implementation: ${path}`)
+}
 assert.ok(entries.every(entry => !entry.endsWith('.md')), 'Local Markdown must not enter the core package')
 assert.ok(entries.every(entry => !/^package\/(notes|tests|src|\.tmp|node_modules)\//.test(entry) && !/\.(pem|key|log)$|\/\.env(?:$|\.)/.test(entry)), 'Pack contains only published code and package metadata')
 
@@ -43,6 +47,9 @@ const installed = run(process.execPath, [pnpm, 'install', '--offline', '--ignore
 assert.match(installed, /Done in/)
 await copyFile(join(root, 'tests', 'pack', 'consumer.mjs'), join(consumer, 'consumer.mjs'))
 await copyFile(join(root, 'tests', 'pack', 'consumer.ts.fixture'), join(consumer, 'consumer.ts'))
+for (const file of ['operator-consumer.mjs', 'terminal-consumer.mjs', 'inert-preload.mjs']) {
+  await copyFile(join(root, 'tests', 'pack', file), join(consumer, file))
+}
 await copyFile(join(root, 'examples', 'host-config.json'), join(consumer, 'host.json'))
 for (const file of ['ca.pem', 'server.pem', 'server-key.pem', 'client.pem', 'client-key.pem']) await copyFile(join(root, 'tests', 'host', 'certs', file), join(consumer, file))
 await writeFile(join(consumer, 'tsconfig.json'), JSON.stringify({ compilerOptions: { target: 'ES2022', module: 'NodeNext', moduleResolution: 'NodeNext',
@@ -59,7 +66,15 @@ async function visit(file) {
 }
 await visit(join(library, 'dist', 'client', 'index.js'))
 await visit(join(library, 'dist', 'protocol', 'index.js'))
-run(process.execPath, [join(library, 'dist', 'host', 'bin.js'), '--version'], consumer)
+const preload = pathToFileURL(join(consumer, 'inert-preload.mjs')).href
+run(process.execPath, ['--import', preload, '--input-type=module', '--eval',
+  "await import('@atomic-harness/core'); await import('@atomic-harness/core/client'); await import('@atomic-harness/core/protocol')"], consumer)
+assert.match(run(process.execPath, ['--import', preload, join(library, 'dist', 'host', 'bin.js'), '--help'], consumer), /Human commands/)
+run(process.execPath, ['--import', preload, join(library, 'dist', 'host', 'bin.js'), '--version'], consumer)
 const behavior = run(process.execPath, ['consumer.mjs'], consumer)
+const operatorDirectory = join(consumer, 'operator-empty'); await mkdir(operatorDirectory)
+const operatorBehavior = JSON.parse(run(process.execPath, ['operator-consumer.mjs', library, operatorDirectory], consumer))
+const terminalBehavior = JSON.parse(run(process.execPath, ['terminal-consumer.mjs', library], consumer))
 console.log(JSON.stringify({ kind: 'pack-verified', tarball: out, consumer, offlineInstall: true, strictNodeNext: true,
-  runtimeModules: seen.size, node: process.version, behavior: behavior.trim() }))
+  runtimeModules: seen.size, node: process.version, behavior: behavior.trim(), operator: operatorBehavior,
+  terminal: terminalBehavior, inertCoreClientProtocolHelpVersion: true }))
