@@ -9,6 +9,63 @@ process.env.PLAYWRIGHT_BROWSERS_PATH ??= fileURLToPath(new URL('../.tmp/playwrig
 const { chromium } = await import('playwright')
 const output = fileURLToPath(new URL('../.tmp/step14-browser/', import.meta.url))
 await mkdir(output, { recursive: true })
+test('browser resets the previous operator targets and facts before a new login', { timeout: 60000 }, async () => {
+  for (const exit of ['logout', 'replacement']) {
+    const fixture = await builtUiFixture({ question: true, workflow: true }), browser = await chromium.launch({ headless: true })
+    try {
+      const page = await browser.newPage()
+      const ready = async () => { await page.waitForFunction(() => document.getElementById('busy-label').textContent === '') }
+      const login = async () => {
+        await page.getByLabel('操作者口令').fill(fixture.password)
+        await page.getByRole('button', { name: '登录', exact: true }).click()
+        await page.locator('#workspace').waitFor({ state: 'visible' }); await ready()
+      }
+      await page.goto(fixture.ui.ready.url); await login()
+      await page.locator('#member-select').selectOption('reviewer'); await ready()
+      await page.locator('#task-form input[name="submissionKey"]').fill(`previous-${exit}`)
+      await page.locator('#task-form textarea[name="text"]').fill('Previous operator task')
+      await page.locator('#task-form').getByRole('button').click(); await ready()
+      await page.locator('#run').click(); await ready()
+      await page.locator('#input-form').getByRole('button').click(); await ready()
+      const originalRoot = await page.locator('#root-form input[name="rootId"]').inputValue()
+      assert.notEqual(originalRoot, '')
+      await page.locator('#root-form').getByRole('button', { name: '查询', exact: true }).click(); await ready()
+      await page.getByRole('button', { name: 'Session 通信', exact: true }).click()
+      await page.locator('#message-form input[name="peerKey"]').fill('writer')
+      await page.locator('#message-form').getByRole('button').click(); await ready()
+      assert.notEqual(await page.locator('#message-query-form input[name="messageId"]').inputValue(), '')
+      await page.getByRole('button', { name: 'Workflow', exact: true }).click()
+      await page.locator('#workflow-form').getByRole('button', { name: '查询', exact: true }).click(); await ready()
+      await page.getByRole('button', { name: '事件历史', exact: true }).click()
+      await page.locator('#events-form input[name="maxEvents"]').fill('1')
+      await page.locator('#events-form').getByRole('button').click(); await ready()
+      assert.equal(await page.locator('#events-next').isDisabled(), false)
+      if (exit === 'logout') await page.getByRole('button', { name: '退出', exact: true }).click()
+      else {
+        const replacement = await browser.newContext()
+        const response = await replacement.request.post(`${fixture.ui.ready.url}/api/login`, { headers: { origin: fixture.ui.ready.url }, data: { password: fixture.password } })
+        assert.equal(response.status(), 200)
+        await page.locator('#refresh').click()
+      }
+      await page.locator('#login-view').waitFor({ state: 'visible' }); await ready()
+      const hiddenState = await page.evaluate(() => ({
+        root: document.querySelector('#root-form input[name="rootId"]').value,
+        childRoot: document.querySelector('#child-spawn-form input[name="parentRoot"]').value,
+        inputKey: document.querySelector('#input-form input[name="value"]').value,
+        messageId: document.querySelector('#message-query-form input[name="messageId"]').value,
+        facts: ['status-cards', 'agent-result', 'input-result', 'root-result', 'message-result', 'workflow-result', 'artifact-result', 'events-result', 'operation-result']
+          .map(id => document.getElementById(id).textContent.trim().length > 0),
+        nextDisabled: document.getElementById('events-next').disabled,
+      }))
+      assert.deepEqual(hiddenState, { root: '', childRoot: '', inputKey: '', messageId: '', facts: Array(9).fill(false), nextDisabled: true }, exit)
+      await login()
+      assert.equal(await page.locator('#member-select').inputValue(), 'writer')
+      assert.equal(await page.locator('#root-form input[name="rootId"]').inputValue(), '')
+      assert.equal(await page.locator('#input-result').textContent(), '')
+      assert.equal(fixture.service.status, 'ready')
+    } finally { await browser.close(); await fixture.dispose() }
+  }
+})
 test('browser preserves the captured input identity through pending, unknown and rejected receipts', { timeout: 60000 }, async () => {
   const fixture = await builtUiLostReceiptFixture(), browser = await chromium.launch({ headless: true })
   try {

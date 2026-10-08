@@ -6,7 +6,14 @@ let instanceId, page, eventQuery, busy = false
 const element = id => document.getElementById(id)
 const agentKey = () => element('member-select').value
 const workflowKey = () => element('workflow-select').value
-function showLogin() { element('workspace').hidden = true; element('session-tools').hidden = true; element('login-view').hidden = false; instanceId = undefined; page = undefined; eventQuery = undefined }
+function showLogin() {
+  element('workspace').hidden = true; element('session-tools').hidden = true; element('login-view').hidden = false
+  instanceId = undefined; page = undefined; eventQuery = undefined; element('connection').textContent = ''
+  for (const form of document.querySelectorAll('#workspace form')) form.reset()
+  for (const id of ['member-select','workflow-select','root-select','status-cards','agent-result','input-result','root-result',
+    'message-result','child-result','workflow-result','artifact-result','events-result','operation-result']) clear(id)
+  element('events-next').disabled = true
+}
 function working(value) {
   busy = value; element('busy-label').textContent = value ? '正在取得本次操作回执…' : ''
   for (const button of document.querySelectorAll('#workspace button')) button.disabled = value
