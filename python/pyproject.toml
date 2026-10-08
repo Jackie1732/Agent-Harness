@@ -1,0 +1,37 @@
+[build-system]
+requires = ["hatchling>=1.27,<2"]
+build-backend = "hatchling.build"
+
+[project]
+name = "atomic-agent-harness"
+version = "0.1.0"
+description = "Typed Python client for the Atomic Agent Harness control protocol"
+requires-python = ">=3.11"
+dependencies = ["jsonschema>=4.23,<5"]
+classifiers = ["Programming Language :: Python :: 3", "Typing :: Typed"]
+
+[tool.hatch.build]
+artifacts = ["src/atomic_harness/control-schema.json", "src/atomic_harness/types.py", "src/atomic_harness/client.pyi"]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/atomic_harness"]
+
+[tool.hatch.build.targets.sdist]
+include = ["src/atomic_harness", "pyproject.toml"]
+
+[tool.ruff]
+line-length = 120
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]
+
+[tool.ruff.lint.per-file-ignores]
+# Generated field names preserve the schema paths and method/result associations.
+"src/atomic_harness/types.py" = ["E501"]
+"src/atomic_harness/client.pyi" = ["E501"]
+
+[tool.mypy]
+python_version = "3.11"
+strict = true
+files = ["src/atomic_harness", "tests/typecheck_positive.py"]
