@@ -50,6 +50,7 @@ export async function openAutomationWebhook(options: { readonly config: Automati
   })
   server.requestTimeout = 0; server.headersTimeout = limits.headersTimeoutMs; server.keepAliveTimeout = limits.keepAliveTimeoutMs; server.maxConnections = limits.maxConnections
   server.maxRequestsPerSocket = 1
+  server.on('dropRequest', (_request, socket) => socket.destroy())
   server.on('connection', socket => { sockets.add(socket); socket.once('close', () => sockets.delete(socket)) })
   const dispose = (): Promise<void> => {
     disposal ??= (async () => {

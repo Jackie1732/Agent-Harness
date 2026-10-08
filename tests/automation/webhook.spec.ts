@@ -1,5 +1,6 @@
 import { readFile } from 'node:fs/promises'
 import { request } from 'node:https'
+import { connect } from 'node:tls'
 import { afterEach, describe, expect, it } from 'vitest'
 import { openAutomationWebhook } from '../../src/automation/webhook.js'
 import { certificateDirectory } from '../api/fixtures.js'
@@ -15,6 +16,26 @@ async function start(maximumBytes = 65536, bodyTimeoutMs = 2000) {
   cleanup.push(() => service.dispose()); return { service, calls }
 }
 describe('authenticated bounded webhook', () => {
+  it('closes a pipelined TLS connection before native rejection responses accumulate outside request ownership', async () => {
+    const { service, calls } = await start(), ca = await readFile(`${certificateDirectory}ca.pem`)
+    const socket = connect({ host: '127.0.0.1', port: service.listen.port, servername: 'localhost', ca })
+    cleanup.push(async () => { socket.destroy() })
+    const released = new Promise<string>((resolve, reject) => {
+      let response = ''
+      const timer = setTimeout(() => { socket.destroy(); reject(new Error('Webhook pipeline release expired')) }, 5000)
+      socket.on('data', chunk => { response += chunk.toString('utf8') })
+      socket.on('error', () => undefined)
+      socket.once('close', () => { clearTimeout(timer); resolve(response) })
+    })
+    await new Promise<void>((resolve, reject) => { socket.once('secureConnect', resolve); socket.once('error', reject) })
+    const body = JSON.stringify({ eventId: 'pipeline', text: 'research' })
+    const wire = `POST /automation/v1/webhooks/review HTTP/1.1\r\nHost: localhost\r\nAuthorization: Bearer ${bearerToken}\r\nContent-Type: application/json\r\nContent-Length: ${Buffer.byteLength(body)}\r\n\r\n${body}`
+    socket.write(wire.repeat(32))
+    const response = await released
+    expect((response.match(/HTTP\/1\.1 /g) ?? []).length).toBeLessThanOrEqual(1)
+    expect(calls.length).toBeLessThanOrEqual(1)
+    expect((await webhookRequest(service.listen.port, { eventId: 'fresh-connection', text: 'research' })).status).toBe(202)
+  })
   it('authenticates before accepting any fixed Job data and does not expose local acknowledgement', async () => {
     const { service, calls } = await start()
     expect((await webhookRequest(service.listen.port, { eventId: 'one', text: 'research' }, 'wrong')).status).toBe(401)
