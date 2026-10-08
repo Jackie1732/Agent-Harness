@@ -17,6 +17,7 @@ function showLogin() {
 function working(value) {
   busy = value; element('busy-label').textContent = value ? '正在取得本次操作回执…' : ''
   for (const button of document.querySelectorAll('#workspace button')) button.disabled = value
+  element('login-form').querySelector('button').disabled = value
   element('member-select').disabled = value; element('workflow-select').disabled = value
   element('stop-observation').disabled = !value
   element('events-next').disabled = value || page?.nextCursor == null
@@ -120,4 +121,7 @@ element('events-next').addEventListener('click',() => void perform(async () => {
   display('session.events',await control('session.events',{...eventQuery,cursor:page.nextCursor}))
 }))
 element('event-filter').addEventListener('change',() => { if (page) renderEvents(page,element('event-filter').value) })
-try { await connection() } catch (error) { showLogin(); if (error.code !== 'UI_UNAUTHORIZED') notice(error) }
+await perform(async () => {
+  try { await connection() }
+  catch (error) { showLogin(); if (error.code !== 'UI_UNAUTHORIZED') throw error }
+})

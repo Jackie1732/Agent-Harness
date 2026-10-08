@@ -9,6 +9,40 @@ process.env.PLAYWRIGHT_BROWSERS_PATH ??= fileURLToPath(new URL('../.tmp/playwrig
 const { chromium } = await import('playwright')
 const output = fileURLToPath(new URL('../.tmp/step14-browser/', import.meta.url))
 await mkdir(output, { recursive: true })
+test('browser serializes initial authentication before accepting a login', { timeout: 60000 }, async () => {
+  const fixture = await builtUiFixture(), browser = await chromium.launch({ headless: true })
+  let arrived, release
+  const initialRead = new Promise(resolve => { arrived = resolve }), held = new Promise(resolve => { release = resolve })
+  try {
+    const page = await browser.newPage()
+    let first = true
+    await page.route('**/api/session', async route => {
+      if (!first) { await route.continue(); return }
+      first = false
+      const response = await route.fetch()
+      assert.equal(response.status(), 401); arrived()
+      await held; await route.fulfill({ response })
+    })
+    await page.goto(fixture.ui.ready.url, { waitUntil: 'commit' }); await initialRead
+    const login = page.getByRole('button', { name: '登录', exact: true })
+    assert.equal(await login.isDisabled(), true)
+    release()
+    await page.waitForFunction(() => document.getElementById('busy-label').textContent === '')
+    assert.equal(await login.isEnabled(), true)
+    assert.equal(await page.locator('#notice').isHidden(), true)
+    await page.getByLabel('操作者口令').fill('wrong-password'); await login.click()
+    await page.waitForFunction(() => document.getElementById('busy-label').textContent === '')
+    assert.equal(await page.locator('#notice').isVisible(), true)
+    assert.equal(await page.locator('#workspace').isHidden(), true)
+    await page.getByLabel('操作者口令').fill(fixture.password); await login.click()
+    await page.locator('#workspace').waitFor({ state: 'visible' })
+    await page.waitForFunction(() => document.getElementById('busy-label').textContent === '')
+    assert.equal(await page.locator('#login-view').isHidden(), true)
+    assert.equal(await page.locator('#member-select').inputValue(), 'writer')
+    assert.equal((await page.request.get(`${fixture.ui.ready.url}/api/session`)).status(), 200)
+    assert.equal(fixture.service.status, 'ready')
+  } finally { release(); await browser.close(); await fixture.dispose() }
+})
 test('browser resets the previous operator targets and facts before a new login', { timeout: 60000 }, async () => {
   for (const exit of ['logout', 'replacement']) {
     const fixture = await builtUiFixture({ question: true, workflow: true }), browser = await chromium.launch({ headless: true })
