@@ -1,0 +1,365 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Atomic Harness · 控制台</title>
+<link rel="stylesheet" href="/style.css">
+<script type="module" src="/app.mjs">
+</script>
+</head>
+<body>
+<header>
+<div>
+<span class="eyebrow">ATOMIC AGENT HARNESS</span>
+<h1>研究工作台</h1>
+<p>连接一个 Host，按明确的批次推进任务与协作。</p>
+</div>
+<div id="session-tools" hidden>
+<span id="connection">
+</span>
+<button id="logout" class="quiet">退出</button>
+</div>
+</header>
+<main>
+<section id="login-view" class="login panel">
+<h2>连接工作台</h2>
+<p>使用启动本地网关时设置的操作者口令。</p>
+<form id="login-form">
+<label>操作者口令<input name="password" type="password" autocomplete="current-password" required>
+</label>
+<button type="submit">登录</button>
+</form>
+</section>
+<div id="workspace" hidden>
+<div class="toolbar panel">
+<label>当前 Agent<select id="member-select">
+</select>
+</label>
+<button id="refresh">刷新状态</button>
+<button id="run">运行一个有限批次</button>
+<button id="pause" class="quiet">暂停 Agent</button>
+<button id="resume" class="quiet">恢复 Agent</button>
+<button id="stop-observation" class="quiet" disabled>停止本地请求</button>
+<span id="busy-label" role="status">
+</span>
+</div>
+<p class="hint">任务与回答先被接纳，再点击“运行”推进。停止本地请求只断开当前观察；任务停止使用精确 Root 的取消操作。</p>
+<div id="status-cards" class="cards">
+</div>
+<nav aria-label="功能">
+<button data-view="tasks" aria-current="page">任务 / Root</button>
+<button data-view="messages">Session 通信</button>
+<button data-view="children">Child</button>
+<button data-view="workflows">Workflow</button>
+<button data-view="events">事件历史</button>
+</nav>
+<section id="tasks-view" class="view">
+<div class="columns">
+<section class="panel">
+<h2>提交任务</h2>
+<form id="task-form">
+<label>提交键<input name="submissionKey" required placeholder="例如 research-001">
+</label>
+<label>任务<textarea name="text" rows="6" required>
+</textarea>
+</label>
+<button>接纳任务</button>
+</form>
+<p class="hint">保持同一提交键与内容可查询并复用已接纳任务；改变内容需使用新键。</p>
+<form id="input-form">
+<label>查找方式<select name="lookup">
+<option value="key">提交键</option>
+<option value="event">Input Event 身份</option>
+</select>
+</label>
+<label>精确查询值<input name="value" required>
+</label>
+<button class="quiet">查询输入状态</button>
+</form>
+<div id="input-result">
+</div>
+</section>
+<section class="panel">
+<h2>精确 Root</h2>
+<label>已显示的 Root<select id="root-select">
+<option value="">选择 Root</option>
+</select>
+</label>
+<form id="root-form">
+<label>Root 身份<input name="rootId" required>
+</label>
+<div class="actions">
+<button name="operation" value="get">查询</button>
+<button name="operation" value="wait" class="quiet">有限等待终态</button>
+</div>
+<label>等待上限（毫秒）<input name="timeoutMs" type="number" value="1000" min="1" required>
+</label>
+</form>
+<div id="root-result">
+</div>
+<form id="root-cancel-form">
+<label>停止原因<input name="reason" required value="操作者请求停止">
+</label>
+<button class="danger">取消这个 Root</button>
+</form>
+</section>
+</div>
+<section class="panel">
+<h2>Agent 当前事实</h2>
+<div id="agent-result">
+</div>
+</section>
+</section>
+<section id="messages-view" class="view" hidden>
+<div class="columns">
+<section class="panel">
+<h2>发送 / 回复</h2>
+<form id="message-form">
+<label>操作<select name="operation">
+<option value="send">向 Peer 发送</option>
+<option value="reply">回复一条 Inbox 消息</option>
+</select>
+</label>
+<label>Peer 键（发送）<input name="peerKey">
+</label>
+<label>Message 身份（回复）<input name="messageId">
+</label>
+<label>消息类型<input name="type" value="test/note" required>
+</label>
+<label>载荷版本<input name="payloadVersion" type="number" min="1" value="1" required>
+</label>
+<label>JSON 载荷<textarea name="payloadJson" rows="5" required>{"text":""}</textarea>
+</label>
+<button>接纳消息</button>
+</form>
+<p class="hint">发件接纳、实际投递、Inbox 处理与回复分别观察。发件后显式运行推进投递。</p>
+</section>
+<section class="panel">
+<h2>消息状态</h2>
+<form id="message-query-form">
+<label>Message 身份<input name="messageId" required>
+</label>
+<label>方向<select name="direction">
+<option value="outbox">Outbox</option>
+<option value="inbox">Inbox</option>
+</select>
+</label>
+<label>等待上限（毫秒）<input name="timeoutMs" type="number" min="1" value="1000" required>
+</label>
+<div class="actions">
+<button name="operation" value="get">查询</button>
+<button name="operation" value="wait" class="quiet">有限等待</button>
+</div>
+</form>
+<div id="message-result">
+</div>
+</section>
+</div>
+</section>
+<section id="children-view" class="view" hidden>
+<div class="columns">
+<section class="panel">
+<h2>委派 Child</h2>
+<p class="hint">Parent 必须已有允许委派的 Root。模板、预算与工作区仍受远端已配置授权约束。</p>
+<form id="child-spawn-form">
+<label>Parent Root<input name="parentRoot" required>
+</label>
+<label>请求键<input name="requestKey" required>
+</label>
+<div class="fields">
+<label>模板键<input name="templateKey" required>
+</label>
+<label>模板版本<input name="templateVersion" type="number" min="1" value="1" required>
+</label>
+</div>
+<label>Child 任务<textarea name="task" rows="4" required>
+</textarea>
+</label>
+<label>材料（label / text 的 JSON 数组）<textarea name="materials" rows="3" required>[]</textarea>
+</label>
+<fieldset>
+<legend>显式请求预算</legend>
+<div class="fields">
+<label>模型<input name="models" type="number" min="0" value="1" required>
+</label>
+<label>步骤<input name="steps" type="number" min="0" value="2" required>
+</label>
+<label>工具<input name="tools" type="number" min="0" value="0" required>
+</label>
+<label>消息<input name="messages" type="number" min="0" value="0" required>
+</label>
+<label>等待<input name="waits" type="number" min="0" value="0" required>
+</label>
+<label>输出 Tokens<input name="outputTokens" type="number" min="0" value="256" required>
+</label>
+</div>
+</fieldset>
+<label>工作区模式<select name="workspaceKind">
+<option value="none">无工作区</option>
+<option value="shared-read">共享只读</option>
+<option value="exclusive-write">独占写入</option>
+</select>
+</label>
+<label>资源键<input name="resourceId">
+</label>
+<label>读取文件（每行一个）<textarea name="readFiles" rows="2">
+</textarea>
+</label>
+<label>写入前缀（每行一个）<textarea name="writePrefixes" rows="2">
+</textarea>
+</label>
+<button>接纳委派</button>
+</form>
+</section>
+<section class="panel">
+<h2>Child 观察与停止</h2>
+<form id="child-form">
+<label>Parent Root<input name="parentRoot" required>
+</label>
+<label>Delegation 身份<input name="delegationId" required>
+</label>
+<label>等待条件<select name="until">
+<option value="business">业务结算</option>
+<option value="closed">资源与协议关闭</option>
+</select>
+</label>
+<label>等待上限（毫秒）<input name="timeoutMs" type="number" min="1" value="1000" required>
+</label>
+<label>取消请求键<input name="requestKey">
+</label>
+<div class="actions">
+<button name="operation" value="get">查询</button>
+<button name="operation" value="wait" class="quiet">有限等待</button>
+<button name="operation" value="cancel" class="danger">取消 Child</button>
+</div>
+</form>
+<div id="child-result">
+</div>
+</section>
+</div>
+</section>
+<section id="workflows-view" class="view" hidden>
+<section class="panel">
+<h2>固定 Workflow</h2>
+<form id="workflow-form">
+<label>Workflow 键<select name="workflowKey" id="workflow-select">
+</select>
+</label>
+<div class="fields">
+<label>控制请求键<input name="requestKey">
+</label>
+<label>控制原因<input name="reason" value="操作者请求">
+</label>
+<label>等待上限（毫秒）<input name="timeoutMs" type="number" min="1" value="1000" required>
+</label>
+<label>等待条件<select name="until">
+<option value="settled">业务结算</option>
+<option value="closed">全部关闭</option>
+</select>
+</label>
+</div>
+<div class="actions">
+<button name="operation" value="get">查询</button>
+<button name="operation" value="wait" class="quiet">有限等待</button>
+<button name="operation" value="resume">恢复 Workflow</button>
+<button name="operation" value="pause" class="quiet">暂停</button>
+<button name="operation" value="cancel" class="danger">取消</button>
+</div>
+</form>
+<div id="workflow-result">
+</div>
+</section>
+<section class="panel">
+<h2>显式重试已失败节点</h2>
+<form id="workflow-retry-form">
+<label>节点键<input name="nodeKey" required>
+</label>
+<label>请求键<input name="requestKey" required>
+</label>
+<label>失败 Assignment 所属地址<input name="address" required>
+</label>
+<label>失败 Assignment Event 身份<input name="eventId" required>
+</label>
+<button>接纳重试决定</button>
+</form>
+</section>
+<section class="panel">
+<h2>已接受产物</h2>
+<div id="artifact-result">
+<p class="hint">从 Workflow 的接受记录读取输出与文本产物。</p>
+</div>
+<form id="output-form">
+<label>精确节点键<input name="nodeKey" required>
+</label>
+<button class="quiet">直接查询已接受输出</button>
+</form>
+<form id="artifact-form">
+<label>Artifact 所属地址<input name="address" required>
+</label>
+<label>Artifact Event 身份<input name="eventId" required>
+</label>
+<button class="quiet">直接读取精确接受产物</button>
+</form>
+</section>
+</section>
+<section id="events-view" class="view" hidden>
+<section class="panel">
+<h2>固定前缀事件页</h2>
+<form id="events-form">
+<div class="fields">
+<label>所属 Session<select name="kind">
+<option value="member">当前成员</option>
+<option value="child">指定 Child</option>
+<option value="workflow">当前 Workflow</option>
+</select>
+</label>
+<label>每页事件数<input name="maxEvents" type="number" min="1" value="20" required>
+</label>
+<label>从序号之后开始<input name="after" type="number" min="0" value="0" required>
+</label>
+</div>
+<p class="hint">Child 身份使用 Child 查询表单；Workflow 使用上方选择值。</p>
+<button>捕获前缀并读取</button>
+</form>
+<div class="actions">
+<button id="events-next" class="quiet" disabled>下一页</button>
+<label>本页显示<select id="event-filter">
+<option value="all">全部</option>
+<option value="model">Model</option>
+<option value="tool">Tool</option>
+<option value="communication">通信</option>
+</select>
+</label>
+</div>
+<div id="events-result">
+</div>
+</section>
+</section>
+<section class="panel receipt">
+<h2>最近操作回执</h2>
+<div id="operation-result">
+<p class="hint">回执只描述这一次操作，不代替任务或资源的终态。</p>
+</div>
+</section>
+<details class="panel">
+<summary>Host 管理：显式关闭远端服务</summary>
+<p class="hint">这会停止整个 Host 与远端 API，影响其全部 Agent。网关自身仍可退出。</p>
+<form id="shutdown-form">
+<label>关闭方式<select name="mode">
+<option value="drain">Drain：保留可续接的等待</option>
+<option value="cancel">Cancel：请求取消并等待释放</option>
+</select>
+</label>
+<label>
+<input type="checkbox" name="confirmed" required>我确认关闭整个远端 Host</label>
+<button class="danger">关闭远端 Host</button>
+</form>
+</details>
+</div>
+<div id="notice" role="alert" hidden>
+</div>
+</main>
+<footer>持久事实 · 明确控制 · 原子协作</footer>
+</body>
+</html>

@@ -1,0 +1,16 @@
+{
+  "schemaVersion": 1,
+  "listenPort": 4318,
+  "remote": {
+    "origin": "https://127.0.0.1:4317",
+    "serverName": "localhost",
+    "caFile": "./tls/ca.pem",
+    "certFile": "./tls/operator.pem",
+    "keyFile": "./tls/operator-key.pem",
+    "limits": { "maxRequestBytes": 1048576, "maxResponseBytes": 2097152, "maxJsonDepth": 64, "maxJsonNodes": 100000, "connectTimeoutMs": 5000, "requestTimeoutMs": 60000, "maxConnections": 4 }
+  },
+  "passwordEnv": "HARNESS_UI_PASSWORD",
+  "memberKeys": ["writer"],
+  "workflowKeys": [],
+  "limits": { "maxRequestBytes": 1048576, "maxJsonDepth": 64, "maxJsonNodes": 100000, "maxHeaderBytes": 8192, "maxConnections": 16, "maxPendingRequests": 8, "requestReadTimeoutMs": 5000, "responseWriteTimeoutMs": 5000, "headersTimeoutMs": 5000, "keepAliveTimeoutMs": 1000, "sessionTimeoutMs": 28800000 }
+}

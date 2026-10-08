@@ -4,7 +4,8 @@ import type { ApiLimits } from './config.js'
 import { ApiRejection } from './errors.js'
 
 /** Bound body allocation and read duration before protocol decoding. */
-export function readRequest(request: IncomingMessage, limits: ApiLimits): Promise<unknown> {
+export function readRequest(request: IncomingMessage, limits: Pick<ApiLimits,
+  'maxRequestBytes' | 'maxJsonDepth' | 'maxJsonNodes' | 'requestReadTimeoutMs'>): Promise<unknown> {
   return new Promise((resolve, reject) => {
     const chunks: Buffer[] = []; let size = 0, settled = false
     const timer = setTimeout(() => done(new ApiRejection('API_LIMIT_EXCEEDED')), limits.requestReadTimeoutMs)
@@ -30,8 +31,9 @@ export function readRequest(request: IncomingMessage, limits: ApiLimits): Promis
     request.on('data', data); request.once('end', end); request.once('error', failed); request.once('aborted', failed)
   })
 }
-/** One complete JSON response; slow or abandoned output never repeats the domain operation. */
-export function writeResponse(response: ServerResponse, status: number, body: Buffer, timeoutMs: number): Promise<void> {
+/** One complete response; slow or abandoned output never repeats the domain operation. */
+export function writeResponse(response: ServerResponse, status: number, body: Buffer, timeoutMs: number,
+  contentType = 'application/json'): Promise<void> {
   return new Promise((resolve, reject) => {
     let settled = false
     const timer = setTimeout(() => finish(new Error('Control response write expired')), timeoutMs)
@@ -46,7 +48,7 @@ export function writeResponse(response: ServerResponse, status: number, body: Bu
     }
     response.once('close', closed); response.once('error', failed); response.once('finish', complete)
     if (response.destroyed) { finish(new Error('Control response disconnected')); return }
-    response.writeHead(status, { 'content-type': 'application/json', 'content-length': body.byteLength })
+    response.writeHead(status, { 'content-type': contentType, 'content-length': body.byteLength })
     response.end(body)
   })
 }
