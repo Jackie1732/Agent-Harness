@@ -3,14 +3,12 @@ import type { ClientRequest } from 'node:http'
 import { Agent, request as httpsRequest } from 'node:https'
 import type { TLSSocket } from 'node:tls'
 import { parseBoundedJson, inspectBoundedJson } from '../schema/bounded-json.js'
-import { CONTROL_PATH, CONTROL_PROTOCOL, CONTROL_VERSION, decodeParams, decodeControlResponse } from '../protocol/index.js'
+import { CONTROL_PATH, CONTROL_PROTOCOL, CONTROL_VERSION, METHOD_CATEGORIES, decodeParams, decodeControlResponse } from '../protocol/index.js'
 import type { ControlMethod, Params, Result, SessionEventPage } from '../protocol/index.js'
 import { ApiError, ClientAbortError, ClientTransportError } from './errors.js'
 import { resolveClientOptions } from './config.js'
 import type { HarnessClientOptions } from './config.js'
 
-const isRead = (method: ControlMethod): boolean => method.endsWith('.get') || method.endsWith('.wait')
-  || ['host.status', 'session.events', 'workflow.output', 'workflow.artifact'].includes(method)
 export interface HarnessClient {
   /**
    * Perform one typed RPC attempt without automatic retry. Local abort does not cancel accepted server work.
@@ -59,7 +57,7 @@ export function createHarnessClient(options: HarnessClientOptions): HarnessClien
     return disposal
   }
   const execute = <M extends ControlMethod>(method: M, params: Params<M>, call: { readonly signal?: AbortSignal } = {}): Promise<Result<M>> => {
-    const acceptance = (sent: boolean) => isRead(method) ? 'not-applicable' as const : sent ? 'unknown' as const : 'not-accepted' as const
+    const acceptance = (sent: boolean) => METHOD_CATEGORIES[method] === 'observation' ? 'not-applicable' as const : sent ? 'unknown' as const : 'not-accepted' as const
     if (!active || call.signal?.aborted) return Promise.reject(new ClientAbortError(acceptance(false)))
     const requestId = randomUUID()
     const limits = { maxBytes: config.limits.maxRequestBytes, maxDepth: config.limits.maxJsonDepth, maxNodes: config.limits.maxJsonNodes }

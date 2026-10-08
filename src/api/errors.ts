@@ -1,5 +1,5 @@
 import { HarnessError } from '../foundation/error.js'
-import { ProtocolError } from '../protocol/index.js'
+import { METHOD_CATEGORIES, ProtocolError } from '../protocol/index.js'
 import type { ApiAcceptance, ApiErrorCode, ControlMethod } from '../protocol/index.js'
 
 /** A deliberate API policy rejection; no domain method has run unless specified. */
@@ -8,7 +8,7 @@ export class ApiRejection extends Error {
 }
 /** Read methods cannot accept a domain mutation. */
 export function readMethod(method: ControlMethod): boolean {
-  return method.endsWith('.get') || method.endsWith('.wait') || ['host.status', 'session.events', 'workflow.output', 'workflow.artifact'].includes(method)
+  return METHOD_CATEGORIES[method] === 'observation'
 }
 /** Map owner-defined diagnostics; a failure after the mutation returns cannot prove non-acceptance. */
 export function apiFailure(error: unknown, method: ControlMethod | undefined, invoked: boolean, domainReturned: boolean) {

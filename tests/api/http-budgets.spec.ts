@@ -5,19 +5,20 @@ import type { TLSSocket } from 'node:tls'
 import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { afterEach, expect, it } from 'vitest'
+import { afterEach, expect, it, vi } from 'vitest'
 import { decodeHostConfig, resolveHostConfig } from '../../src/host/config.js'
 import { initializeHost } from '../../src/host/initialization.js'
 import { decodeApiConfig, resolveApiConfig } from '../../src/api/config.js'
 import type { ApiLimits } from '../../src/api/config.js'
 import { openHarnessApiServer } from '../../src/api/server.js'
 import { writeResponse } from '../../src/api/http-io.js'
+import * as httpIo from '../../src/api/http-io.js'
 import { createHarnessClient } from '../../src/client/client.js'
 import { hostConfig } from '../host/fixtures.js'
 import { apiConfig, clientOptions } from './fixtures.js'
 
 const cleanup: Array<() => Promise<void>> = []
-afterEach(async () => { for (const dispose of cleanup.splice(0).reverse()) await dispose() })
+afterEach(async () => { for (const dispose of cleanup.splice(0).reverse()) await dispose(); vi.restoreAllMocks() })
 
 async function fixture(limits: Partial<ApiLimits>) {
   const directory = await mkdtemp(join(tmpdir(), 'api-io-budgets-'))
@@ -53,6 +54,23 @@ async function tlsSocket(options: Awaited<ReturnType<typeof clientOptions>>): Pr
   await new Promise<void>((resolve, reject) => { socket.once('secureConnect', resolve); socket.once('error', reject) })
   return { socket, released }
 }
+
+it('closes a pipelined TLS connection before a second request allocates body work or submits input', async () => {
+  const { options, client } = await fixture({ maxConnections: 1, requestReadTimeoutMs: 250 })
+  const read = vi.spyOn(httpIo, 'readRequest')
+  const { socket, released } = await tlsSocket(options)
+  const wire = (requestId: string, method: string, params: object): string => {
+    const body = JSON.stringify({ protocol: 'atomic-harness-control', version: 1, requestId, method, params })
+    return `POST /ah-control/v1/rpc HTTP/1.1\r\nHost: localhost\r\nContent-Type: application/json\r\nContent-Length: ${Buffer.byteLength(body)}\r\n\r\n${body}`
+  }
+  socket.write(wire('first', 'host.status', {}) + wire('second', 'input.submit', {
+    agentKey: 'writer', submissionKey: 'pipeline-second', text: 'Must not be admitted',
+  }))
+  await released
+  expect(read).toHaveBeenCalledTimes(1)
+  await expect(client.request('input.get', { agentKey: 'writer', submissionKey: 'pipeline-second' }))
+    .rejects.toMatchObject({ code: 'API_TARGET_NOT_FOUND', acceptance: 'not-applicable' })
+})
 
 it('rejects excessive header bytes on a real TLS connection and releases the accepted socket', async () => {
   const { service, options, client } = await fixture({ maxHeaderBytes: 512 })

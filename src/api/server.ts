@@ -163,6 +163,8 @@ export async function openHarnessApiServer(options: OpenHarnessApiServerOptions)
       server.headersTimeout = limits.headersTimeoutMs
       server.keepAliveTimeout = limits.keepAliveTimeoutMs
       server.maxConnections = limits.maxConnections
+      server.maxRequestsPerSocket = 1
+      server.on('dropRequest', (_request, socket) => socket.destroy())
       server.on('connection', socket => { if (frozen) socket.destroy(); else { sockets.add(socket); socket.once('close', () => sockets.delete(socket)) } })
       await context.apply('listener', () => new Promise<Server>((resolve, reject) => {
         const error = (error: Error): void => { server.off('listening', listening); for (const socket of sockets) socket.destroy(); reject(error) }
