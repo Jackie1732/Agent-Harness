@@ -1,6 +1,6 @@
 import { readFile } from 'node:fs/promises'
 import { randomUUID } from 'node:crypto'
-import { createHarnessClient } from '../dist/client/index.js'
+import { createHarnessClient } from '@atomic-harness/core/client'
 
 // TLS files belong to this local script; business parameters never contain server paths.
 const [origin, serverName, caPath, certPath, keyPath, agentKey = 'writer'] = process.argv.slice(2)

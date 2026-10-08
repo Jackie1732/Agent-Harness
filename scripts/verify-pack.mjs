@@ -4,6 +4,7 @@ import { copyFile, mkdir, mkdtemp, readFile, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { packNode } from './pack-node.mjs'
 
 const root = fileURLToPath(new URL('../', import.meta.url))
 const pnpm = process.env.npm_execpath
@@ -16,11 +17,14 @@ function run(command, args, cwd) {
   assert.equal(result.status, 0, `${result.error?.message ?? ''}\n${result.stderr}\n${result.stdout}`)
   return result.stdout
 }
-run(process.execPath, [pnpm, 'pack', '--out', out], root)
+await packNode(root, out, pnpm)
 const entries = run('tar', ['-tf', out], root).trim().split(/\r?\n/)
 assert.ok(entries.includes('package/dist/client/index.js'))
 assert.ok(entries.includes('package/dist/api/index.js'))
 assert.ok(entries.includes('package/dist/protocol/index.d.ts'))
+assert.ok(entries.includes('package/dist/ui/index.js') && entries.includes('package/dist/web/app.mjs'))
+assert.ok(entries.includes('package/dist/automation/index.js'))
+assert.ok(entries.every(entry => !entry.endsWith('.md')), 'Local Markdown must not enter the core package')
 assert.ok(entries.every(entry => !/^package\/(notes|tests|src|\.tmp|node_modules)\//.test(entry) && !/\.(pem|key|log)$|\/\.env(?:$|\.)/.test(entry)), 'Pack contains only published code and package metadata')
 
 const base = await mkdtemp(join(tmpdir(), 'atomic-pack-consumer-'))

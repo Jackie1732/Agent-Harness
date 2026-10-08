@@ -5,7 +5,7 @@ import { join } from 'node:path'
 
 const harness = await import('../dist/index.js')
 
-assert.equal(harness.HARNESS_VERSION, '0.0.0')
+assert.equal(harness.HARNESS_VERSION, '0.1.0')
 assert.equal(typeof harness.assertJsonValue, 'function')
 assert.equal(typeof harness.HarnessError, 'function')
 assert.equal(typeof harness.systemClock.now, 'function')

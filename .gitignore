@@ -21,3 +21,14 @@ notes/**
 
 # Working handoff drafts kept local until they are complete.
 codex.md
+
+# Python protocol projections and local build/runtime outputs.
+python/src/atomic_harness/control-schema.json
+python/src/atomic_harness/types.py
+python/src/atomic_harness/client.pyi
+**/__pycache__/
+python/.mypy_cache/
+python/.ruff_cache/
+python/dist/
+python/build/
+python/**/*.egg-info/

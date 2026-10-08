@@ -1,2 +1,5 @@
 packages:
   - '.'
+minimumReleaseAgeExclude:
+  - playwright-core@1.64.0
+  - playwright@1.64.0

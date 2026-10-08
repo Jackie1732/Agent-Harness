@@ -1,6 +1,6 @@
 {
   "name": "@atomic-harness/core",
-  "version": "0.0.0",
+  "version": "0.1.0",
   "private": true,
   "type": "module",
   "sideEffects": false,
@@ -37,27 +37,43 @@
     "./client": {
       "types": "./dist/client/index.d.ts",
       "import": "./dist/client/index.js"
+    },
+    "./ui": {
+      "types": "./dist/ui/index.d.ts",
+      "import": "./dist/ui/index.js"
+    },
+    "./automation": {
+      "types": "./dist/automation/index.d.ts",
+      "import": "./dist/automation/index.js"
     }
   },
   "files": [
     "dist"
   ],
   "scripts": {
-    "build": "tsc -p tsconfig.build.json",
+    "build": "tsc -p tsconfig.build.json && node scripts/copy-web-assets.mjs",
     "lint": "oxlint src tests vitest.config.ts",
     "typecheck": "tsc -p tsconfig.json",
     "test": "vitest run",
     "test:watch": "vitest",
-    "test:built": "node tests/built-smoke.mjs && node dist/host/bin.js --version && node examples/host-lifecycle.mjs && node tests/host-process-built-smoke.mjs && node --test tests/host-storage-lock.node.mjs tests/host-writer.node.mjs && node tests/model-built-smoke.mjs && node --test tests/tool-native.node.mjs tests/tool-pipeline.node.mjs tests/tool-model.node.mjs tests/tool-registration.node.mjs tests/tool-recovery.node.mjs tests/tool-coexistence.node.mjs tests/context-materials.node.mjs && node tests/tool-built-smoke.mjs && node tests/context-built-smoke.mjs && node examples/context-offline-replay.mjs && node examples/context-agent-roundtrip.mjs && node examples/context-compaction.mjs && node --test tests/agent-built.node.mjs tests/agent-read-text.node.mjs tests/agent-prefixes.node.mjs && node examples/agent-ask-user.mjs && node --test tests/subagent-write.node.mjs tests/subagent-admission.node.mjs && node --test tests/subagent-prefixes.node.mjs tests/subagent-file-prefixes.node.mjs && node examples/subagent-roundtrip.mjs && node examples/subagent-human-question.mjs && node examples/subagent-workspace.mjs && node examples/subagent-recovery.mjs && node --test tests/workflow-parallel.node.mjs && node examples/workflow-research.mjs && node examples/workflow-parallel.mjs && node examples/workflow-review-retry.mjs && node examples/workflow-subagent.mjs && node examples/workflow-recovery.mjs && node examples/workflow-collaboration.mjs && node --test tests/experiment/cli.built.spec.mjs && node examples/experiment-fixture.mjs && node examples/experiment-workflow.mjs && node --test tests/control-api.built.node.mjs tests/control-crash-before-acceptance.built.node.mjs",
+    "test:built": "node tests/built-smoke.mjs && node dist/host/bin.js --version && node examples/host-lifecycle.mjs && node tests/host-process-built-smoke.mjs && node --test tests/host-storage-lock.node.mjs tests/host-writer.node.mjs && node tests/model-built-smoke.mjs && node --test tests/tool-native.node.mjs tests/tool-pipeline.node.mjs tests/tool-model.node.mjs tests/tool-registration.node.mjs tests/tool-recovery.node.mjs tests/tool-coexistence.node.mjs tests/context-materials.node.mjs && node tests/tool-built-smoke.mjs && node tests/context-built-smoke.mjs && node examples/context-offline-replay.mjs && node examples/context-agent-roundtrip.mjs && node examples/context-compaction.mjs && node --test tests/agent-built.node.mjs tests/agent-read-text.node.mjs tests/agent-prefixes.node.mjs && node examples/agent-ask-user.mjs && node --test tests/subagent-write.node.mjs tests/subagent-admission.node.mjs && node --test tests/subagent-prefixes.node.mjs tests/subagent-file-prefixes.node.mjs && node examples/subagent-roundtrip.mjs && node examples/subagent-human-question.mjs && node examples/subagent-workspace.mjs && node examples/subagent-recovery.mjs && node --test tests/workflow-parallel.node.mjs && node examples/workflow-research.mjs && node examples/workflow-parallel.mjs && node examples/workflow-review-retry.mjs && node examples/workflow-subagent.mjs && node examples/workflow-recovery.mjs && node examples/workflow-collaboration.mjs && node --test tests/experiment/cli.built.spec.mjs && node examples/experiment-fixture.mjs && node examples/experiment-workflow.mjs && node --test tests/control-api.built.node.mjs tests/control-crash-before-acceptance.built.node.mjs && pnpm run test:extensions:built",
     "check": "pnpm run lint && pnpm run typecheck && pnpm run test && pnpm run build && pnpm run test:built",
     "test:control:built": "node --test tests/control-api.built.node.mjs tests/control-crash-before-acceptance.built.node.mjs",
     "test:pack": "node scripts/verify-pack.mjs",
+    "release:prepare": "node scripts/prepare-release.mjs",
+    "test:ui:browser:install": "node scripts/install-test-browser.mjs",
+    "test:ui:browser": "node --test tests/ui-browser.node.mjs",
+    "generate:python": "node scripts/generate-python-protocol.mjs",
+    "test:python": "node scripts/verify-python-sdk.mjs",
+    "test:python:pack": "node scripts/verify-python-package.mjs",
+    "test:extensions:built": "node --test tests/ui-control.built.node.mjs tests/automation-control.built.node.mjs",
     "test:tool:built": "node --test tests/tool-native.node.mjs tests/tool-pipeline.node.mjs tests/tool-model.node.mjs tests/tool-registration.node.mjs tests/tool-recovery.node.mjs tests/tool-coexistence.node.mjs && node tests/tool-built-smoke.mjs"
   },
   "devDependencies": {
     "@types/chai": "5.2.3",
     "@types/node": "^22.20.0",
     "oxlint": "1.76.0",
+    "playwright": "1.64.0",
     "typescript": "^6.0.3",
     "vitest": "^4.1.8"
   },

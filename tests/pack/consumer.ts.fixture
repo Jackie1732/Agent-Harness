@@ -1,5 +1,10 @@
 import { createHarnessClient } from '@atomic-harness/core/client'
 import type { ControlMethod, Params, Result } from '@atomic-harness/core/protocol'
+import { openHarnessUiServer } from '@atomic-harness/core/ui'
+import { openHarnessAutomation } from '@atomic-harness/core/automation'
+
+void openHarnessUiServer
+void openHarnessAutomation
 
 async function typed(client: ReturnType<typeof createHarnessClient>) {
   const method: ControlMethod = 'input.submit'

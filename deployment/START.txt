@@ -1,0 +1,52 @@
+Atomic Agent Harness 0.1.0 — GitHub Release deployment
+
+Node: >=22.14.0. The atomic-harness-node archive includes production dependencies.
+Extract to a directory you own and run commands from that directory.
+The core tgz is also installable as a local package in your own Node project.
+
+1. Edit deployment/host-config.json for your agents, storage and models.
+   Its default Scripted Provider is an offline demonstration, not a cloud model.
+2. Supply your own CA, server certificate/key and authorized client certificate/key.
+   Save them at the paths referenced by each configuration. No keys ship here.
+   Replace the zero fingerprint in api-config.json with your client's SHA-256
+   certificate fingerprint and restrict methods/member/workflow grants as needed.
+3. Initialize Host once:
+   node start.mjs check --config deployment/host-config.json
+   node start.mjs init --config deployment/host-config.json
+4. Start the finite-control API in its own process:
+   node start.mjs api --config deployment/host-config.json --api-config deployment/api-config.json
+   A typed-protocol research script can use the supplied client example:
+   node deployment/control-client.mjs https://127.0.0.1:4317 localhost CA CLIENT_CERT CLIENT_KEY writer
+   Save its input-intent key before submission. If a receipt is lost, use input.get
+   with that original submissionKey, or query it in the UI. A run-intent without
+   a receipt remains unknown; do not rerun the example as automatic recovery.
+5. Edit UI remote origin/certificate DNS name/TLS files, then set the password
+   environment variable named by ui-config.json and start:
+   node start.mjs ui --config deployment/ui-config.json
+   Open its emitted loopback URL. Submit a task and explicitly click Run.
+6. For automated work edit automation-config.json, provide its HTTPS certificate
+   and bearer environment variable, then start in a separate process:
+   node start.mjs automate --config deployment/automation-config.json
+   Webhooks target a fixed configured job. UTC interval triggers skip missed ticks.
+   An unknown run persists a driver block; inspect its status and use the explicit
+   --acknowledge-run-unknown key only after deciding to permit NEW triggers.
+   Old unknown triggers are never retried by that acknowledgement.
+   POST /automation/v1/webhooks/research-webhook uses application/json body
+   {"eventId":"your-stable-event-id","text":"your-task"} and the header
+   Authorization: Bearer <your-environment-token>. Reusing an eventId with altered
+   text is rejected. Authenticated GET /automation/v1/status is read-only.
+   Keep the token at least 32 printable ASCII characters and provide a certificate
+   valid for the webhook server name. No insecure TLS bypass is required.
+
+Python SDK: >=3.11. Install its wheel in your environment. The offline wheelhouse
+archive states its actual OS/architecture/wheel tags; use --no-index --find-links
+for that supported platform. Other platforms can install the wheel and jsonschema
+from their usual package source. Python package does not open Host storage.
+After extracting the offline ZIP, install with:
+  python -m pip install --no-index --find-links wheelhouse atomic-agent-harness==0.1.0
+
+UI/automation/Python cancellation closes their own resources and does not retract
+already accepted Host work. Only explicit domain controls cancel a Root or Host.
+Use your own server configuration and certificates; do not reuse test credentials.
+The Release manifest and SHA256SUMS identify assets and their source commit.
+Cloud model quality and remote deployment are not implied by local tests.

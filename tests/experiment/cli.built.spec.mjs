@@ -10,6 +10,7 @@ import { decodeExperimentPlan, createNormalizedCallFixtureReplay } from '../../d
 import { createDurableEventCatalog, MemorySessionBackend, modelSessionEventDefinitions, SessionModelRunner, SessionRepository } from '../../dist/index.js'
 
 const bin = fileURLToPath(new URL('../../dist/host/bin.js', import.meta.url))
+const packageVersion = JSON.parse(await readFile(new URL('../../package.json', import.meta.url), 'utf8')).version
 function cli(args, expected = 0) {
   const result = spawnSync(process.execPath, [bin, 'experiment', ...args],
     { encoding: 'utf8', timeout: 30_000, windowsHide: true, maxBuffer: 8 * 1024 * 1024 })
@@ -27,7 +28,7 @@ test('built experiment CLI preserves argument, missing-root, and Host version be
     assert.equal(cli(['verify', '--root', missing], 2).complete, false)
     await assert.rejects(stat(missing), { code: 'ENOENT' })
     const version = spawnSync(process.execPath, [bin, '--version'], { encoding: 'utf8', timeout: 30_000, windowsHide: true })
-    assert.equal(version.status, 0, version.stderr); assert.match(version.stdout, /0\.0\.0/)
+    assert.equal(version.status, 0, version.stderr); assert.equal(version.stdout.trim(), packageVersion)
   } finally { await rm(root, { recursive: true, force: true }) }
 })
 

@@ -1,0 +1,37 @@
+{
+  "schemaVersion": 1,
+  "listenHost": "127.0.0.1",
+  "listenPort": 4317,
+  "tls": {
+    "caFile": "./tls/ca.pem",
+    "serverCertFile": "./tls/server.pem",
+    "serverKeyFile": "./tls/server-key.pem"
+  },
+  "principals": [{
+    "principalKey": "researcher",
+    "certificateFingerprints": ["0000000000000000000000000000000000000000000000000000000000000000"],
+    "methods": ["host.status", "host.run", "host.shutdown", "agent.get", "agent.pause", "agent.resume", "input.submit", "input.answer", "input.get", "root.get", "root.wait", "root.cancel", "message.send", "message.reply", "message.get", "message.wait", "session.events", "delegation.spawn", "delegation.get", "delegation.wait", "delegation.cancel", "workflow.get", "workflow.wait", "workflow.pause", "workflow.resume", "workflow.cancel", "workflow.retry", "workflow.output", "workflow.artifact"],
+    "agentKeys": ["writer", "reviewer"],
+    "workflowKeys": []
+  }],
+  "limits": {
+    "maxRequestBytes": 1048576,
+    "maxJsonDepth": 64,
+    "maxJsonNodes": 100000,
+    "maxHeaderBytes": 8192,
+    "maxResponseBytes": 4194304,
+    "maxPageEvents": 100,
+    "maxConnections": 16,
+    "maxPendingInputs": 8,
+    "maxPendingControls": 8,
+    "maxObservers": 8,
+    "maxPendingShutdowns": 2,
+    "requestReadTimeoutMs": 5000,
+    "responseWriteTimeoutMs": 5000,
+    "tlsHandshakeTimeoutMs": 5000,
+    "headersTimeoutMs": 5000,
+    "keepAliveTimeoutMs": 1000,
+    "maxWaitMs": 60000,
+    "observerScanIntervalMs": 50
+  }
+}

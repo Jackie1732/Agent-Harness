@@ -12,7 +12,7 @@ import {
 
 describe('public source entry', () => {
   it('loads through NodeNext ESM resolution', () => {
-    expect(HARNESS_VERSION).toBe('0.0.0')
+    expect(HARNESS_VERSION).toBe('0.1.0')
     expect(Number.isFinite(systemClock.now())).toBe(true)
     expect(noopLogger.write('info', 'smoke')).toBeUndefined()
   })
