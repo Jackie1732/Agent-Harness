@@ -1,4 +1,4 @@
-import { dirname, join, resolve } from 'node:path'
+import { dirname, join, relative, resolve } from 'node:path'
 import { stat } from 'node:fs/promises'
 import type { JsonObject, JsonValue } from '../foundation/json.js'
 import { snapshotJson } from '../foundation/json.js'
@@ -35,7 +35,7 @@ function requirePublishableConfig(check: ConfigCheck): void {
 function assertConfigDestination(profile: ResolvedOperatorProfile, kind: ConfigKind, path: string, allowSelected = true): void {
   const files: readonly [ConfigKind, string | null][] = [['operator', profile.profilePath], ['host', profile.connection.kind === 'local' ? profile.connection.hostConfig : null],
     ...Object.entries(profile.files) as [ConfigKind, string | null][]]
-  if (files.some(([owner, file]) => file === path && (!allowSelected || owner !== kind))) throw new HostError('HOST_CONFIG_INVALID', 'configuration-file-reference-collision')
+  if (files.some(([owner, file]) => file !== null && relative(file, path) === '' && (!allowSelected || owner !== kind))) throw new HostError('HOST_CONFIG_INVALID', 'configuration-file-reference-collision')
 }
 /** Classify saved candidates through original snapshot checks rather than a durable-field list. */
 export async function diffConfigCandidate(profilePath: string, kind: ConfigKind, candidate: JsonValue, candidateDirectory?: string): Promise<ConfigDiff> {
@@ -52,7 +52,7 @@ async function classifyDifference(document: ConfigDocument | ConfigEditableDocum
     else if (document.kind === 'automation') effect = 'new-journal'
     else if (document.kind === 'operator') {
       const old = resolveOperatorProfile(decodeOperatorProfile(document.check?.normalized ?? document.value), document.path), next = resolveOperatorProfile(decodeOperatorProfile(normalized), document.path)
-      if (old.journal.root !== next.journal.root || old.journal.sessionId !== next.journal.sessionId) effect = 'new-journal'
+      if (relative(old.journal.root, next.journal.root) !== '' || old.journal.sessionId !== next.journal.sessionId) effect = 'new-journal'
       else if (changedPointers.every(pointer => pointer.startsWith('/display/'))) effect = 'reload-display'
     }
     else if (document.kind === 'host') {
@@ -71,14 +71,15 @@ async function classifyDifference(document: ConfigDocument | ConfigEditableDocum
 async function preservePersistentBindings(kind: ConfigKind, before: JsonValue, after: JsonValue, path: string): Promise<void> {
   if (kind === 'operator') {
     const old = resolveOperatorProfile(decodeOperatorProfile(before), path), next = resolveOperatorProfile(decodeOperatorProfile(after), path)
-    if (old.journal.root === next.journal.root && old.journal.sessionId === next.journal.sessionId
+    const sameJournal = relative(old.journal.root, next.journal.root) === '' && old.journal.sessionId === next.journal.sessionId
+    if (sameJournal
       && !Buffer.from(canonicalJsonBytes(operatorProfileBinding(old))).equals(Buffer.from(canonicalJsonBytes(operatorProfileBinding(next))))
       && await exists(join(old.journal.root, 'sessions', old.journal.sessionId))) throw new HostError('HOST_BINDING_CONFLICT', 'operator-journal-identity-bound')
-    if ((old.journal.root !== next.journal.root || old.journal.sessionId !== next.journal.sessionId)
+    if (!sameJournal
       && await exists(join(next.journal.root, 'sessions', next.journal.sessionId))) throw new HostError('HOST_BINDING_CONFLICT', 'operator-target-journal-already-bound')
   } else if (kind === 'automation') {
     const old = resolveAutomationConfig(decodeAutomationConfig(before), dirname(path)), next = resolveAutomationConfig(decodeAutomationConfig(after), dirname(path))
-    if (old.journal.root === next.journal.root && old.journal.sessionId === next.journal.sessionId
+    if (relative(old.journal.root, next.journal.root) === '' && old.journal.sessionId === next.journal.sessionId
       && automationConfigDigest(old) !== automationConfigDigest(next) && await exists(join(old.journal.root, 'sessions', old.journal.sessionId))) {
       throw new HostError('HOST_BINDING_CONFLICT', 'automation-config-requires-new-journal')
     }
@@ -177,11 +178,10 @@ export async function setupOperator(input: { readonly profilePath: string; reado
   if (profile.connection.kind === 'local') {
     const host = input.host!
     requirePublishableConfig(await checkConfigCandidate('host', host, dirname(profile.connection.hostConfig), profile))
-    if (resolve(profile.connection.hostConfig) === path) throw new HostError('HOST_CONFIG_INVALID', 'setup-file-reference-collision')
   }
   const declared = Object.entries(profile.files).filter((entry): entry is [string, string] => entry[1] !== null)
-  if (new Set([path, ...(profile.connection.kind === 'local' ? [profile.connection.hostConfig] : []), ...declared.map(([, file]) => file)]).size
-    !== 1 + (profile.connection.kind === 'local' ? 1 : 0) + declared.length) throw new HostError('HOST_CONFIG_INVALID', 'setup-file-reference-collision')
+  const paths = [path, ...(profile.connection.kind === 'local' ? [profile.connection.hostConfig] : []), ...declared.map(([, file]) => file)]
+  if (paths.some((path, index) => paths.slice(0, index).some(previous => relative(previous, path) === ''))) throw new HostError('HOST_CONFIG_INVALID', 'setup-file-reference-collision')
   for (const [kind, file] of declared) {
     const check = await checkConfigCandidate(kind as ConfigKind, (await readConfigFile(file, configLimits(kind as ConfigKind))).value, dirname(file), profile,
       profile.connection.kind === 'local' ? { value: input.host!, baseDirectory: dirname(profile.connection.hostConfig) } : undefined)

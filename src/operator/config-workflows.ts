@@ -1,4 +1,5 @@
 import type { JsonObject, JsonValue } from '../foundation/json.js'
+import { relative } from 'node:path'
 import { decodeHostConfig, planHostConfig, resolveHostConfig } from '../host/config.js'
 import type { HostConfig, HostIdentitySource, ResolvedHostSpec } from '../host/config.js'
 import { workflowMemberFingerprints } from '../host/workflow-authority.js'
@@ -45,7 +46,7 @@ export function rebuildWorkflowBindings(value: JsonValue, baseDirectory: string,
 /** Clone only local topologies and preserve each configuration generation. */
 export function cloneHostCandidate(config: HostConfig, newStorage: string, hostKey: string, baseDirectory: string, identities?: HostIdentitySource): HostConfig {
   if (hostKey === config.hostKey) throw new HostError('HOST_CONFIG_INVALID', 'clone-host-key-must-change')
-  if (newStorage === config.storage.root) throw new HostError('HOST_CONFIG_INVALID', 'clone-storage-must-change')
+  if (relative(newStorage, config.storage.root) === '') throw new HostError('HOST_CONFIG_INVALID', 'clone-storage-must-change')
   if (config.members.some(member => member.kind !== 'local') || config.routes.some(route => route.origin !== null)
     || config.https.kind !== 'disabled') throw new HostError('HOST_CONFIG_INVALID', 'clone-remote-topology-unsupported')
   const dependent: string[] = []
