@@ -9,14 +9,14 @@ import { EffectOwner } from '../effect/owner.js'
 import { openHost } from '../host/runtime.js'
 import type { AtomicHost, HostShutdownMode } from '../host/runtime.js'
 import type { ResolvedHostSpec } from '../host/config.js'
-import { CONTROL_PATH, CONTROL_PROTOCOL, CONTROL_VERSION, API_HTTP_STATUS, METHOD_CATEGORIES, ProtocolError, decodeControlRequest, decodeControlResponse } from '../protocol/index.js'
+import { CONTROL_PATH, CONTROL_PROTOCOL, CONTROL_VERSION, API_HTTP_STATUS, ProtocolError, decodeControlRequest, decodeControlResponse } from '../protocol/index.js'
 import type { AnyControlRequest, RootObservation, Result } from '../protocol/index.js'
 import type { ApiLimits, ResolvedApiConfig } from './config.js'
-import { authorizeRequest } from './authorization.js'
-import { ApiAdmission } from './admission.js'
+import { authorizeControl } from '../control/authorization.js'
+import { assertControlActivity, ControlAdmission } from '../control/admission.js'
 import { apiFailure, ApiRejection, readMethod } from './errors.js'
 import { readRequest, writeResponse } from './http-io.js'
-import { dispatchControl } from './dispatch.js'
+import { dispatchControl } from '../control/dispatch.js'
 
 /** Startup evidence includes only actual listening coordinates and non-sensitive budgets. */
 export interface ApiReady {
@@ -57,7 +57,7 @@ export async function openHarnessApiServer(options: OpenHarnessApiServerOptions)
   const config = options.api, limits = config.limits
   const [ca, cert, key] = await Promise.all([config.tls.caFile, config.tls.serverCertFile, config.tls.serverKeyFile].map(path => readFile(path)))
   createSecureContext({ ca: ca!, cert: cert!, key: key! })
-  const owner = new EffectOwner('control-api'), admission = new ApiAdmission(limits)
+  const owner = new EffectOwner('control-api'), admission = new ControlAdmission(limits)
   const sockets = new Set<Duplex>(), networkTasks = new Set<Promise<void>>()
   let state: ApiServiceStatus = 'starting', frozen = false
   let host!: AtomicHost, server!: Server, phase: Promise<void> | undefined, disposal: Promise<void> | undefined
@@ -111,14 +111,21 @@ export async function openHarnessApiServer(options: OpenHarnessApiServerOptions)
       const jsonLimits = { maxBytes: limits.maxRequestBytes, maxDepth: limits.maxJsonDepth, maxNodes: limits.maxJsonNodes }
       decoded = decodeControlRequest(await readRequest(incoming, limits), jsonLimits)
       if (frozen) { response.destroy(); return }
-      await authorizeRequest(principal, decoded, host, options.host)
+      const caller = { namespace: `api:${principal.principalKey}`, methods: principal.methods,
+        agentKeys: principal.agentKeys, workflowKeys: principal.workflowKeys }
+      await authorizeControl(host, options.host, caller, decoded)
       if (frozen) { response.destroy(); return }
       if (state !== 'ready' && decoded.method !== 'host.shutdown') throw new ApiRejection('API_INACTIVE', readMethod(decoded.method) ? 'not-applicable' : 'not-accepted')
-      if (METHOD_CATEGORIES[decoded.method] === 'business' && host.activity !== 'idle') throw new ApiRejection('API_BUSY')
+      assertControlActivity(host, decoded.method)
       const captured = decoded
       let result = await admission.run(captured.method, async () => {
         invoked = true
-        return await dispatchControl(host, options.host, principal, captured, limits, disconnected.signal, close, progress)
+        const overhead = Buffer.byteLength(JSON.stringify({ protocol: CONTROL_PROTOCOL, version: CONTROL_VERSION,
+          requestId: captured.requestId, kind: 'result', result: null })) - 4
+        const result = await dispatchControl(host, options.host, caller, captured,
+          { maxWaitMs: limits.maxWaitMs, observerScanIntervalMs: limits.observerScanIntervalMs,
+            maxPageEvents: limits.maxPageEvents, pageBytes: limits.maxResponseBytes - overhead }, disconnected.signal, close, progress)
+        return captured.method === 'host.shutdown' ? { ...result, serviceStatus: 'closing' as const } : result
       })
       const envelope = () => ({ protocol: CONTROL_PROTOCOL, version: CONTROL_VERSION, requestId: captured.requestId, kind: 'result' as const, result })
       let body = Buffer.from(JSON.stringify(envelope()))

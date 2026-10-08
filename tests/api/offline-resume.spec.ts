@@ -5,8 +5,8 @@ import { expect, it } from 'vitest'
 import { decodeHostConfig, resolveHostConfig } from '../../src/host/config.js'
 import { initializeHost } from '../../src/host/initialization.js'
 import { openHost } from '../../src/host/runtime.js'
-import { dispatchControl } from '../../src/api/dispatch.js'
-import { authorizeRequest } from '../../src/api/authorization.js'
+import { dispatchControl } from '../../src/control/dispatch.js'
+import { authorizeControl } from '../../src/control/authorization.js'
 import { CONTROL_PROTOCOL, CONTROL_VERSION, decodeControlRequest } from '../../src/protocol/index.js'
 import { hostConfig } from '../host/fixtures.js'
 import { apiConfig, apiLimits } from './fixtures.js'
@@ -21,12 +21,13 @@ it('rejects API resume of a retained offline slot while preserving the original 
     const before = host.read().agent('writer')
     expect(before).toMatchObject({ mailbox: 'known-offline', paused: true })
     const principal = (await apiConfig()).principals[0]!
+    const caller = { ...principal, namespace: `api:${principal.principalKey}` }
     const request = decodeControlRequest({ protocol: CONTROL_PROTOCOL, version: CONTROL_VERSION, requestId: 'offline-resume',
       method: 'agent.resume', params: { agentKey: 'writer', expectedInstanceId: host.instanceId } },
     { maxBytes: apiLimits.maxRequestBytes, maxDepth: apiLimits.maxJsonDepth, maxNodes: apiLimits.maxJsonNodes })
-    await authorizeRequest(principal, request, host, spec)
+    await authorizeControl(host, spec, caller, request)
     const progress = { domainReturned: false }
-    await expect(dispatchControl(host, spec, principal, request, apiLimits, new AbortController().signal,
+    await expect(dispatchControl(host, spec, caller, request, { ...apiLimits, pageBytes: apiLimits.maxResponseBytes }, new AbortController().signal,
       mode => host.shutdown({ mode }), progress)).rejects.toMatchObject({ code: 'API_INACTIVE', acceptance: 'not-accepted' })
     expect(progress.domainReturned).toBe(false)
     expect(host.read().agent('writer')).toEqual(before)

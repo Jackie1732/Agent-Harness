@@ -1,0 +1,52 @@
+import { HarnessError } from '../foundation/error.js'
+import { METHOD_CATEGORIES } from '../protocol/index.js'
+import type { ApiAcceptance, ApiErrorCode, ApiErrorData, ControlMethod } from '../protocol/index.js'
+
+/** A deliberate control policy rejection; no domain method has run unless specified. */
+export class ControlRejection extends Error {
+  constructor(readonly code: ApiErrorCode, readonly acceptance: ApiAcceptance = 'not-accepted') { super('Request rejected'); this.name = 'ControlRejection' }
+}
+/**
+ * Read methods cannot accept a domain mutation.
+ * @param method Requested control method.
+ * @returns Whether the method is an observation.
+ */
+export function readMethod(method: ControlMethod): boolean {
+  return METHOD_CATEGORIES[method] === 'observation'
+}
+/**
+ * Map owner-defined diagnostics; failure after mutation return cannot prove non-acceptance.
+ * @param error Domain failure or deliberate rejection.
+ * @param method Identified control method, if decoding completed.
+ * @param invoked Whether the domain dispatcher was entered.
+ * @param domainReturned Whether a mutation returned before a later failure.
+ * @returns Sanitized diagnostic and original acceptance classification.
+ */
+export function controlFailure(error: unknown, method: ControlMethod | undefined, invoked: boolean, domainReturned: boolean): ApiErrorData {
+  const read = method !== undefined && readMethod(method)
+  if (error instanceof ControlRejection) return { code: error.code, message: 'Request rejected', acceptance: read ? 'not-applicable' as const : domainReturned ? 'unknown' as const : error.acceptance, domainCode: null }
+  const domainCode = error instanceof HarnessError && /^[A-Z0-9_]{1,128}$/.test(error.code) ? error.code : null
+  let code: ApiErrorCode = 'API_INTERNAL_ERROR'
+  let knownRejection = false
+  const reasonCode = error instanceof HarnessError ? error.details?.reasonCode : undefined
+  if (domainCode !== null) {
+    if (reasonCode === 'operation-rejected' || reasonCode === 'answer-wait-terminal' || reasonCode === 'answer-root-stopped') { code = 'API_OPERATION_REJECTED'; knownRejection = true }
+    else if (reasonCode === 'input-capacity' || domainCode === 'SUBAGENT_CAPACITY') { code = 'API_CAPACITY_EXCEEDED'; knownRejection = true }
+    else if (reasonCode === 'input-byte-limit') { code = 'API_LIMIT_EXCEEDED'; knownRejection = true }
+    else if (['HOST_BUSY', 'AGENT_BUSY', 'AGENT_RECOVERY_BUSY'].includes(domainCode)) { code = 'API_BUSY'; knownRejection = true }
+    else if (['HOST_INACTIVE', 'HOST_NOT_READY', 'AGENT_INACTIVE', 'SUBAGENT_INACTIVE'].includes(domainCode)) { code = 'API_INACTIVE'; knownRejection = true }
+    else if (domainCode.includes('RECOVERY_REQUIRED') || domainCode.includes('COMMIT_UNKNOWN')) code = 'API_RECOVERY_REQUIRED'
+    else if (domainCode.includes('KEY_CONFLICT') || domainCode.includes('REQUEST_CONFLICT') || domainCode === 'HOST_BINDING_CONFLICT') { code = 'API_KEY_CONFLICT'; knownRejection = true }
+    else if (domainCode === 'HOST_TARGET_NOT_FOUND') { code = 'API_TARGET_NOT_FOUND'; knownRejection = true }
+    else if (domainCode === 'HOST_CURSOR_INVALID') { code = 'API_CURSOR_INVALID'; knownRejection = true }
+    else if (domainCode.includes('LIMIT_EXCEEDED')) code = 'API_LIMIT_EXCEEDED'
+    else if (['AGENT_WAIT_INVALID', 'AGENT_WAIT_TERMINAL', 'SUBAGENT_AUTHORITY_DENIED', 'SUBAGENT_BUDGET_EXHAUSTED', 'SUBAGENT_STATE_INVALID', 'SUBAGENT_REQUEST_INVALID'].includes(domainCode)) {
+      code = 'API_OPERATION_REJECTED'; knownRejection = true
+    }
+    else if (domainCode.includes('EVIDENCE_INCOMPLETE') || domainCode.includes('SOURCE_INVALID')) code = 'API_EVIDENCE_INCOMPLETE'
+  }
+  // Agent cancellation can reach an inactive journal after its stop request commits.
+  if (invoked && method !== undefined && ['root.cancel', 'delegation.cancel', 'workflow.cancel'].includes(method)
+    && code !== 'API_BUSY' && code !== 'API_KEY_CONFLICT' && (code !== 'API_INACTIVE' || domainCode === 'AGENT_INACTIVE')) knownRejection = false
+  return { code, message: 'Request failed', acceptance: read ? 'not-applicable' as const : domainReturned ? 'unknown' as const : !invoked || knownRejection ? 'not-accepted' as const : 'unknown' as const, domainCode }
+}

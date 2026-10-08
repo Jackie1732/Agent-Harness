@@ -1,22 +1,35 @@
 import type { AtomicHost, HostShutdownMode } from '../host/runtime.js'
 import type { ResolvedHostSpec } from '../host/config.js'
-import type { ApiLimits, ApiPrincipal } from './config.js'
-import type { AnyControlRequest, Result, ControlMethod } from '../protocol/index.js'
-import { principalControlKey, principalNamespace } from './authorization.js'
-import { ApiRejection } from './errors.js'
+import type { AnyControlOperation, ApplicationResult, ControlCaller, ControlLimits, ControlProgress, ControlRequest } from './types.js'
+import type { ControlMethod } from '../protocol/index.js'
+import { ControlRejection } from './errors.js'
 import { HarnessError } from '../foundation/error.js'
 import { formatSessionAddress, parseSessionAddress, parseSessionId } from '../session/ids.js'
 
-/** Map each closed method to its original owner; this adapter owns no durable business state. */
-export async function dispatchControl(host: AtomicHost, spec: ResolvedHostSpec, principal: ApiPrincipal, request: AnyControlRequest,
-  limits: ApiLimits, signal: AbortSignal, shutdown: (mode: HostShutdownMode) => Promise<void>,
-  progress: { domainReturned: boolean }): Promise<Result<ControlMethod>> {
+/**
+ * Map each authorized and admitted method to its original owner without storing business state.
+ * @param host Current borrowed Host instance.
+ * @param spec Resolved member identities.
+ * @param caller Authenticated durable operation namespace.
+ * @param request Existing control method and its typed parameters.
+ * @param limits Domain wait, scan and event-page budgets.
+ * @param signal Cancels only this caller's finite observations.
+ * @param shutdown Consumer-owned Host release operation.
+ * @param progress Records mutation return before a subsequent observation can fail.
+ * @returns The original domain result, with Host shutdown separated from service release.
+ */
+export function dispatchControl<M extends ControlMethod>(host: AtomicHost, spec: ResolvedHostSpec, caller: ControlCaller, request: ControlRequest<M>,
+  limits: ControlLimits, signal: AbortSignal, shutdown: (mode: HostShutdownMode) => Promise<void>,
+  progress: ControlProgress): Promise<ApplicationResult<M>>
+export async function dispatchControl(host: AtomicHost, spec: ResolvedHostSpec, caller: ControlCaller, request: AnyControlOperation,
+  limits: ControlLimits, signal: AbortSignal, shutdown: (mode: HostShutdownMode) => Promise<void>,
+  progress: ControlProgress): Promise<ApplicationResult<ControlMethod>> {
   if (request.method === 'host.shutdown') {
     await shutdown(request.params.mode)
-    return { instanceId: host.instanceId, mode: host.shutdownState.mode!, hostStatus: 'stopped', serviceStatus: 'closing' }
+    return { instanceId: host.instanceId, mode: host.shutdownState.mode!, hostStatus: 'stopped' }
   }
-  const reads = host.read(), namespace = principalNamespace(principal)
-  if ('timeoutMs' in request.params && request.params.timeoutMs > limits.maxWaitMs) throw new ApiRejection('API_LIMIT_EXCEEDED', 'not-applicable')
+  const reads = host.read(), namespace = caller.namespace
+  if ('timeoutMs' in request.params && request.params.timeoutMs > limits.maxWaitMs) throw new ControlRejection('API_LIMIT_EXCEEDED', 'not-applicable')
   switch (request.method) {
     case 'host.status': return await reads.status()
     case 'host.run': {
@@ -28,7 +41,7 @@ export async function dispatchControl(host: AtomicHost, spec: ResolvedHostSpec, 
       host.pause(request.params.agentKey)
       return { agentKey: request.params.agentKey, instanceId: host.instanceId, paused: true }
     case 'agent.resume': {
-      if (reads.agent(request.params.agentKey).mailbox !== 'online') throw new ApiRejection('API_INACTIVE')
+      if (reads.agent(request.params.agentKey).mailbox !== 'online') throw new ControlRejection('API_INACTIVE')
       const resumptions = host.resume(request.params.agentKey)
       return { agentKey: request.params.agentKey, instanceId: host.instanceId, paused: (await reads.agent(request.params.agentKey)).paused, resumptions }
     }
@@ -41,7 +54,7 @@ export async function dispatchControl(host: AtomicHost, spec: ResolvedHostSpec, 
       if (prior === undefined) {
         const root = reads.answerRoot(request.params.agentKey, request.params.wait)
         if (root.outcome !== null || root.stopControl !== null || !root.waits.some(wait => wait.reference.eventId === request.params.wait.eventId
-          && wait.reference.index === request.params.wait.index && wait.descriptor.kind === 'user')) throw new ApiRejection('API_OPERATION_REJECTED')
+          && wait.reference.index === request.params.wait.index && wait.descriptor.kind === 'user')) throw new ControlRejection('API_OPERATION_REJECTED')
       }
       return await host.submitKeyedInput(request.params.agentKey,
         { kind: 'answer', wait: request.params.wait, text: request.params.text, originLabel: namespace }, { namespace, key: request.params.submissionKey })
@@ -76,13 +89,12 @@ export async function dispatchControl(host: AtomicHost, spec: ResolvedHostSpec, 
     case 'message.wait': return await host.observe(() => reads.message(request.params.agentKey, request.params.messageId, request.params.direction),
       observation => observation.fact.status !== 'pending', { timeoutMs: request.params.timeoutMs, scanIntervalMs: limits.observerScanIntervalMs, signal })
     case 'session.events': {
-      if (request.params.maxEvents > limits.maxPageEvents) throw new ApiRejection('API_LIMIT_EXCEEDED', 'not-applicable')
-      const overhead = Buffer.byteLength(JSON.stringify({ protocol: 'atomic-harness-control', version: 1, requestId: request.requestId, kind: 'result', result: null })) - 4
-      return await reads.events(request.params.target, { ...request.params, maxBytes: limits.maxResponseBytes - overhead })
+      if (request.params.maxEvents > limits.maxPageEvents) throw new ControlRejection('API_LIMIT_EXCEEDED', 'not-applicable')
+      return await reads.events(request.params.target, { ...request.params, maxBytes: limits.pageBytes })
     }
     case 'delegation.spawn': {
       const p = request.params
-      const receipt = await host.bindParent(parentAddress(spec, p.parentAgentKey), p.parentRoot).spawn(principalControlKey(principal, p.requestKey), p.request)
+      const receipt = await host.bindParent(parentAddress(spec, p.parentAgentKey), p.parentRoot).spawn(`${namespace}:${p.requestKey}`, p.request)
       progress.domainReturned = true
       const observation = await reads.delegation(p.parentAgentKey, p.parentRoot, receipt.delegationId)
       return { delegationId: receipt.delegationId, childSessionId: parseSessionId(receipt.childSessionId), childAddress: formatSessionAddress(parseSessionAddress(receipt.childAddress)), instanceId: host.instanceId, cuts: observation.cuts }
@@ -94,7 +106,7 @@ export async function dispatchControl(host: AtomicHost, spec: ResolvedHostSpec, 
     }
     case 'delegation.cancel': {
       const p = request.params
-      const result = await host.bindParent(parentAddress(spec, p.parentAgentKey), p.parentRoot).cancel(p.delegationId, principalControlKey(principal, p.requestKey))
+      const result = await host.bindParent(parentAddress(spec, p.parentAgentKey), p.parentRoot).cancel(p.delegationId, `${namespace}:${p.requestKey}`)
       progress.domainReturned = true
       const observation = await reads.delegation(p.parentAgentKey, p.parentRoot, p.delegationId)
       return 'eventId' in result ? { status: 'requested', eventId: result.eventId, instanceId: host.instanceId, cuts: observation.cuts }
@@ -110,14 +122,14 @@ export async function dispatchControl(host: AtomicHost, spec: ResolvedHostSpec, 
     case 'workflow.resume':
     case 'workflow.cancel': {
       const p = request.params, workflow = host.workflow(p.workflowKey)
-      const input = { requestKey: principalControlKey(principal, p.requestKey), reason: p.reason }
+      const input = { requestKey: `${namespace}:${p.requestKey}`, reason: p.reason }
       const result = await (request.method === 'workflow.pause' ? workflow.pause(input) : request.method === 'workflow.resume' ? workflow.resume(input) : workflow.cancel(input))
       progress.domainReturned = true
       return { ...result, instanceId: host.instanceId, cuts: (await reads.workflow(p.workflowKey)).cuts }
     }
     case 'workflow.retry': {
       const p = request.params
-      const result = await host.workflow(p.workflowKey).retry({ requestKey: principalControlKey(principal, p.requestKey), nodeKey: p.nodeKey, failedAssignment: p.failedAssignment })
+      const result = await host.workflow(p.workflowKey).retry({ requestKey: `${namespace}:${p.requestKey}`, nodeKey: p.nodeKey, failedAssignment: p.failedAssignment })
       progress.domainReturned = true
       return { ...result, instanceId: host.instanceId, cuts: (await reads.workflow(p.workflowKey)).cuts }
     }
@@ -127,6 +139,6 @@ export async function dispatchControl(host: AtomicHost, spec: ResolvedHostSpec, 
 }
 function parentAddress(spec: ResolvedHostSpec, key: string) {
   const member = spec.members.find(member => member.kind === 'local' && member.agentKey === key)
-  if (member === undefined) throw new ApiRejection('API_TARGET_NOT_FOUND')
+  if (member === undefined) throw new ControlRejection('API_TARGET_NOT_FOUND')
   return formatSessionAddress(parseSessionId(member.sessionId))
 }
