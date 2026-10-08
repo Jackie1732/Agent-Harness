@@ -1,11 +1,12 @@
 import assert from 'node:assert/strict'
-import { mkdtemp, rm } from 'node:fs/promises'
+import { mkdtemp, readFile, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
 const harness = await import('../dist/index.js')
 
-assert.equal(harness.HARNESS_VERSION, '0.1.0')
+const manifest = JSON.parse(await readFile(new URL('../package.json', import.meta.url), 'utf8'))
+assert.equal(harness.HARNESS_VERSION, manifest.version)
 assert.equal(typeof harness.assertJsonValue, 'function')
 assert.equal(typeof harness.HarnessError, 'function')
 assert.equal(typeof harness.systemClock.now, 'function')
