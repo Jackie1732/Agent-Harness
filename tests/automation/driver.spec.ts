@@ -8,12 +8,78 @@ import { AutomationDriver } from '../../src/automation/driver.js'
 import type { AutomationNotice } from '../../src/automation/driver.js'
 import { openHarnessAutomation } from '../../src/automation/runtime.js'
 import { runAutomationCli } from '../../src/automation/cli.js'
-import { clientOptions } from '../api/fixtures.js'
+import { initializeHost } from '../../src/host/initialization.js'
+import { decodeHostConfig, resolveHostConfig } from '../../src/host/config.js'
+import { openHarnessApiServer } from '../../src/api/server.js'
+import { decodeApiConfig, resolveApiConfig } from '../../src/api/config.js'
+import { hostConfig } from '../host/fixtures.js'
+import { apiConfig, clientOptions } from '../api/fixtures.js'
 import { setup, config, faultProxy, bearerToken, eventually } from './fixtures.js'
 
 const cleanup: Array<() => Promise<void>> = []
 afterEach(async () => { for (const close of cleanup.splice(0).reverse()) await close() })
+async function replaceEndpoint(fixture: Awaited<ReturnType<typeof setup>>) {
+  const port = fixture.service.ready.listen.port; await fixture.service.dispose()
+  const raw = { ...hostConfig(join(fixture.directory, 'replacement-host')), hostKey: 'different-host',
+    routes: [{ memberKey: 'writer', ownerHost: 'different-host', origin: null, serverName: null }] }
+  const host = resolveHostConfig(decodeHostConfig(raw, fixture.directory)); await initializeHost(host)
+  const api = await apiConfig(), replacement = await openHarnessApiServer({ host,
+    api: resolveApiConfig(decodeApiConfig({ ...api, listenPort: port }), host, fixture.directory), credentials: {} })
+  cleanup.push(() => replacement.dispose())
+}
 describe('single-attempt automation driving', () => {
+  it('checks the live Host binding before recording or sending a new mutation after endpoint replacement', async () => {
+    const fixture = await setup(); cleanup.push(() => fixture.dispose())
+    const service = await openHarnessAutomation({ config: fixture.config, bearerToken })
+    cleanup.push(() => service.dispose().catch(() => undefined))
+    const failed = service.closed.catch(error => error as { code: string })
+    await replaceEndpoint(fixture)
+    const receipt = await service.accept('review', 'rebound-endpoint', 'Configured Host task')
+    expect(await failed).toMatchObject({ code: 'AUTOMATION_CONFLICT' })
+    expect(service.status().triggers[0]).toMatchObject({ submitIntent: null, inputEventId: null, runIntent: null })
+    const client = createHarnessClient(await clientOptions(fixture.service.ready.listen.port)); cleanup.push(() => client.close())
+    await expect(client.request('input.get', { agentKey: 'writer', submissionKey: receipt.trigger.triggerKey })).rejects.toMatchObject({ code: 'API_TARGET_NOT_FOUND' })
+  }, 30000)
+  it('checks the live Host binding before certifying uncertain input observations after endpoint replacement', async () => {
+    const fixture = await setup(); cleanup.push(() => fixture.dispose())
+    const client = createHarnessClient(await clientOptions(fixture.service.ready.listen.port)); cleanup.push(() => client.close())
+    const store = await openAutomationJournal(fixture.config); cleanup.push(() => store.dispose())
+    const trigger = (await store.journal.accept('review', 'rebound-observation', 'Original Host task', 0, 1)).trigger
+    await store.journal.append({ kind: 'submit-intent', triggerKey: trigger.triggerKey })
+    await client.request('input.submit', { agentKey: 'writer', submissionKey: trigger.triggerKey, text: trigger.text })
+    const driver = new AutomationDriver({ config: fixture.config, journal: store.journal, client, now: Date.now, notice: async () => undefined })
+    await driver.observe(trigger.triggerKey); const before = store.journal.snapshot.localPosition
+    await replaceEndpoint(fixture)
+    await client.request('input.submit', { agentKey: 'writer', submissionKey: trigger.triggerKey, text: 'Other Host task' })
+    await expect(driver.observe(trigger.triggerKey)).rejects.toMatchObject({ code: 'AUTOMATION_CONFLICT' })
+    expect(store.journal.snapshot.localPosition).toBe(before)
+    expect(store.journal.get(trigger.triggerKey)!.observation!.input!.instanceId).toBe(fixture.service.ready.instanceId)
+  }, 30000)
+  it.each(['accepted', 'submitted'] as const)('records no new mutation intent when the live Host read receipt is lost at %s', async cut => {
+    const fixture = await setup(); cleanup.push(() => fixture.dispose())
+    const proxy = await faultProxy(fixture.service.ready.listen.port, { lose: 'host.status' }); cleanup.push(() => proxy.dispose())
+    const settings = config(fixture.directory, proxy.port), client = createHarnessClient(await clientOptions(proxy.port)); cleanup.push(() => client.close())
+    const store = await openAutomationJournal(settings); cleanup.push(() => store.dispose())
+    const trigger = (await store.journal.accept('review', `host-read-loss:${cut}`, 'research', 0, 1)).trigger
+    if (cut === 'submitted') {
+      await store.journal.append({ kind: 'submit-intent', triggerKey: trigger.triggerKey })
+      const receipt = await client.request('input.submit', { agentKey: 'writer', submissionKey: trigger.triggerKey, text: trigger.text })
+      await store.journal.append({ kind: 'submitted', triggerKey: trigger.triggerKey, inputEventId: receipt.inputEventId })
+    }
+    const driver = new AutomationDriver({ config: settings, journal: store.journal, client, now: Date.now, notice: async () => undefined })
+    await driver.drive(trigger.triggerKey)
+    expect(proxy.methods.filter(method => method === 'host.status')).toHaveLength(1)
+    expect(proxy.methods.filter(method => method === 'host.run')).toHaveLength(0)
+    expect(proxy.methods.filter(method => method === 'input.submit')).toHaveLength(cut === 'submitted' ? 1 : 0)
+    expect(store.journal.get(trigger.triggerKey)!.runIntent).toBeNull()
+    if (cut === 'accepted') expect(store.journal.get(trigger.triggerKey)!.submitIntent).toBeNull()
+    else expect(store.journal.get(trigger.triggerKey)!.observation).toMatchObject({ readErrorCode: 'ClientTransportError', input: null, root: null })
+    await driver.drive(trigger.triggerKey)
+    expect(proxy.methods.filter(method => method === 'host.status')).toHaveLength(2)
+    expect(proxy.methods.filter(method => method === 'input.submit')).toHaveLength(1)
+    expect(proxy.methods.filter(method => method === 'host.run')).toHaveLength(1)
+    expect(store.journal.get(trigger.triggerKey)!.observation!.root!.outcome).toBe('completed')
+  }, 30000)
   it('observes a real human Wait without calling it complete and later reads externally completed business facts', async () => {
     const key = automationTriggerKey('research', 'review', 'human-question'), fixture = await setup({ submissionKey: key, text: 'research' }); cleanup.push(() => fixture.dispose())
     const client = createHarnessClient(await clientOptions(fixture.service.ready.listen.port)); cleanup.push(() => client.close())
