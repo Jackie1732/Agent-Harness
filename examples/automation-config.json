@@ -1,0 +1,23 @@
+{
+  "schemaVersion": 1,
+  "automationKey": "research",
+  "hostKey": "research-host",
+  "journal": { "root": "./automation-store", "sessionId": "4d61c6d2-8f8d-4d5d-8c61-cad51b233e50", "maxRecordBytes": 4194304, "maxTriggers": 1000, "maxEvents": 20000 },
+  "client": {
+    "origin": "https://localhost:8443",
+    "serverName": "localhost",
+    "tls": { "caFile": "./tls/ca.pem", "certFile": "./tls/automation.pem", "keyFile": "./tls/automation-key.pem" },
+    "limits": { "maxRequestBytes": 1048576, "maxResponseBytes": 2097152, "maxJsonDepth": 64, "maxJsonNodes": 100000, "connectTimeoutMs": 5000, "requestTimeoutMs": 60000, "maxConnections": 1 }
+  },
+  "webhook": { "listenHost": "127.0.0.1", "listenPort": 8445, "tls": { "certFile": "./tls/automation-server.pem", "keyFile": "./tls/automation-server-key.pem" }, "bearerTokenEnv": "ATOMIC_AUTOMATION_TOKEN" },
+  "limits": {
+    "maxRequestBytes": 65536, "maxResponseBytes": 2097152, "maxJsonDepth": 32, "maxJsonNodes": 10000,
+    "maxHeaderBytes": 8192, "maxConnections": 8, "maxPendingRequests": 4, "maxQueued": 16,
+    "requestReadTimeoutMs": 5000, "responseWriteTimeoutMs": 5000, "headersTimeoutMs": 5000,
+    "tlsHandshakeTimeoutMs": 5000, "keepAliveTimeoutMs": 1000, "observeIntervalMs": 1000
+  },
+  "jobs": [
+    { "jobKey": "research-webhook", "agentKey": "researcher", "trigger": { "kind": "webhook" } },
+    { "jobKey": "daily-review", "agentKey": "researcher", "trigger": { "kind": "interval", "anchor": "2026-10-08T00:00:00.000Z", "intervalMs": 86400000, "text": "Review the explicitly configured research materials." } }
+  ]
+}
