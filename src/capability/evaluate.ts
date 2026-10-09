@@ -142,6 +142,14 @@ function buildGraph(declarations: readonly ComponentDeclaration[]): Graph {
 export function detectCycles(declarations: readonly ComponentDeclaration[]): readonly CycleReport[] {
   const live = declarations.filter(declaration => declaration.status !== 'disposed')
   const graph = buildGraph(live)
+  const dependents = new Map<ComponentId, Set<ComponentId>>()
+  for (const [dependent, providers] of graph.dependencies) {
+    for (const provider of providers) {
+      const entries = dependents.get(provider) ?? new Set<ComponentId>()
+      entries.add(dependent)
+      dependents.set(provider, entries)
+    }
+  }
   const byId = new Map(live.map(declaration => [declaration.id, declaration]))
   const reported = new Set<string>()
   const reports: CycleReport[] = []
@@ -153,7 +161,21 @@ export function detectCycles(declarations: readonly ComponentDeclaration[]): rea
     const visit = (id: ComponentId): void => {
       path.push(id)
       onPath.add(id)
+      const canReturn = new Set<ComponentId>([start])
+      const pending = [start]
+      for (let index = 0; index < pending.length; index += 1) {
+        const candidate = pending[index]
+        if (candidate === undefined) continue
+        for (const dependent of dependents.get(candidate) ?? []) {
+          // A completion cannot revisit the path or pass through a smaller cycle owner.
+          if (canReturn.has(dependent) || onPath.has(dependent) || compareIds(dependent, start) < 0) continue
+          canReturn.add(dependent)
+          pending.push(dependent)
+        }
+      }
       for (const next of [...(graph.dependencies.get(id) ?? [])].sort(compareIds)) {
+        // Only a node that can return to the start can belong to this cycle.
+        if (!canReturn.has(next)) continue
         if (next === start) {
           const cycle = canonicalize(path, graph, byId)
           const fingerprint = JSON.stringify(cycle.ids)
