@@ -26,7 +26,7 @@ interface Registration {
   readonly scope: Scope
   readonly compiled: CompiledToolDefinition
   readonly descriptor: ToolProviderDescriptor
-  readonly provider: Pick<ToolProvider, 'prepare'>
+  provider: Pick<ToolProvider, 'prepare'> | undefined
   readonly controller: AbortController
   readonly flights: Map<symbol, Flight>
   readonly remove: () => void
@@ -63,6 +63,7 @@ function retire(record: Registration): Promise<void> {
   record.closeTask = Promise.resolve().then(async () => {
     await Promise.allSettled([...record.flights.values()].map(flight => flight.task))
     record.stopListening()
+    record.provider = undefined
     record.disposed = true
     // Incomplete recovery keeps the name reserved. Replacing it would hide a resource leak.
     if (record.unsafe !== undefined) throw record.unsafe
@@ -169,7 +170,7 @@ export function borrowTool(registry: ToolRegistry, name: string, token: symbol, 
   record.flights.set(token, { task, cancel })
   const remove = (): void => { record.flights.delete(token) }
   void task.then(remove, remove)
-  return Object.freeze({ definition: record.compiled.definition, descriptor: record.descriptor, provider: record.provider,
+  return Object.freeze({ definition: record.compiled.definition, descriptor: record.descriptor, provider: record.provider!,
     compiled: record.compiled, signal: record.controller.signal,
     active: () => active(record),
     markUnsafe: (error: ToolError) => { record.unsafe = error; void retire(record) },
