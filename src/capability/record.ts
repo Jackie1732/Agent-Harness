@@ -32,7 +32,8 @@ export interface ComponentRecord {
   readonly ordinal: number
   readonly requires: readonly CapabilityKey<unknown>[]
   readonly provides: readonly CapabilityKey<unknown>[]
-  readonly setup: (context: ComponentContext) => Promise<void>
+  /** Setup retained for reactivation and retired when the Component becomes terminal. */
+  setup: ComponentDefinition['setup'] | undefined
   status: ComponentStatus
   releasing: boolean
   /**
@@ -70,6 +71,8 @@ export interface ComponentRecord {
   busy: boolean
   /** Shared task created by the first explicit release request. */
   releaseTask: Promise<void> | undefined
+  /** Whether the shared release task still waits for coordinator settlement. */
+  releasePending: boolean
   /** Shared task created by concurrent retries of one failed episode. */
   retryTask: Promise<void> | undefined
 }
@@ -107,10 +110,12 @@ function messageOf(reason: unknown): string {
  * change what this activation observes.
  */
 export class ActivationContext implements ComponentContext {
-  readonly #record: ComponentRecord
-  readonly #attempt: ActivationAttempt
-  readonly #onProvide: (key: CapabilityKey<unknown>, value: unknown) => void
-  #open = true
+  readonly #label: string
+  #activation: {
+    readonly record: ComponentRecord
+    readonly attempt: ActivationAttempt
+    readonly onProvide: (key: CapabilityKey<unknown>, value: unknown) => void
+  } | undefined
 
   /**
    * Create the context of one activation.
@@ -124,9 +129,8 @@ export class ActivationContext implements ComponentContext {
     attempt: ActivationAttempt,
     onProvide: (key: CapabilityKey<unknown>, value: unknown) => void,
   ) {
-    this.#record = record
-    this.#attempt = attempt
-    this.#onProvide = onProvide
+    this.#label = record.label
+    this.#activation = { record, attempt, onProvide }
   }
 
   /**
@@ -136,18 +140,17 @@ export class ActivationContext implements ComponentContext {
    * resource inverses still wait for Scope settlement. The getter is valid only during setup.
    */
   get signal(): AbortSignal {
-    this.#assertOpen('signal')
-    const signal = this.#attempt.signal
+    const { attempt } = this.#current('signal')
+    const signal = attempt.signal
     if (signal === undefined) {
-      throw new ComponentInactiveError('not-started', 'signal', this.#record.label)
+      throw new ComponentInactiveError('not-started', 'signal', this.#label)
     }
     return signal
   }
 
   /** Scope whose contributions publish only if this activation commits. */
   get scope(): Scope {
-    this.#assertOpen('scope')
-    return this.#attempt.scope.scope
+    return this.#current('scope').attempt.scope.scope
   }
 
   /**
@@ -163,13 +166,13 @@ export class ActivationContext implements ComponentContext {
     operation: () => T | PromiseLike<T>,
     revert: (value: T) => void | PromiseLike<void>,
   ): Promise<T> {
-    this.#assertOpen('apply')
-    const effect = this.#attempt.effect
+    const { record, attempt } = this.#current('apply')
+    const effect = attempt.effect
     if (effect === undefined) {
-      throw new ComponentInactiveError('not-started', 'apply()', this.#record.label)
+      throw new ComponentInactiveError('not-started', 'apply()', this.#label)
     }
     const value = await effect.apply(label, operation, revert)
-    this.#record.cleanupCount += 1
+    record.cleanupCount += 1
     return value
   }
 
@@ -180,14 +183,14 @@ export class ActivationContext implements ComponentContext {
    * @returns The value currently bound at that key.
    */
   require<T>(key: CapabilityKey<T>): T {
-    this.#assertOpen('require')
-    if (!this.#record.requires.includes(key)) {
-      throw new CapabilityKeyUndeclaredError(this.#record.label, key.name, 'require')
+    const { record, attempt } = this.#current('require')
+    if (!record.requires.includes(key)) {
+      throw new CapabilityKeyUndeclaredError(this.#label, key.name, 'require')
     }
-    const instance = this.#attempt.view.get(key)
+    const instance = attempt.view.get(key)
     const binding = instance?.bindings.find(candidate => candidate.key === key)
     if (binding === undefined) {
-      throw new CapabilityUnsatisfiedError(this.#record.label, [key.name])
+      throw new CapabilityUnsatisfiedError(this.#label, [key.name])
     }
     return binding.value as T
   }
@@ -199,22 +202,23 @@ export class ActivationContext implements ComponentContext {
    * @param value - Value to publish under that key.
    */
   provide<T>(key: CapabilityKey<T>, value: T): void {
-    this.#assertOpen('provide')
-    if (!this.#record.provides.includes(key)) {
-      throw new CapabilityKeyUndeclaredError(this.#record.label, key.name, 'provide')
+    const { record, onProvide } = this.#current('provide')
+    if (!record.provides.includes(key)) {
+      throw new CapabilityKeyUndeclaredError(this.#label, key.name, 'provide')
     }
-    this.#onProvide(key, value)
+    onProvide(key, value)
   }
 
   /** Invalidate this context once its activation settled. */
   close(): void {
-    this.#open = false
+    this.#activation = undefined
   }
 
-  #assertOpen(operation: string): void {
-    if (!this.#open) {
-      throw new ComponentInactiveError('settled', `${operation}()`, this.#record.label)
+  #current(operation: string) {
+    if (this.#activation === undefined) {
+      throw new ComponentInactiveError('settled', `${operation}()`, this.#label)
     }
+    return this.#activation
   }
 }
 
@@ -338,7 +342,7 @@ export function toDeclaration(record: ComponentRecord): ComponentDeclaration {
  * @returns A stable projection with JSON-safe fields and bounded causes.
  */
 export function projectFailure(reason: unknown): JsonObject {
-  if (reason instanceof HarnessError) return { ...reason.toJSON() }
+  if (reason instanceof HarnessError) return { ...structuredClone(reason.toJSON()) }
   return {
     name: reason instanceof Error ? reason.name : typeof reason,
     message: messageOf(reason),

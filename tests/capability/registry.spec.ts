@@ -678,8 +678,8 @@ describe('capability registry lifecycle', { timeout: 4000 }, () => {
     expect(guard.maxSteps).toBe(1)
     expect(guard.statuses.length).toBeGreaterThan(0)
 
-    // The budget guards every reconciliation pass, including the one disposal drives.
-    await expect(registry.dispose()).rejects.toBeInstanceOf(RegistryNotConvergedError)
+    await expect(registry.dispose()).resolves.toBeUndefined()
+    expect(registry.snapshot().components.every(component => component.status === 'disposed')).toBe(true)
   })
 
   it('rejects a blocked transitional stop instead of reporting quiescence', () => {

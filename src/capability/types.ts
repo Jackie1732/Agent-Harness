@@ -189,7 +189,10 @@ export interface ComponentHandle {
   readonly error?: unknown
 
   /**
-   * Retry a failed component.
+   * Retry a failed component whose rollback completed and requirements still resolve.
+   *
+   * Calls share an ongoing attempt while it remains eligible; current lifecycle,
+   * rollback safety, and requirements are checked before joining its settlement task.
    *
    * @returns A promise that settles after the retry attempt finishes.
    */
@@ -198,7 +201,7 @@ export interface ComponentHandle {
   /**
    * Release this component and wait for its cleanup to settle.
    *
-   * @returns A promise that settles when the component reaches a terminal state.
+   * @returns The shared cleanup task; waiting from a task it must join rejects without cancelling release.
    */
   dispose(): Promise<void>
 }

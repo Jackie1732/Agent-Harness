@@ -1,5 +1,6 @@
 import { AsyncLocalStorage } from 'node:async_hooks'
 import { ScopeTree } from '../extension/scope-tree.js'
+import type { ScopeReentrantWaitError } from '../extension/errors.js'
 import type { RootScope } from '../extension/types.js'
 import { detectCycles, evaluate } from './evaluate.js'
 import type { ChangeClassification } from './evaluate.js'
@@ -96,7 +97,7 @@ export class CapabilityRegistry {
   /**
    * Create a registry.
    *
-   * @param options - Deployment-varying bounds.
+   * @param options - Reconciliation bounds while accepting mutations; disposal settles every mounted Component.
    */
   constructor(options: { readonly maxReconciliationSteps?: number } = {}) {
     const maxSteps = options.maxReconciliationSteps ?? 10_000
@@ -141,9 +142,7 @@ export class CapabilityRegistry {
       ordinal,
       requires: [...definition.requires],
       provides: [...definition.provides],
-      setup: async context => {
-        await definition.setup(context)
-      },
+      setup: definition.setup.bind(definition),
       status: 'unsatisfied',
       releasing: false,
       committed: new Map(),
@@ -160,6 +159,7 @@ export class CapabilityRegistry {
       failureSequence: undefined,
       busy: false,
       releaseTask: undefined,
+      releasePending: false,
       retryTask: undefined,
     }
 
@@ -189,6 +189,8 @@ export class CapabilityRegistry {
    *
    * @returns The snapshot taken at that quiescent point.
    * @throws {ComponentInactiveError} If the registry was released.
+   * @throws {RegistryReentrantWaitError} If a Component lifecycle waits for its coordinator.
+   * @throws {ScopeReentrantWaitError} If coordinator settlement waits for the calling Scope task.
    */
   whenQuiescent(): Promise<RegistrySnapshot> {
     if (this.#status === 'disposed') {
@@ -198,6 +200,8 @@ export class CapabilityRegistry {
     if (lifecycle !== undefined) {
       return Promise.reject(new RegistryReentrantWaitError(lifecycle.record.label, lifecycle.phase))
     }
+    const scopeReentrant = this.#retiringScopeWait('registry.whenQuiescent()')
+    if (scopeReentrant !== undefined) return Promise.reject(scopeReentrant)
     return this.#barrier()
   }
 
@@ -362,7 +366,7 @@ export class CapabilityRegistry {
     return lifecycle?.active === true ? lifecycle : undefined
   }
 
-  #interruptInvalidActivations(): void {
+  #invalidatedComponents(): ReadonlySet<ComponentId> {
     const invalidated = new Set<ComponentId>()
     for (const candidate of this.#components.values()) {
       if (candidate.releasing || candidate.status === 'deactivating' || candidate.status === 'disposed') {
@@ -387,6 +391,35 @@ export class CapabilityRegistry {
       }
     }
 
+    return invalidated
+  }
+
+  #retiringScopeWait(operation: string): ScopeReentrantWaitError | undefined {
+    if (this.#status === 'disposing') return this.#scopeTree.rootReentrantError(operation)
+    for (const id of this.#invalidatedComponents()) {
+      const error = this.#components.get(id)?.activationScope?.reentrantError(operation)
+      if (error !== undefined) return error
+    }
+    return undefined
+  }
+
+  async #runLifecycle<T>(record: ComponentRecord, operation: () => Promise<T>): Promise<T> {
+    const lifecycle: LifecycleExecution = {
+      record,
+      phase: record.status === 'active' || record.status === 'deactivating' ? 'deactivation' : 'activation',
+      active: true,
+    }
+    return await this.#lifecycleExecution.run(lifecycle, async () => {
+      try {
+        return await operation()
+      } finally {
+        lifecycle.active = false
+      }
+    })
+  }
+
+  #interruptInvalidActivations(): void {
+    const invalidated = this.#invalidatedComponents()
     for (const candidate of this.#components.values()) {
       if (candidate.status !== 'activating' || candidate.owner === undefined) continue
       const dependencyRetired = [...(candidate.attemptView?.values() ?? [])]
@@ -396,7 +429,7 @@ export class CapabilityRegistry {
       candidate.interruption = interruption
       const owner = candidate.owner
       queueMicrotask(() => {
-        void owner.dispose().catch(() => undefined)
+        void this.#runLifecycle(candidate, () => owner.dispose()).catch(() => undefined)
       })
     }
   }
@@ -472,26 +505,32 @@ export class CapabilityRegistry {
   }
 
   #retry(record: ComponentRecord): Promise<void> {
+    if (this.#status !== 'accepting' || record.releasing
+      || record.status === 'active' || record.status === 'deactivating' || record.status === 'disposed') {
+      return Promise.reject(new ComponentInactiveError(record.status, 'retry()', record.label))
+    }
+    if (record.status === 'failed') {
+      if (!record.retryable) {
+        return Promise.reject(new ComponentRetryUnsafeError(record.label, record.failurePhase ?? 'activation'))
+      }
+      const missing = this.#missingKeys(record)
+      if (missing.length > 0) return Promise.reject(new ComponentRetryUnsatisfiedError(record.label, missing))
+    }
     const lifecycle = this.#activeLifecycle()
+    const scopeReentrant = lifecycle === undefined ? this.#retiringScopeWait('component.retry()') : undefined
     if (record.retryTask !== undefined) {
       if (lifecycle !== undefined) {
         void record.retryTask.catch(() => undefined)
         return Promise.reject(new RegistryReentrantWaitError(lifecycle.record.label, lifecycle.phase))
       }
+      if (scopeReentrant !== undefined) {
+        void record.retryTask.catch(() => undefined)
+        return Promise.reject(scopeReentrant)
+      }
       return record.retryTask
     }
     if (record.status !== 'failed') {
       return Promise.reject(new ComponentInactiveError(record.status, 'retry()', record.label))
-    }
-    if (!record.retryable) {
-      return Promise.reject(new ComponentRetryUnsafeError(
-        record.label,
-        record.failurePhase ?? 'activation',
-      ))
-    }
-    const missing = this.#missingKeys(record)
-    if (missing.length > 0) {
-      return Promise.reject(new ComponentRetryUnsatisfiedError(record.label, missing))
     }
     record.status = 'unsatisfied'
     record.failure = undefined
@@ -507,19 +546,22 @@ export class CapabilityRegistry {
       void record.retryTask.catch(() => undefined)
       return Promise.reject(new RegistryReentrantWaitError(lifecycle.record.label, lifecycle.phase))
     }
+    if (scopeReentrant !== undefined) {
+      void record.retryTask.catch(() => undefined)
+      return Promise.reject(scopeReentrant)
+    }
     return record.retryTask
   }
 
   #release(record: ComponentRecord): Promise<void> {
     const lifecycle = this.#activeLifecycle()
-    const scopeReentrant = lifecycle === undefined
-      ? record.activationScope?.reentrantError('component.dispose()')
-      : undefined
     if (record.releaseTask !== undefined) {
+      if (!record.releasePending) return record.releaseTask
       if (lifecycle !== undefined) {
         void record.releaseTask.catch(() => undefined)
         return Promise.reject(new RegistryReentrantWaitError(lifecycle.record.label, lifecycle.phase))
       }
+      const scopeReentrant = this.#retiringScopeWait('component.dispose()')
       if (scopeReentrant !== undefined) {
         void record.releaseTask.catch(() => undefined)
         return Promise.reject(scopeReentrant)
@@ -539,21 +581,23 @@ export class CapabilityRegistry {
     if (scopeDisposal !== undefined) void scopeDisposal.catch(() => undefined)
     this.#interruptInvalidActivations()
     this.#touch()
+    const scopeReentrant = lifecycle === undefined ? this.#retiringScopeWait('component.dispose()') : undefined
     const task = this.#barrier().then(() => {
       if (record.failure !== undefined) {
         throw record.failure
       }
     })
-    record.releaseTask = task
+    record.releasePending = true
+    record.releaseTask = task.finally(() => { record.releasePending = false })
     if (lifecycle !== undefined) {
-      void task.catch(() => undefined)
+      void record.releaseTask.catch(() => undefined)
       return Promise.reject(new RegistryReentrantWaitError(lifecycle.record.label, lifecycle.phase))
     }
     if (scopeReentrant !== undefined) {
-      void task.catch(() => undefined)
+      void record.releaseTask.catch(() => undefined)
       return Promise.reject(scopeReentrant)
     }
-    return task
+    return record.releaseTask
   }
 
   #missingKeys(record: ComponentRecord): string[] {
@@ -606,35 +650,26 @@ export class CapabilityRegistry {
 
   async #drain(): Promise<void> {
     try {
-      await this.#reconcileUntilSettled()
-      const pending = [...this.#pendingSettles]
-      this.#pendingSettles = []
-      const snapshot = this.snapshot()
-      for (const barrier of pending) barrier.resolve(snapshot)
+      for (let guard = 0; ; guard += 1) {
+        if (this.#status !== 'disposing' && guard > this.#maxSteps) {
+          throw new RegistryNotConvergedError('step-limit', this.#maxSteps, this.#statuses())
+        }
+        const revision = this.#revision
+        const outcome = await this.#step()
+        if (outcome === 'progress' || revision !== this.#revision) continue
+        assertQuiescentStop(outcome, this.#maxSteps, this.#statuses())
+        // The unchanged revision, snapshot, and barrier settlement share one synchronous commit.
+        const snapshot = this.snapshot()
+        const pending = this.#pendingSettles
+        this.#pendingSettles = []
+        for (const barrier of pending) barrier.resolve(snapshot)
+        return
+      }
     } catch (reason) {
       const pending = [...this.#pendingSettles]
       this.#pendingSettles = []
       for (const barrier of pending) barrier.reject(reason)
       throw reason
-    }
-  }
-
-  /**
-   * Drive the transitions that belong to the changes recorded so far.
-   *
-   * A blocked pass means no transition can advance from the current graph. That is a
-   * stopping point rather than a reason to spin. A later mutation starts a new pass, and a
-   * pass that makes progress keeps going on its own.
-   */
-  async #reconcileUntilSettled(): Promise<void> {
-    for (let guard = 0; ; guard += 1) {
-      if (guard > this.#maxSteps) {
-        throw new RegistryNotConvergedError('step-limit', this.#maxSteps, this.#statuses())
-      }
-      const outcome = await this.#step()
-      if (outcome === 'progress') continue
-      assertQuiescentStop(outcome, this.#maxSteps, this.#statuses())
-      return
     }
   }
 
@@ -656,17 +691,17 @@ export class CapabilityRegistry {
     for (const id of result.deactivationOrder) {
       const record = byId.get(id)
       if (record === undefined) continue
-      if (await this.#transition(record, 'deactivating', deactivationSet)) return 'progress'
+      if (await this.#runLifecycle(record, () => this.#applyStatus(record, 'deactivating', deactivationSet))) return 'progress'
     }
     for (const id of result.activationOrder) {
       const record = byId.get(id)
       if (record === undefined) continue
-      if (await this.#transition(record, 'activating', activationSet)) return 'progress'
+      if (await this.#runLifecycle(record, () => this.#applyStatus(record, 'activating', activationSet))) return 'progress'
     }
     for (const record of records) {
       const change = changesById.get(record.id)
       if (change === undefined) continue
-      if (await this.#transition(record, change.classification, activationSet)) return 'progress'
+      if (await this.#runLifecycle(record, () => this.#applyStatus(record, change.classification, activationSet))) return 'progress'
     }
 
     // A transitional record can be blocked by another retained binding in an inconsistent
@@ -674,14 +709,6 @@ export class CapabilityRegistry {
     const remaining = records.some(record =>
       record.status === 'activating' || record.status === 'deactivating')
     return remaining ? 'blocked' : 'settled'
-  }
-
-  async #transition(
-    record: ComponentRecord,
-    classification: ChangeClassification,
-    activationSet: ReadonlySet<ComponentId>,
-  ): Promise<boolean> {
-    return await this.#applyStatus(record, classification, activationSet)
   }
 
   async #applyStatus(
@@ -693,22 +720,18 @@ export class CapabilityRegistry {
       case 'unsatisfied': {
         if (record.releasing) {
           record.status = 'disposed'
+          record.setup = undefined
           return true
         }
         if (classification !== 'activating' || !activationSet.has(record.id)) return false
         record.busy = true
         record.status = 'activating'
-        const lifecycle: LifecycleExecution = { record, phase: 'activation', active: true }
         try {
-          await this.#lifecycleExecution.run(
-            lifecycle,
-            () => runActivation(record, this.#state),
-          )
+          await runActivation(record, this.#state)
         } catch (reason) {
           const interrupted = record.interruption !== undefined || record.releasing
           await this.#abandonActivation(record, reason, interrupted)
         } finally {
-          lifecycle.active = false
           record.busy = false
         }
         return true
@@ -757,18 +780,13 @@ export class CapabilityRegistry {
         if (this.#hasActiveDependents(record)) return false
         record.busy = true
         let succeeded = false
-        const lifecycle: LifecycleExecution = { record, phase: 'deactivation', active: true }
         try {
-          succeeded = await this.#lifecycleExecution.run(
-            lifecycle,
-            () => runDeactivation(record, this.#state),
-          )
+          succeeded = await runDeactivation(record, this.#state)
         } catch (reason) {
           record.failure = new ComponentDeactivationFailedError(record.label, 1, 1, reason)
           record.failurePhase = 'deactivation'
           record.retryable = false
         } finally {
-          lifecycle.active = false
           record.busy = false
         }
         if (!succeeded) {
@@ -779,6 +797,7 @@ export class CapabilityRegistry {
         }
         if (record.releasing) {
           record.status = 'disposed'
+          record.setup = undefined
           return true
         }
         record.status = succeeded ? 'unsatisfied' : 'failed'
@@ -794,6 +813,7 @@ export class CapabilityRegistry {
             record.retryable = false
           }
           record.status = 'disposed'
+          record.setup = undefined
           return true
         }
         return false
@@ -823,6 +843,7 @@ export class CapabilityRegistry {
       record.failurePhase = undefined
       record.failureSequence = undefined
       record.status = record.releasing ? 'disposed' : 'unsatisfied'
+      if (record.releasing) record.setup = undefined
       return
     }
 
@@ -839,5 +860,6 @@ export class CapabilityRegistry {
       record.failureSequence = this.#nextFailureSequence
     }
     record.status = record.releasing ? 'disposed' : 'failed'
+    if (record.releasing) record.setup = undefined
   }
 }
