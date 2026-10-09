@@ -87,7 +87,7 @@ export interface ActivationAttempt {
   /** Staged extension scope published with this activation's bindings. */
   readonly scope: ScopeControl
   /**
-   * Signal of the activation root effect.
+   * Stable signal cancelled by the activation Effect or its Scope.
    *
    * It is captured when the activation starts, which happens before `setup` runs; the
    * context therefore publishes it as defined for every read `setup` can make.
@@ -130,10 +130,10 @@ export class ActivationContext implements ComponentContext {
   }
 
   /**
-   * Aborted once the owning activation stops.
+   * Aborted when the activation Effect or its Scope begins release.
    *
-   * Reading it outside `setup` is a programming error: the context has already closed by
-   * then and the accessor reports that state.
+   * Scope cancellation reaches retained signal references before waiting for callbacks;
+   * resource inverses still wait for Scope settlement. The getter is valid only during setup.
    */
   get signal(): AbortSignal {
     this.#assertOpen('signal')

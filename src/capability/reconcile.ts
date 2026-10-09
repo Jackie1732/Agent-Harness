@@ -70,7 +70,7 @@ export async function runActivation(
   try {
     await attempt.owner.run(record.label, async effect => {
       attempt.effect = effect
-      attempt.signal = effect.signal
+      attempt.signal = AbortSignal.any([effect.signal, attempt.scope.scope.signal])
       await record.setup(context)
     })
   } finally {

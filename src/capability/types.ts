@@ -132,6 +132,15 @@ export interface ComponentDefinition {
  * }
  */
 export interface ComponentContext extends EffectContext {
+  /**
+   * Stable cancellation signal of this activation's Effect and Scope.
+   *
+   * Capture it during setup for later work. Scope release cancels it before waiting for
+   * managed callbacks; resource inverses run after those callbacks settle.
+   * Reading this getter after setup reports COMPONENT_INACTIVE.
+   */
+  readonly signal: AbortSignal
+
   /** Activation Scope retained for this Component episode. */
   readonly scope: Scope
 
