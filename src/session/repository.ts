@@ -32,6 +32,16 @@ export interface SessionRepositoryOptions {
 
 type RepositoryStatus = 'active' | 'disposing' | 'disposed'
 
+/** Release an acquired Writer and preserve the failure that prevented Handle publication. */
+async function releaseFailedWriter(lease: EffectLease<SessionWriter>, cause: unknown): Promise<never> {
+  try {
+    await lease.dispose()
+  } catch (cleanup) {
+    throw new AggregateError([cause, cleanup], 'Session acquisition and Writer release failed', { cause })
+  }
+  throw cause
+}
+
 /** Durable Session repository that owns open Writers and semantic replay. */
 export class SessionRepository implements SessionHandleOwner {
   readonly #backend: SessionBackend
@@ -95,8 +105,7 @@ export class SessionRepository implements SessionHandleOwner {
     try {
       return await this.#finishOpen(writerLease, await writerLease.value.readCommitted())
     } catch (cause) {
-      await writerLease.dispose()
-      throw cause
+      return await releaseFailedWriter(writerLease, cause)
     }
   }
 
@@ -146,7 +155,7 @@ export class SessionRepository implements SessionHandleOwner {
     if (this.#disposeTask !== undefined) return this.#disposeTask
     this.#status = 'disposing'
     const task = (async () => {
-      await Promise.allSettled([...this.#operations])
+      await Promise.allSettled(this.#operations)
       const handleResults = await Promise.allSettled([...this.#handles].map(handle => handle.dispose()))
       const failures = handleResults
         .filter((result): result is PromiseRejectedResult => result.status === 'rejected')
@@ -191,8 +200,7 @@ export class SessionRepository implements SessionHandleOwner {
       }
       return await this.#finishOpen(writerLease, local)
     } catch (cause) {
-      await writerLease.dispose()
-      throw cause
+      return await releaseFailedWriter(writerLease, cause)
     }
   }
 
