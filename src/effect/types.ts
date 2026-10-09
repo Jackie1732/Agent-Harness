@@ -22,7 +22,7 @@ export type EffectReverter<T> = (value: T) => Awaitable<void>
  */
 export interface EffectContext {
   /**
-   * Aborted once the owning Effect or its Owner begins releasing.
+   * Aborted when setup fails or the owning Effect or its Owner begins releasing.
    *
    * Operations may observe it for cooperative cancellation. Release still waits for an
    * operation that ignores the signal until that operation settles.
@@ -30,7 +30,7 @@ export interface EffectContext {
   readonly signal: AbortSignal
 
   /**
-   * Run one forward operation and register its inverse before returning the value.
+   * Start one forward operation synchronously and register its inverse before returning the value.
    *
    * A fulfilled operation is added to the Effect and Owner cleanup stacks before this
    * promise fulfills. A rejected operation has no returned value, so the runtime does
@@ -71,7 +71,7 @@ export interface EffectLease<T> {
    * Owner release joins the same inverse tasks, so every inverse still runs at most once.
    *
    * @returns A promise that settles after this Effect reaches its terminal state.
-   * @throws {EffectDisposalFailedError} If an inverse fails or cleanup detects a wait cycle.
+   * @throws {EffectDisposalFailedError} If an inverse fails.
    * @throws {EffectReentrantDisposeError} If cleanup directly awaits this same release.
    */
   dispose(): Promise<void>

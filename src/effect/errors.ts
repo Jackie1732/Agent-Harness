@@ -13,10 +13,8 @@ export type EffectErrorCode =
 /**
  * Stage of one cleanup attempt that produced a failure.
  *
- * `revert` is the stage a failing inverse reports and the only one the current release
- * paths emit. `wait` is reported by the defence that keeps a release from joining cleanup
- * already owned by an active release in the same asynchronous chain; the release guards
- * reject that request before it reaches the record, so no current test reaches this stage.
+ * Runtime inverses report `revert`. `wait` remains accepted for previously constructed
+ * diagnostics; current release entrances reject inherited wait cycles before cleanup.
  */
 export type CleanupFailureStage = 'revert' | 'wait'
 
@@ -71,8 +69,7 @@ export function projectCleanupFailures(
 }
 
 function describeCleanupCounts(failures: readonly EffectCleanupFailure[]): string {
-  return `attempted ${failures.length} cleanup ${failures.length === 1 ? 'inverse' : 'inverses'}, `
-    + `${failures.length} failed`
+  return `${failures.length} cleanup ${failures.length === 1 ? 'inverse' : 'inverses'} failed`
 }
 
 /** The Owner or Effect no longer accepts new work. */

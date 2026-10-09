@@ -178,6 +178,57 @@ describe('effect error model', () => {
     expect(details.failures.map(failure => failure.operationLabel)).toEqual(['second', 'first'])
   })
 
+  it.each(['rollback', 'lease', 'owner'] as const)(
+    'reports one failed inverse after three cleanup attempts through %s', async scope => {
+      const owner = new EffectOwner('mixed-cleanup-' + scope)
+      const attempts: string[] = []
+      const setupFailure = new RangeError('setup failed')
+      const revertFailure = new Error('second inverse failed')
+      const running = owner.run('mixed-effect', async effect => {
+        for (const label of ['first', 'second', 'third']) {
+          await effect.apply(label, () => label, value => {
+            attempts.push(value)
+            if (value === 'second') throw revertFailure
+          })
+        }
+        if (scope === 'rollback') throw setupFailure
+      })
+
+      let reason: unknown
+      if (scope === 'rollback') reason = await running.catch((caught: unknown) => caught)
+      else {
+        const lease = await running
+        reason = await (scope === 'lease' ? lease.dispose() : owner.dispose())
+          .catch((caught: unknown) => caught)
+      }
+
+      expect(attempts).toEqual(['third', 'second', 'first'])
+      if (scope === 'rollback') {
+        expect(reason).toBeInstanceOf(EffectRollbackFailedError)
+        expect((reason as EffectRollbackFailedError).setupReason).toBe(setupFailure)
+        expect((reason as EffectRollbackFailedError).cause).toBe(setupFailure)
+      } else {
+        expect(reason).toBeInstanceOf(EffectDisposalFailedError)
+        expect((reason as EffectDisposalFailedError).target).toBe(scope)
+      }
+      const error = reason as EffectRollbackFailedError | EffectDisposalFailedError
+      expect(error.cleanupFailures).toEqual([
+        { operationLabel: 'second', stage: 'revert', reason: revertFailure },
+      ])
+      expect(error.cleanupFailures[0]!.reason).toBe(revertFailure)
+      expect(error.message).toContain('1 cleanup inverse failed')
+      expect(error.message).not.toContain('attempted')
+      expect(error.toJSON().details).toMatchObject({
+        failedCount: 1,
+        failures: [{ operationLabel: 'second', stage: 'revert', reasonName: 'Error' }],
+      })
+      expect(isJsonValue(error.toJSON())).toBe(true)
+
+      await owner.dispose().catch(() => undefined)
+      expect(attempts).toEqual(['third', 'second', 'first'])
+    },
+  )
+
   it('reports EFFECT_DISPOSAL_FAILED for lease and owner releases with distinct targets', async () => {
     const owner = new EffectOwner('disposal-failed')
     const lease = await owner.run('effect', async effect => {

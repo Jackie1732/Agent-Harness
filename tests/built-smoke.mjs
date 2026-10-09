@@ -17,6 +17,11 @@ assert.equal('capabilityKeyName' in harness, false)
 assert.equal('CapabilityUnsatisfiedError' in harness, false)
 assert.equal('assertQuiescentStop' in harness, false)
 for (const internalName of [
+  'createDisposalToken',
+  'runWithDisposalToken',
+  'assertNotReentrant',
+  'assertNoInheritedCleanup',
+  'runCleanupBatch',
   'ScopeTree',
   'RegistrationStore',
   'TaskTracker',
