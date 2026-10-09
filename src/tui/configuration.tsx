@@ -1,6 +1,6 @@
 /** Configuration interaction owns drafts and confirmations; original adapters own validation and files. */
 import { dirname, join, resolve } from 'node:path'
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { Box, Text, useInput } from 'ink'
 import type { JsonObject, JsonValue } from '../foundation/json.js'
 import type { ConfigEditableDocument, ConfigKind, ConfigOperation } from '../operator/config-types.js'
@@ -23,6 +23,7 @@ type ConfigModal = { readonly kind: 'field'; readonly label: string; readonly in
   | { readonly kind: 'tree'; readonly title: string; readonly value: JsonValue; readonly confirm: (value: JsonValue, ops: readonly ConfigOperation[]) => void }
   | { readonly kind: 'confirm'; readonly title: string; readonly detail: unknown; readonly run: () => Promise<unknown> }
   | { readonly kind: 'preset'; readonly items: readonly string[]; readonly choose: (preset: string) => void }
+  | { readonly kind: 'loading'; readonly title: string; readonly returnTo: ConfigModal | null }
 
 function commandFields(value: JsonValue): JsonObject {
   if (value === null || typeof value !== 'object' || Array.isArray(value)) throw new Error('command-fields-required')
@@ -51,14 +52,24 @@ export interface ConfigurationPageProps {
  */
 export function ConfigurationPage(props: ConfigurationPageProps) {
   const [selected, setSelected] = useState(CONFIG_KINDS.indexOf(props.initialKind ?? 'host'))
-  const [document, setDocument] = useState<ConfigEditableDocument | null>(null), [modal, setModal] = useState<ConfigModal | null>(null)
+  const [document, setDocument] = useState<ConfigEditableDocument | null>(null), [modal, updateModal] = useState<ConfigModal | null>(null)
   const [working, setWorking] = useState(false), [notice, setNotice] = useState<unknown>(null)
   const [treeError, setTreeError] = useState<unknown>(null)
+  const modalOwner = useRef<ConfigModal | null>(null)
   const [cardForms, setCardForms] = useState<Readonly<Record<'automation' | 'experiment', JsonObject>>>({ automation: {}, experiment: {} })
   const kind = CONFIG_KINDS[selected]!, profilePath = props.profile.profilePath
   const cardFields = kind === 'automation' || kind === 'experiment' ? cardForms[kind] : {}
   useEffect(() => { props.onEditing(modal !== null || working); return () => props.onEditing(false) }, [modal, working, props.onEditing])
-  useEffect(() => { setTreeError(null) }, [modal])
+  useEffect(() => () => { modalOwner.current = null }, [])
+  const setModal = (next: ConfigModal | null) => { modalOwner.current = next; updateModal(next); setTreeError(null) }
+  const presentRead = <T,>(title: string, operation: () => Promise<T>, adopt: (value: T) => void, returnTo: ConfigModal | null = null) => {
+    const loading: ConfigModal = { kind: 'loading', title, returnTo }; setModal(loading)
+    const task = Promise.resolve().then(operation); props.onWork(task)
+    void task.then(value => { if (modalOwner.current === loading) adopt(value) }).catch(cause => {
+      if (modalOwner.current !== loading) return
+      const failure = configFailure(cause); setModal(returnTo); setNotice(failure); setTreeError(failure)
+    })
+  }
   const perform = async (operation: () => Promise<unknown>) => {
     setModal(null); setWorking(true)
     try { const task = operation(); props.onWork(task); const result = await task; setNotice(result); props.onResult(result) }
@@ -66,24 +77,15 @@ export function ConfigurationPage(props: ConfigurationPageProps) {
     finally { setWorking(false) }
   }
   const confirm = (title: string, detail: unknown, run: () => Promise<unknown>) => setModal({ kind: 'confirm', title, detail, run })
-  const load = async (): Promise<ConfigEditableDocument> => {
-    const read = await readEditableConfigDocument(profilePath, kind); setDocument(read); return read
-  }
-  const editDocument = async () => {
-    const read = await load()
-    setModal({ kind: 'tree', title: `${kind} · ${read.check?.status ?? read.failure?.code ?? 'invalid'} · revision ${read.revision}`, value: read.value,
-      confirm: (candidate, operations) => {
-        void (async () => {
-          try {
-            const diff = await diffConfigCandidate(profilePath, kind, candidate)
-            confirm('保存此候选；当前实例仍使用已捕获配置', diff, async () => {
-              const result = await applyConfigOperations(profilePath, kind, operations.length === 0 ? [{ op: 'set', pointer: '', value: candidate }] : operations, { expectedRevision: read.revision })
-              setDocument({ ...result.document, failure: null }); return result
-            })
-          } catch (cause) { const failure = configFailure(cause); setNotice(failure); setTreeError(failure) }
-        })()
-      } })
-  }
+  const load = () => readEditableConfigDocument(profilePath, kind)
+  const editor = (read: ConfigEditableDocument, candidate = read.value): ConfigModal => ({ kind: 'tree',
+    title: `${kind} · ${read.check?.status ?? read.failure?.code ?? 'invalid'} · revision ${read.revision}`, value: candidate,
+    confirm: candidate => presentRead('正在检查完整候选；Esc 返回同一候选', () => diffConfigCandidate(profilePath, kind, candidate), diff =>
+      confirm('保存此候选；当前实例仍使用已捕获配置', diff, async () => {
+        const result = await applyConfigOperations(profilePath, kind, [{ op: 'set', pointer: '', value: candidate }], { expectedRevision: read.revision })
+        setDocument({ ...result.document, failure: null }); return result
+      }), editor(read, candidate)) })
+  const editDocument = () => presentRead(`正在读取 ${kind}；Esc 放弃`, load, read => { setDocument(read); setModal(editor(read)) })
   const create = () => {
     if (kind === 'operator') { setNotice({ message: 'Operator profile 由 setup 建立；当前文件可直接编辑' }); return }
     setModal({ kind: 'field', label: '完整配置的目标路径（默认拒绝已有文件）', initial: join(props.profile.directory, `${kind}.json`), confirm: output => {
@@ -106,19 +108,21 @@ export function ConfigurationPage(props: ConfigurationPageProps) {
   useInput((input, key) => {
     if (key.upArrow) { setSelected(current => Math.max(0, current - 1)); setDocument(null); setNotice(null) }
     else if (key.downArrow) { setSelected(current => Math.min(CONFIG_KINDS.length - 1, current + 1)); setDocument(null); setNotice(null) }
-    else if (key.return) void editDocument().catch(cause => setNotice(configFailure(cause)))
+    else if (key.return) editDocument()
     else if (key.escape) { if (notice !== null) setNotice(null); else props.onDone?.() }
     else if (input === 'k') void perform(async () => { const read = await readConfigDocument(profilePath, kind); setDocument({ ...read, failure: null }); return read.check })
     else if (input === 'y') void perform(() => configReadiness(profilePath, kind, props.environment))
-    else if (input === 'p' && kind === 'host') void load().then(read => confirm('分配并保存尚缺 Host 身份', read.check,
-      () => planOperatorHost(profilePath, { expectedRevision: read.revision }))).catch(cause => setNotice(configFailure(cause)))
-    else if (input === 'w' && kind === 'host') void load().then(read => setModal({ kind: 'tree', title: '编辑成员与 Workflow；同一候选重绑定', value: read.value,
-      confirm: (_candidate, operations) => confirm('完整检查并重算 Workflow 绑定', { revision: read.revision, operations }, () => rebindOperatorWorkflows(profilePath, operations.length === 0 ? undefined : operations, { expectedRevision: read.revision })) })).catch(cause => setNotice(configFailure(cause)))
+    else if (input === 'p' && kind === 'host') presentRead('正在读取 Host 身份；Esc 放弃', load, read => { setDocument(read); confirm('分配并保存尚缺 Host 身份', read.check,
+      () => planOperatorHost(profilePath, { expectedRevision: read.revision })) })
+    else if (input === 'w' && kind === 'host') presentRead('正在读取 Workflow 配置；Esc 放弃', load, read => { setDocument(read); setModal({ kind: 'tree', title: '编辑成员与 Workflow；同一候选重绑定', value: read.value,
+      confirm: (candidate, operations) => confirm('完整检查并重算 Workflow 绑定', { revision: read.revision, operations }, () => rebindOperatorWorkflows(profilePath,
+        [{ op: 'set', pointer: '', value: candidate }], { expectedRevision: read.revision })) }) })
     else if (input === 'c') create()
     else if (input === 'l' && kind !== 'operator') setModal({ kind: 'field', label: '已有配置文件路径', confirm: file => confirm('验证后登记文件', { kind, file }, () => linkOperatorConfig(profilePath, kind, file)) })
     else if (input === 'm') setModal({ kind: 'field', label: '导入完整原格式文件路径', confirm: source => {
-      void load().then(async read => { const file = await readConfigFile(source, configLimits(kind)); confirm('导入并保留解析目标', { kind, source, revision: read.revision },
-        () => importOperatorConfig(profilePath, kind, file.value, dirname(file.path), { expectedRevision: read.revision })) }).catch(cause => setNotice(configFailure(cause)))
+      presentRead('正在读取导入文件；Esc 放弃', async () => { const read = await load(), file = await readConfigFile(source, configLimits(kind)); return { read, file } }, ({ read, file }) => {
+        setDocument(read); confirm('导入并保留解析目标', { kind, source, revision: read.revision },
+          () => importOperatorConfig(profilePath, kind, file.value, dirname(file.path), { expectedRevision: read.revision })) })
     } })
     else if (input === 'o') setModal({ kind: 'field', label: '导出可执行配置的文件路径（拒绝已有文件）', confirm: output => confirm('导出可再次导入的配置', { kind, output }, () => exportOperatorConfig(profilePath, kind, { output })) })
     else if (input === 'h' && kind === 'host') setModal({ kind: 'tree', title: '建立独立 Host（保留原配置与Session）', value: { newStorage: './new-host-store', output: join(props.profile.directory, 'new-host.json'), hostKey: 'new-host' },
@@ -133,6 +137,7 @@ export function ConfigurationPage(props: ConfigurationPageProps) {
         catch { const failure = { message: '命令字段需为字符串；mode为fixture/live，finalize为boolean。候选保留供修正。Esc 继续编辑' }; setNotice(failure); setTreeError(failure) }
       } })
   }, { isActive: modal === null && !working })
+  if (modal?.kind === 'loading') return <Picker title={modal.title} items={[]} onSelect={() => undefined} onCancel={() => setModal(modal.returnTo)} />
   if (modal?.kind === 'field') return <DraftInput label={modal.label} secrets={props.secrets} {...(modal.initial === undefined ? {} : { initial: modal.initial })} onConfirm={modal.confirm} onCancel={() => setModal(null)} />
   if (modal?.kind === 'tree') return <Box flexDirection="column" flexGrow={1} flexBasis={0}>{treeError !== null && <Text color="red">{displayValue(treeError, props.profile.display.maxTextBytes, props.secrets)}</Text>}
     <TreeEditor key={modal.title} title={modal.title} initial={modal.value} maxTextBytes={props.profile.display.maxTextBytes} secrets={props.secrets} onSubmit={modal.confirm} onCancel={() => setModal(null)} /></Box>

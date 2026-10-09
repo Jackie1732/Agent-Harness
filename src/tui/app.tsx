@@ -120,17 +120,19 @@ export function TuiApp(props: TuiAppProps) {
   const answer = () => {
     if (selectedAgent === null || root === null || root.agentKey !== selectedAgent) { selectRoot(); return }
     const agentKey = selectedAgent, rootId = root.rootId
-    setModal({ kind: 'picker', title: '正在核验精确 Root 的当前 user wait', items: [] })
+    const loading: Modal = { kind: 'picker', title: '正在核验精确 Root 的当前 user wait', items: [] }
+    setModal(loading)
     void session.execute('root.get', { agentKey, rootId }).then(result => {
       reportResult(result)
       if (signal.aborted) return
-      if (result.status !== 'ok') { setModal(null); return }
+      if (result.status !== 'ok') { setModal(current => current === loading ? null : current); return }
       const fresh = result.result as RootObservation
-      setModal({ kind: 'picker', title: `仅回答新核验的精确 user wait · ${result.receivedAt ?? 'cut见结果'}`, items: fresh.waits.flatMap(wait => wait.descriptor.kind === 'user' ? [{
+      const choice: Modal = { kind: 'picker', title: `仅回答新核验的精确 user wait · ${result.receivedAt ?? 'cut见结果'}`, items: fresh.waits.flatMap(wait => wait.descriptor.kind === 'user' ? [{
         label: `${wait.reference.eventId}:${wait.reference.index} · ${plainText(wait.descriptor.question, props.secrets)}`,
         value: () => setModal({ kind: 'task', input: { agentKey, wait: wait.reference }, question: wait.descriptor.kind === 'user' ? wait.descriptor.question : '' }),
-      }] : []) })
-    }).catch(cause => { reportResult(configFailure(cause)); setModal(null) })
+      }] : []) }
+      setModal(current => current === loading ? choice : current)
+    }).catch(cause => { reportResult(configFailure(cause)); setModal(current => current === loading ? null : current) })
   }
   const stopEvents = (): Promise<void> => {
     eventGeneration.current++; eventAbort.current?.abort(); setFollowing(false); setEventRetired(true)

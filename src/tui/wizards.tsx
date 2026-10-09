@@ -1,11 +1,11 @@
 /** Finite configuration journeys publish complete candidates through the original file owners. */
 import { dirname, join, resolve } from 'node:path'
-import { useRef, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { Box, Text } from 'ink'
 import type { HostCliIo } from '../host/cli.js'
 import type { JsonObject, JsonValue } from '../foundation/json.js'
 import type { ClientLimits } from '../client/config.js'
-import type { ConfigEditableDocument, ConfigKind, ConfigOperation, ConfigWriteOptions } from '../operator/config-types.js'
+import type { ConfigEditableDocument, ConfigKind, ConfigWriteOptions } from '../operator/config-types.js'
 import { applyConfigOperations, createOperatorConfig, diffConfigCandidate, readEditableConfigDocument, rebindOperatorWorkflows, setupOperator } from '../operator/config-operations.js'
 import { buildOperatorProfile, readOperatorProfile } from '../operator/profile.js'
 import { configFailure } from '../operator/config-readiness.js'
@@ -99,10 +99,14 @@ function CreateDialog(props: { readonly profilePath: string; readonly kind: Excl
 
 function EditDialog(props: { readonly profilePath: string; readonly document: ConfigEditableDocument; readonly finish: (code?: number) => void; readonly track: Track; readonly rebind?: boolean }) {
   const [document, setDocument] = useState(props.document), [candidate, setCandidate] = useState(props.document.value)
-  const [pending, setPending] = useState<{ readonly candidate: JsonValue; readonly operations: readonly ConfigOperation[]; readonly diff: unknown } | null>(null)
+  const [pending, setPending] = useState<{ readonly candidate: JsonValue; readonly diff: unknown } | null>(null)
+  const [checking, setChecking] = useState<{ readonly candidate: JsonValue } | null>(null), currentCheck = useRef(checking)
   const [result, setResult] = useState<unknown>(null), [working, setWorking] = useState(false)
   const [resultCode, setResultCode] = useState(0)
+  useEffect(() => () => { currentCheck.current = null }, [])
   if (working) return <Text>正在验证/发布当前候选…</Text>
+  if (checking !== null) return <Picker title="正在检查完整候选；Esc 返回同一候选" items={[]} onSelect={() => undefined}
+    onCancel={() => { currentCheck.current = null; setChecking(null) }} />
   if (result !== null) return <Box flexDirection="column" flexGrow={1} flexBasis={0}><ResultPanel result={result} maxTextBytes={65536} secrets={[]} /><Picker title="配置操作结果" compact items={[{ label: '结束', value: true }, { label: '继续候选编辑', value: false }]}
     onSelect={done => { if (done) props.finish(resultCode); else { setResult(null); setPending(null) } }} onCancel={() => props.finish(resultCode)} /></Box>
   if (pending !== null) return <Box flexDirection="column" flexGrow={1} flexBasis={0}><ResultPanel label="候选差异" result={pending.diff} maxTextBytes={65536} secrets={[]} />
@@ -116,12 +120,15 @@ function EditDialog(props: { readonly profilePath: string; readonly document: Co
         .catch(cause => { setResult(configFailure(cause)); setResultCode(operatorFailure(cause).exitCode) }).finally(() => setWorking(false))
     }} /></Box>
   return <TreeEditor title={`${document.kind} · ${document.check?.status ?? document.failure?.code ?? 'invalid'} · revision ${document.revision}`} initial={candidate} maxTextBytes={65536}
-    onCancel={() => props.finish()} onSubmit={(candidate, operations) => {
-      setCandidate(candidate)
+    onCancel={() => props.finish()} onSubmit={candidate => {
+      const check = { candidate }; currentCheck.current = check; setChecking(check); setCandidate(candidate)
       const task = props.rebind ? Promise.resolve({ effect: 'admission-check-required', binding: 'not-checked', revision: document.revision })
         : diffConfigCandidate(props.profilePath, document.kind, candidate)
-      props.track(task); void task.then(diff => setPending({ candidate, operations, diff }))
-        .catch(cause => { setResult(configFailure(cause)); setResultCode(operatorFailure(cause).exitCode) })
+      props.track(task); void task.then(diff => { if (currentCheck.current === check) {
+        currentCheck.current = null; setChecking(null); setPending({ candidate, diff })
+      } }).catch(cause => { if (currentCheck.current === check) {
+        currentCheck.current = null; setChecking(null); setResult(configFailure(cause)); setResultCode(operatorFailure(cause).exitCode)
+      } })
     }} />
 }
 

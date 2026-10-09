@@ -81,7 +81,7 @@ it.each([40, 80, 120])('keeps actual desk observation pages while Tab gives the 
     await sendTui(io.stdin, instance, '2'); await sendTui(io.stdin, instance, 'r')
     await expect.poll(() => frame(io.stdout.frames)).toContain('选择当前报告的精确 Root')
     await sendTui(io.stdin, instance, '\r')
-    await expect.poll(() => frame(io.stdout.frames)).toContain('精确 Root')
+    await expect.poll(() => frame(io.stdout.frames)).toContain('精确 Root · completed')
     await expect.poll(() => frame(io.stdout.frames)).toContain('Tab 回执')
     let current = page(io.stdout.frames, '任务详情'), body = current.body
     while (current.end < current.total) {
