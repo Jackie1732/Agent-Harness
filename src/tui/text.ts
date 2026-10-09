@@ -10,6 +10,7 @@ import { stripVTControlCharacters } from 'node:util'
 export function plainText(value: string, secrets: readonly string[] = []): string {
   let result = value
   for (const secret of secrets) if (secret.length > 0) result = result.split(secret).join('[hidden]')
+  // eslint-disable-next-line no-control-regex -- Terminal display removes C0/C1 controls while retaining LF.
   return stripVTControlCharacters(result).replace(/\t/g, '    ').replace(/[\u0000-\u0009\u000b-\u001f\u007f-\u009f]/g, '')
 }
 

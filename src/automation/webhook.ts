@@ -57,7 +57,7 @@ export async function openAutomationWebhook(options: { readonly config: Automati
       accepting = false
       const closed = new Promise<void>((resolve, reject) => server.close(error => error === undefined ? resolve() : reject(error)))
       void closed.catch(() => undefined)
-      await Promise.allSettled([...requests]); for (const socket of sockets) socket.destroy(); await closed
+      await Promise.allSettled(requests); for (const socket of sockets) socket.destroy(); await closed
     })()
     return disposal
   }

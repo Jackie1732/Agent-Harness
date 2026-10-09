@@ -86,6 +86,7 @@ it('expires a root while its model stream is still waiting, using the injected t
   await initializeHost(spec, { clock: { now: () => now } })
   const host = await openHost(spec, { clock: { now: () => now }, timer, bindings: {
     createModelProvider: member => new ScriptedModelProvider({ ...member.model,
+      // eslint-disable-next-line require-yield -- The fixture waits for abort and then ends without emitting a frame.
       script: async function* (_submission, signal): AsyncGenerator<ModelFrame> {
         started.resolve()
         await new Promise<void>(resolve => { signal.addEventListener('abort', () => { aborted.resolve(); resolve() }, { once: true }); if (signal.aborted) resolve() })
@@ -97,7 +98,8 @@ it('expires a root while its model stream is still waiting, using the injected t
     const running = host.run()
     await started.promise
     now += 60_001
-    for (const wake of [...wakes]) wake()
+    const waiting = [...wakes]
+    for (const wake of waiting) wake()
     await aborted.promise
     const report = await running
     expect(report.members[0]!.agent.roots[0]).toMatchObject({ outcome: 'timed-out' })
@@ -111,6 +113,7 @@ it('drain can upgrade to cancel while retaining the same settlement task', async
   const started = gate(); const released = gate(); const aborted = gate()
   await initializeHost(spec)
   const host = await openHost(spec, { bindings: { createModelProvider: member => new ScriptedModelProvider({ ...member.model,
+    // eslint-disable-next-line require-yield -- A frame-free stream holds settlement until the test releases its gate.
     script: async function* (_submission, signal): AsyncGenerator<ModelFrame> {
       signal.addEventListener('abort', aborted.resolve, { once: true }); started.resolve(); await released.promise
     },

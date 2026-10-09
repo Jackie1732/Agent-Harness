@@ -38,7 +38,7 @@ export async function runExperiment(input: RunExperimentInput, options: RunExper
     for (const unit of plan.units) {
       if (stoppedBy !== 'completed') break
       if (storage.journal.snapshot().units.find(item => item.unitKey === unit.unitKey)!.started !== null) continue
-      if (Boolean(options.signal?.aborted)) { stoppedBy = 'cancelled'; break }
+      if (options.signal?.aborted) { stoppedBy = 'cancelled'; break }
       const result = await runExperimentUnit(plan, unit, storage, options)
       let measurement: ExperimentFileRef
       let evidence: ExperimentFileRef | null = null
@@ -57,7 +57,7 @@ export async function runExperiment(input: RunExperimentInput, options: RunExper
       await storage.journal.sealUnit({ unitKey: unit.unitKey, outcome: result.outcome, reason: result.reason, closure: 'confirmed',
         evidenceDigest: experimentJsonDigest(result.evidence as unknown as JsonValue), evidence, measurement })
       await evaluateStoredExperimentUnit(storage, { unitKey: unit.unitKey })
-      if (Boolean(options.signal?.aborted) || result.outcome === 'cancelled') { stoppedBy = 'cancelled'; break }
+      if (options.signal?.aborted || result.outcome === 'cancelled') { stoppedBy = 'cancelled'; break }
       if (plan.runPolicy.onCaseFailure === 'stop' && ['failed', 'result-unknown', 'timed-out'].includes(result.outcome)) { stoppedBy = 'policy'; break }
     }
     await recordExperimentReport(storage, { reportKey: 'primary', kind: 'primary', finalize: true,

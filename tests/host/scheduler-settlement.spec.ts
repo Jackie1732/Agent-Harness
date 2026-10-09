@@ -74,6 +74,7 @@ it.each(['observation', 'clock', 'timer'] as const)('cancels and joins accepted 
   })
   const host = await openHost(spec, { timer, clock: { now() { if (fail && kind === 'clock') throw failure; return Date.now() } },
     bindings: { createModelProvider: member => new ScriptedModelProvider({ ...member.model,
+      // eslint-disable-next-line require-yield -- A frame-free stream holds settlement until the test releases its gate.
       script: async function* (_submission, signal): AsyncGenerator<ModelFrame> {
         signal.addEventListener('abort', aborted.resolve, { once: true }); started.resolve(); await release.promise
       },
@@ -83,7 +84,8 @@ it.each(['observation', 'clock', 'timer'] as const)('cancels and joins accepted 
   const result = running.then(value => { settled = true; return value }, error => { settled = true; return error })
   try {
     await started.promise; fail = true
-    for (const wake of [...wakes]) wake()
+    const waiting = [...wakes]
+    for (const wake of waiting) wake()
     await aborted.promise
     expect(settled).toBe(false)
     expect(() => host.run()).toThrow(expect.objectContaining({ code: 'HOST_BUSY' }))
@@ -95,5 +97,5 @@ it.each(['observation', 'clock', 'timer'] as const)('cancels and joins accepted 
     expect(await result).toBe(failure)
     await stopping
     expect(host.status).toBe('stopped')
-  } finally { fail = false; release.resolve(); for (const wake of [...wakes]) wake(); await result; spy.mockRestore(); await host.shutdown() }
+  } finally { fail = false; release.resolve(); const waiting = [...wakes]; for (const wake of waiting) wake(); await result; spy.mockRestore(); await host.shutdown() }
 })

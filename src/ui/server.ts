@@ -118,7 +118,7 @@ export async function openHarnessUiServer(options: OpenHarnessUiServerOptions): 
       }), async () => {
         const stopped = new Promise<void>((resolve, reject) => server.close(error => error === undefined ? resolve() : reject(error)))
         for (const socket of sockets) socket.destroy()
-        await Promise.allSettled([...tasks]); await stopped
+        await Promise.allSettled(tasks); await stopped
       })
     })
     const address = server.address()

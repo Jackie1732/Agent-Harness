@@ -46,6 +46,7 @@ function text(value: unknown): string {
 }
 function filePath(value: unknown): string {
   const path = text(value)
+  // eslint-disable-next-line no-control-regex -- Filesystem references reject control characters.
   if (/[\u0000-\u001f\u007f]/.test(path)) invalid('file-path')
   return path
 }

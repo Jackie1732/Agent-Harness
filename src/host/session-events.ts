@@ -58,7 +58,7 @@ function decodeReady(value: JsonValue): HostSessionReady {
   const input = object(value); exact(input, ['hostKey', 'agentKey', 'mode', 'planned', 'profile', 'spec', 'through'])
   if (input.mode !== 'initialized' && input.mode !== 'adopted') invalid('ready-mode')
   const planned = input.planned === null ? null : eventId(input.planned!, 'ready-planned')
-  if (input.mode === 'initialized' !== (planned !== null)) invalid('ready-planned-mode')
+  if ((input.mode === 'initialized') !== (planned !== null)) invalid('ready-planned-mode')
   return Object.freeze({ hostKey: shortText(input.hostKey!, 'ready-host'), agentKey: shortText(input.agentKey!, 'ready-agent'), mode: input.mode,
     planned, profile: eventId(input.profile!, 'ready-profile'), spec: eventId(input.spec!, 'ready-spec'), through: sessionLogPosition(input.through as number) })
 }

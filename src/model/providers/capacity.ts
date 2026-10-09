@@ -51,7 +51,7 @@ export class ExchangeCapacity {
     this.#active = false
     if (this.#disposeTask === undefined) {
       const task = inModelTask(this.#token, () => Promise.resolve().then(async () => {
-        await Promise.all([...this.#pending.values()])
+        await Promise.all(this.#pending.values())
         try { await releaseClient() }
         catch { this.#failure ??= new ModelError('MODEL_CLEANUP_FAILED', 'model provider client release failed') }
         this.#disposed = true

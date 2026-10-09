@@ -8,7 +8,7 @@ function controlledTimer() {
     const done = () => { pending.delete(done); signal.removeEventListener('abort', done); resolve() }
     pending.add(done); signal.addEventListener('abort', done, { once: true }); if (signal.aborted) done()
   }) }
-  return { timer, pending, flush: () => { for (const done of [...pending]) done() } }
+  return { timer, pending, flush: () => { const current = [...pending]; for (const done of current) done() } }
 }
 
 it.each(['drain', 'cancel', 'offline', 'caller'] as const)('settles a managed observer before %s completes without waiting for its long timer', async mode => {

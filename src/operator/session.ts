@@ -183,7 +183,7 @@ export async function openOperatorSession(profilePath: string, options: { readon
         // Release/abort connection activity first; outstanding operations retain the journal until they settle.
         let failed: unknown
         try { await link.close(requestedMode) } catch (error) { failed = error }
-        await Promise.allSettled([...work])
+        await Promise.allSettled(work)
         try { await owner.dispose() } catch (error) { throw new AggregateError(failed === undefined ? [error] : [failed, error], 'Operator release failed') }
         if (failed !== undefined) throw failed
       })()

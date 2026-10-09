@@ -140,9 +140,11 @@ describe.each(factories)('%s Session Backend contract', (_label, factory) => {
       const writer = await backend.openWriter(firstId)
       await writer.append(sessionLogPosition(0), event())
       const read = await backend.readPrefix(firstId)
-      expect(Object.isFrozen(read.events[0]?.payload)).toBe(true)
+      expect(read.events).toHaveLength(1)
+      const payload = read.events[0]!.payload
+      expect(Object.isFrozen(payload)).toBe(true)
       expect(() => {
-        ;(read.events[0]?.payload as { value: number }).value = 99
+        ;(payload as { value: number }).value = 99
       }).toThrowError()
       expect((await backend.readPrefix(firstId)).events[0]?.payload).toEqual({ value: 1 })
       await writer.dispose()

@@ -60,7 +60,7 @@ function localConnection(host: AtomicHost, spec: ResolvedHostSpec, profile: Reso
   const close = (requested: HostShutdownMode = mode): Promise<void> => {
     if (closing !== undefined) { if (requested === 'cancel') void host.shutdown({ mode: 'cancel' }); return closing }
     lifetime.abort()
-    closing = (async () => { try { await host.shutdown({ mode: requested }) } finally { await Promise.allSettled([...pending]) } })()
+    closing = (async () => { try { await host.shutdown({ mode: requested }) } finally { await Promise.allSettled(pending) } })()
     return closing
   }
   const request = <M extends ControlMethod>(method: M, params: Params<M>, signal?: AbortSignal): Promise<ApplicationResult<M>> => {

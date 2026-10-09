@@ -141,7 +141,12 @@ export class WorkspaceLease implements WorkspaceAccess {
         if (!sameContentMetadata(before, after) || BigInt(length) !== before.size || !sameIdentity(after, (await checkTarget(nodeWorkspaceIO, this.root, path)).stat)) invalid('workspace-baseline-changed')
         entries.push({ path, byteLength: length, sha256: hash.digest('hex') }); total += length
       } finally {
-        try { await handle?.close() } catch (cause) { borrow.release(false); throw cause }
+        try { await handle?.close() }
+        catch (cause) {
+          borrow.release(false)
+          // eslint-disable-next-line no-unsafe-finally -- An unconfirmed file close fails the baseline and retains its workspace reservation.
+          throw cause
+        }
         borrow.release(true)
       }
     }

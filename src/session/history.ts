@@ -29,7 +29,7 @@ function decodeKnown(
   event: StoredSessionEvent,
   definition: DurableEventDefinition,
 ): CommittedSessionEvent {
-  if (event.ignorable === true !== definition.ignorable) {
+  if ((event.ignorable === true) !== definition.ignorable) {
     throw invalidEvent(event, 'stored event ignorable policy differs from its Catalog definition')
   }
   try {

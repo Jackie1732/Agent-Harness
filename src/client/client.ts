@@ -50,7 +50,7 @@ export function createHarnessClient(options: HarnessClientOptions): HarnessClien
   const close = (): Promise<void> => {
     if (disposal === undefined) {
       active = false
-      disposal = Promise.resolve().then(async () => { await Promise.allSettled([...tasks]); agent.destroy() })
+      disposal = Promise.resolve().then(async () => { await Promise.allSettled(tasks); agent.destroy() })
       closing.abort()
       agent.destroy()
     }

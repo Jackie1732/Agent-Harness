@@ -99,5 +99,6 @@ finally {
     try { await resource?.dispose() } catch (reason) { failures.push(reason) }
   }
   await rm(temporary, { recursive: true, force: true })
+  // eslint-disable-next-line no-unsafe-finally -- Cleanup rejects an otherwise passing fixture; an existing primary failure remains authoritative.
   if (primary === undefined && failures.length > 0) throw new AggregateError(failures, 'built fixture cleanup failed')
 }

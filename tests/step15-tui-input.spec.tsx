@@ -79,6 +79,7 @@ describe('Step15 terminal input and display', () => {
   it('removes terminal control sequences, redacts sentinels and keeps original results', () => {
     const original = '标题\u001b]52;c;YXNk\u0007\u001b[31m红\u001b[0m\u001b]8;;https://example.test\u0007链接\u001b]8;;\u0007\r\b\u009b2J\t\n秘密'
     const projection = plainText(original, ['秘密'])
+    // eslint-disable-next-line no-control-regex -- Display text must contain no C0/C1 controls except LF.
     expect(projection).not.toMatch(/[\u0000-\u0009\u000b-\u001f\u007f-\u009f]/)
     expect(projection).not.toContain('秘密')
     expect(projection).toContain('    \n[hidden]')

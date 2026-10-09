@@ -128,6 +128,7 @@ it('waits for the resumed Child execution to release before publishing its resul
     }))
     const append = AgentJournal.prototype.append
     spies.push(vi.spyOn(AgentJournal.prototype, 'append').mockImplementation(function (this: AgentJournal, ...args) {
+      // eslint-disable-next-line typescript/no-this-alias -- The spy captures the actual Child journal for the recovery cut.
       if (this.session.header.sessionId === child.header.sessionId) childJournal = this
       return append.apply(this, args)
     }))

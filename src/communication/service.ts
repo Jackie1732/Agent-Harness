@@ -186,7 +186,7 @@ export class CommunicationService {
     this.#status = 'disposing'
     this.delegationChannels.closeAdmission()
     const task = (async () => {
-      await Promise.allSettled([...this.#operations])
+      await Promise.allSettled(this.#operations)
       await this.delegationChannels.drain()
       const mailboxResults = await Promise.allSettled([...this.#mailboxes.values()].map(mailbox => mailbox.dispose()))
       const declarationResults = await Promise.allSettled([...this.#ownedDeclarations.values()].map(lease => lease.dispose()))

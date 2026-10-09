@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
-import { h, fixture, deferred, toolLimits, schemaLimits, echoDefinition, descriptor, toolEvents, FaultBackend } from './helpers/tool-fixture.mjs'
+import { h, fixture, deferred, toolLimits, echoDefinition, toolEvents, FaultBackend } from './helpers/tool-fixture.mjs'
 
 // All runtime tests in this file load the actual built public root. No replacement validator.
 test('T7-02/04/30/35 direct request uses four facts, a frozen input, one approval and one execution', async () => {

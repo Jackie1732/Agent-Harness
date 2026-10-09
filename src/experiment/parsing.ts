@@ -60,6 +60,7 @@ export function experimentJsonDigest(value: JsonValue): string { return experime
 export function experimentRelativePath(value: unknown, label: string): string {
   const path = experimentText(value, label)
   if (path.includes('\\') || path.includes(':') || path.startsWith('/') || path.split('/').some(part => part === '' || part === '.' || part === '..'
+    // eslint-disable-next-line no-control-regex -- Portable path segments exclude control characters.
     || /[\u0000-\u001f<>"|?*]/.test(part) || /[. ]$/.test(part) || /^(?:CON|PRN|AUX|NUL|COM[1-9]|LPT[1-9])(?:\.|$)/i.test(part))) invalidExperiment(`${label}-relative-path`)
   return path
 }

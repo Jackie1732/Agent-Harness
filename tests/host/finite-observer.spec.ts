@@ -11,7 +11,7 @@ function observerTimer() {
     if (signal.aborted) done()
     else now += ms
   }) }
-  return { timer, pending, flush: () => { for (const done of [...pending]) done() } }
+  return { timer, pending, flush: () => { const current = [...pending]; for (const done of current) done() } }
 }
 
 it('checks caller Abort before the initial read and joins a Host stop using its last certified observation', async () => {

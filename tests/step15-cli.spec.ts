@@ -120,6 +120,7 @@ it('drives and observes actual two-session message delivery through the same CLI
 it('escapes executable terminal bytes in JSON without changing the decoded value', () => {
   const data = { text: '\u001b]8;;https://example.com\u0007链接\u001b]8;;\u0007\u009b31m\u009dtitle\u0000' }
   const encoded = operatorJson(data)
+  // eslint-disable-next-line no-control-regex -- JSON output must contain no literal C0/C1 controls.
   expect(encoded).not.toMatch(/[\u0000-\u001f\u007f-\u009f]/)
   expect(JSON.parse(encoded)).toEqual(data)
 })

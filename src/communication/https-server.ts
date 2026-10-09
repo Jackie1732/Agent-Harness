@@ -102,7 +102,7 @@ export async function createHttpsMessageServer(options: HttpsMessageServerOption
       disposeTask ??= (async () => {
         active = false
         await new Promise<void>((resolve, reject) => server.close(error => error === undefined ? resolve() : reject(error)))
-        await Promise.allSettled([...tasks])
+        await Promise.allSettled(tasks)
       })()
       return disposeTask
     },

@@ -72,7 +72,7 @@ export async function openHarnessApiServer(options: OpenHarnessApiServerOptions)
   }
   const releaseNetwork = async (): Promise<void> => {
     frozen = true; stopListener()
-    await Promise.allSettled([...networkTasks])
+    await Promise.allSettled(networkTasks)
     for (const socket of sockets) socket.destroy()
     await listenerClosed
   }

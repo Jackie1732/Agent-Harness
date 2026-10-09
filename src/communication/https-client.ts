@@ -45,7 +45,7 @@ export function createHttpsMessageClientTransport(options: HttpsMessageClientOpt
     dispose() {
       if (disposeTask === undefined) {
         active = false
-        disposeTask = Promise.resolve().then(async () => { await Promise.allSettled([...tasks]); agent.destroy() })
+        disposeTask = Promise.resolve().then(async () => { await Promise.allSettled(tasks); agent.destroy() })
         closing.abort()
       }
       return disposeTask

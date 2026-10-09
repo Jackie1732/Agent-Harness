@@ -299,7 +299,8 @@ export class ScopeTree {
       if (record.status === 'disposed' || record.status === 'disposing') continue
       record.status = 'disposing'
       record.abort.abort(new Error(`scope "${record.label}" is disposing`))
-      for (const registration of [...record.registrations]) void this.#registrations.dispose(registration)
+      const registrations = [...record.registrations]
+      for (const registration of registrations) void this.#registrations.dispose(registration)
       this.#touch()
     }
 
@@ -425,7 +426,8 @@ export class ScopeTree {
     this.#barrierCheckScheduled = true
     queueMicrotask(() => {
       this.#barrierCheckScheduled = false
-      for (const barrier of [...this.#barriers]) {
+      const barriers = [...this.#barriers]
+      for (const barrier of barriers) {
         if (this.#subtreeInFlight(barrier.scope) !== 0) continue
         this.#barriers.delete(barrier)
         barrier.resolve(this.snapshot(barrier.scope))

@@ -28,6 +28,7 @@ export function decodeProviderDescriptor(value: JsonValue): ModelProviderDescrip
       throw new ModelError('MODEL_REQUEST_INVALID', 'semantic header name is not permitted')
     }
     const header = text(value, 'semantic header', 256, false)
+    // eslint-disable-next-line no-control-regex -- Semantic HTTP headers exclude CR, LF and NUL.
     if (/[\r\n\0]/.test(header)) throw new ModelError('MODEL_REQUEST_INVALID', 'semantic header is not a single line')
   }
   const support = object(binding.support, 'model support')

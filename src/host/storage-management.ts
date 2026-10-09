@@ -26,6 +26,7 @@ export async function withHostStorageManagement<T>(root: string, operation: stri
     // Failure to close or remove the guard retains exclusion for explicit offline recovery.
     try { await handle.close(); await unlink(path) }
     catch (cleanup) {
+      // eslint-disable-next-line no-unsafe-finally -- Guard cleanup failure must reject success; the cause preserves any action failure.
       throw new HostError('HOST_CLEANUP_FAILED', 'storage-management-retained', {},
         { cause: failed ? new AggregateError([failure, cleanup]) : cleanup })
     }

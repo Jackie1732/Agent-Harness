@@ -221,7 +221,7 @@ export class SessionMailboxImpl implements SessionMailbox, DirectoryReceiver {
     this.#status = 'ending'
     const task = (async () => {
       try {
-        await Promise.allSettled([...this.#operations])
+        await Promise.allSettled(this.#operations)
         await Promise.all([this.#journal.drain(), this.#attempts.drain()])
         const snapshot = this.#journal.snapshot()
         const pendingOutbox = pendingCount(snapshot.outbox)
@@ -251,7 +251,7 @@ export class SessionMailboxImpl implements SessionMailbox, DirectoryReceiver {
     this.#status = 'disposed'
     this.#disposalController.abort()
     const task = (async () => {
-      await Promise.allSettled([...this.#operations])
+      await Promise.allSettled(this.#operations)
       await Promise.all([this.#journal.drain(), this.#attempts.drain()])
       await this.#onDispose()
       this.#status = 'disposed'
