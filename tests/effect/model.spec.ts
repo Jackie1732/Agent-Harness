@@ -71,8 +71,8 @@ describe('effect lifecycle model properties', () => {
     for (let seed = 1; seed <= 120; seed += 1) {
       const scenario = generateScenario(createRandom(seed), seed)
       const owner = new EffectOwner(scenario.label)
-      // Acceptance order is recorded per effect, because each effect runs its own cleanup
-      // batch: the traces concatenate, so only the order inside one batch is comparable.
+      // Each Effect releases through its own batch. Concurrent batches may interleave,
+      // so acceptance and inverse order are compared within each Effect.
       const acceptedByEffect = new Map<string, string[]>()
       const attempts = new Map<string, number>()
       const executed: string[] = []
@@ -115,9 +115,8 @@ describe('effect lifecycle model properties', () => {
       const acceptedLabels = [...acceptedByEffect.values()].flat()
       expect([...attempts.keys()].sort()).toEqual([...acceptedLabels].sort())
 
-      // Inside each batch the successful inverses ran in the reverse of the acceptance
-      // order, and the failing ones were still attempted. Batches concatenate, so the
-      // trace is read one contiguous run per effect.
+      // Each batch attempts its records in reverse acceptance order, including failures.
+      // Filtering the interleaved trace compares only one Effect's successful inverses.
       const expectedPerEffect = new Map(
         [...acceptedByEffect.entries()].map(([label, accepted]) => [
           label,

@@ -109,3 +109,84 @@ test('an older inverse joins a completed newer Lease through the built public AP
     await owner.dispose().catch(() => undefined)
   }
 })
+
+for (const rejects of [false, true]) {
+  test(`one Owner serially cleans interrupted startups through the built API (setup rejects: ${rejects})`, async () => {
+    const owner = new EffectOwner('built-startup-handoff')
+    const accepted = [Promise.withResolvers(), Promise.withResolvers()]
+    const setup = [Promise.withResolvers(), Promise.withResolvers()]
+    const inverse = [Promise.withResolvers(), Promise.withResolvers()]
+    const olderStarted = Promise.withResolvers(), first = Promise.withResolvers()
+    const trace = [], outcomes = [], reasons = []
+    for (const index of [0, 1]) {
+      outcomes.push(owner.run(String(index), async effect => {
+        await effect.apply(`resource-${index}`, () => index, async value => {
+          trace.push(`${value}:start`)
+          first.resolve(value)
+          if (value === 0) olderStarted.resolve()
+          await inverse[value].promise
+          trace.push(`${value}:end`)
+        })
+        accepted[index].resolve()
+        await setup[index].promise
+        if (rejects) { reasons[index] = effect.signal.reason; throw effect.signal.reason }
+      }).catch(reason => reason))
+      await accepted[index].promise
+    }
+    const closing = owner.dispose()
+    setup.forEach(gate => gate.resolve())
+    try {
+      assert.equal(await first.promise, 1)
+      assert.deepEqual(trace, ['1:start'])
+      inverse[1].resolve()
+      await olderStarted.promise
+      assert.deepEqual(trace, ['1:start', '1:end', '0:start'])
+      inverse[0].resolve()
+      const results = await Promise.all(outcomes)
+      results.forEach((result, index) => {
+        if (rejects) assert.equal(result, reasons[index])
+        else { assert.equal(result.code, 'EFFECT_START_INTERRUPTED'); assert.equal(result.attempted, 1) }
+      })
+      await closing
+      assert.deepEqual(trace, ['1:start', '1:end', '0:start', '0:end'])
+    } finally {
+      setup.forEach(gate => gate.resolve())
+      inverse.forEach(gate => gate.resolve())
+      await Promise.all(outcomes)
+      await closing
+    }
+  })
+}
+
+test('an interrupted startup settles before an older inverse joins its outcome through the built API', async () => {
+  const owner = new EffectOwner('built-startup-outcome')
+  const accepted = Promise.withResolvers(), setup = Promise.withResolvers()
+  const olderEntered = Promise.withResolvers(), rescue = Promise.withResolvers()
+  let newer, settled = false
+  const trace = []
+  await owner.run('older', effect => effect.apply('older', () => undefined, async () => {
+    trace.push('older:start'); olderEntered.resolve()
+    await Promise.race([newer, rescue.promise])
+    trace.push('older:end')
+  }))
+  newer = owner.run('newer', async effect => {
+    await effect.apply('newer', () => undefined, () => { trace.push('newer:reverted') })
+    accepted.resolve()
+    await setup.promise
+  }).catch(reason => { settled = true; return reason })
+  await accepted.promise
+  const closing = owner.dispose()
+  setup.resolve()
+  try {
+    await olderEntered.promise
+    await setImmediate()
+    assert.equal(settled, true)
+    assert.equal((await newer).code, 'EFFECT_START_INTERRUPTED')
+    await closing
+    assert.deepEqual(trace, ['newer:reverted', 'older:start', 'older:end'])
+  } finally {
+    rescue.resolve()
+    await newer
+    await closing
+  }
+})

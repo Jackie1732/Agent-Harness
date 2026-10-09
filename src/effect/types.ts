@@ -67,8 +67,9 @@ export interface EffectLease<T> {
   /**
    * Release this Effect and wait until every inverse it accepted has settled.
    *
-   * Calls outside this release's own cleanup chain return one shared promise. A concurrent
-   * Owner release joins the same inverse tasks, so every inverse still runs at most once.
+   * Calls outside this release's own cleanup chain return one shared promise. Newly claimed
+   * inverses run serially in reverse acceptance order. A concurrent Owner release joins the
+   * same tasks, preserving their existing execution order and single inverse attempt.
    *
    * @returns A promise that settles after this Effect reaches its terminal state.
    * @throws {EffectDisposalFailedError} If an inverse fails.

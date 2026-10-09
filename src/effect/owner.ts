@@ -34,7 +34,7 @@ interface EffectRecord {
   readonly operations: Set<Promise<void>>
   /** Inverses of this Effect, in acceptance order. */
   readonly local: CleanupRecord[]
-  /** Settles after forward work is closed and rollback tasks, if any, are published. */
+  /** Settles after forward work closes and startup transfers cleanup ownership. */
   readonly ownerReady: Promise<void>
   /** Resolves `ownerReady` at the owner release handoff point. */
   readonly resolveOwnerReady: () => void
@@ -53,6 +53,10 @@ interface EffectOwnerRecord {
   readonly global: Set<CleanupRecord>
   /** Shared release task of the owner, created by its first release request. */
   disposalTask?: Promise<void>
+  /** Settles after the Owner publishes its shared cleanup tasks. */
+  readonly cleanupReady: Promise<void>
+  /** Resolves the Owner's cleanup publication handoff. */
+  readonly resolveCleanupReady: () => void
   /** Private token identifying the owner's release task. */
   readonly token: number
 }
@@ -166,8 +170,9 @@ class EffectContextImpl implements EffectContext {
  * Ownership scope for Effects that acquire revertible resources.
  *
  * Every inverse accepted through one of its Effects is registered before the acquired
- * value reaches the caller, is applied at most once, and is applied serially in the
- * reverse of the order it was accepted.
+ * value reaches the caller and is applied at most once. Each release batch applies its
+ * newly claimed inverses serially in reverse acceptance order; previously started
+ * independent releases retain their execution order.
  */
 export class EffectOwner {
   readonly #record: EffectOwnerRecord
@@ -179,11 +184,14 @@ export class EffectOwner {
    * @throws {TypeError} If `label` is empty.
    */
   constructor(label = 'owner') {
+    const cleanupReady = deferred<void>()
     this.#record = {
       label: requireLabel(label, 'owner'),
       state: 'accepting',
       effects: new Set(),
       global: new Set(),
+      cleanupReady: cleanupReady.promise,
+      resolveCleanupReady: () => cleanupReady.resolve(undefined),
       token: createDisposalToken(),
     }
   }
@@ -284,9 +292,19 @@ async function startEffect<T>(effect: EffectRecord, task: Promise<T>): Promise<E
 
   effect.interrupted = outcome.status === 'fulfilled'
   const reason = outcome.status === 'rejected' ? outcome.reason : undefined
-  const cleanup = runWithDisposalToken(effect.token, () => cleanupEffect(effect))
-  effect.resolveOwnerReady()
-  const { attempted, failures } = await cleanup
+  let cleanup: CleanupOutcome
+  if (owner.state === 'accepting') {
+    const rollback = runWithDisposalToken(effect.token, () => cleanupEffect(effect))
+    effect.resolveOwnerReady()
+    cleanup = await rollback
+  } else {
+    const attempted = effect.local.length
+    effect.resolveOwnerReady()
+    await owner.cleanupReady
+    const { failures } = await cleanupEffect(effect)
+    cleanup = { attempted, failures }
+  }
+  const { attempted, failures } = cleanup
   owner.effects.delete(effect)
   if (failures.length === 0) {
     if (outcome.status === 'rejected') throw outcome.reason
@@ -323,7 +341,7 @@ function disposeLease(effect: EffectRecord): Promise<void> {
  * Publish and await this Effect's own inverses in reverse acceptance order.
  *
  * @param effect - Effect being released.
- * @returns Failures in the order the attempts were made.
+ * @returns Failures in reverse acceptance order and newly claimed inverse count.
  */
 function cleanupEffect(effect: EffectRecord): Promise<CleanupOutcome> {
   return runCleanupBatch(effect.local, effect.token)
@@ -332,7 +350,9 @@ function cleanupEffect(effect: EffectRecord): Promise<CleanupOutcome> {
 async function releaseOwner(owner: EffectOwnerRecord): Promise<void> {
   try {
     await Promise.all([...owner.effects].map(effect => effect.ownerReady))
-    const { failures } = await runCleanupBatch([...owner.global], owner.token)
+    const cleanup = runCleanupBatch([...owner.global], owner.token)
+    owner.resolveCleanupReady()
+    const { failures } = await cleanup
     if (failures.length > 0) {
       throw new EffectDisposalFailedError('owner', undefined, failures)
     }

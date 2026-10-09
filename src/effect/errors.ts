@@ -18,7 +18,7 @@ export type EffectErrorCode =
  */
 export type CleanupFailureStage = 'revert' | 'wait'
 
-/** One cleanup attempt that failed, in the order the attempt was made. */
+/** Failure from one cleanup inverse attempt. */
 export interface EffectCleanupFailure {
   /** Label of the operation whose cleanup failed, absent for a record without one. */
   readonly operationLabel?: string
@@ -55,7 +55,7 @@ export function describeReasonName(reason: unknown): string {
  * The projection carries labels, stages and failure counts. It deliberately omits
  * free-form failure messages and any field that would assert a completed recovery.
  *
- * @param failures - Failures in the order the cleanup attempts were made.
+ * @param failures - Failures in the requested records' reverse acceptance order.
  * @returns JSON-safe projections in the same order.
  */
 export function projectCleanupFailures(
@@ -104,17 +104,17 @@ export class EffectOwnerInactiveError extends HarnessError<'EFFECT_OWNER_INACTIV
 export class EffectStartInterruptedError extends HarnessError<'EFFECT_START_INTERRUPTED'> {
   /** Label of the interrupted Effect. */
   readonly effectLabel: string
-  /** Number of cleanup inverses the local rollback claimed. */
+  /** Number of inverses attempted for this startup during recovery. */
   readonly attempted: number
-  /** Number of cleanup inverses that failed during the rollback. */
+  /** Number of failed cleanup inverses for this startup. */
   readonly failed: number
 
   /**
    * Create the error for an Effect that setup completed but the owner had released.
    *
    * @param effectLabel - Label of the interrupted Effect.
-   * @param attempted - Number of cleanup inverses the local rollback claimed.
-   * @param failures - Failed subset of those attempts, in attempt order.
+   * @param attempted - Number of inverses attempted for this startup during recovery.
+   * @param failures - Failed target records, in reverse acceptance order.
    */
   constructor(
     effectLabel: string,
@@ -141,7 +141,7 @@ export class EffectRollbackFailedError extends HarnessError<'EFFECT_ROLLBACK_FAI
   readonly effectLabel: string
   /** Setup failure, or the startup interruption when setup itself succeeded. */
   readonly setupReason: unknown
-  /** Cleanup failures in the order the attempts were made. */
+  /** Cleanup failures in this Effect's reverse acceptance order. */
   readonly cleanupFailures: readonly EffectCleanupFailure[]
 
   /**
@@ -150,7 +150,7 @@ export class EffectRollbackFailedError extends HarnessError<'EFFECT_ROLLBACK_FAI
    * @param effectLabel - Label of the Effect whose rollback failed.
    * @param setupReason - Setup failure, or the interruption when setup itself succeeded.
    * @param cause - Reason the startup ended.
-   * @param cleanupFailures - Cleanup failures in attempt order.
+   * @param cleanupFailures - Cleanup failures in this Effect's reverse acceptance order.
    */
   constructor(
     effectLabel: string,
@@ -179,7 +179,7 @@ export class EffectDisposalFailedError extends HarnessError<'EFFECT_DISPOSAL_FAI
   readonly target: EffectDisposalTarget
   /** Label of the released Effect, absent for an owner-wide release. */
   readonly effectLabel?: string
-  /** Cleanup failures in the order the attempts were made. */
+  /** Cleanup failures in the target records' reverse acceptance order. */
   readonly cleanupFailures: readonly EffectCleanupFailure[]
 
   /**
@@ -187,7 +187,7 @@ export class EffectDisposalFailedError extends HarnessError<'EFFECT_DISPOSAL_FAI
    *
    * @param target - Ownership scope that requested the release.
    * @param effectLabel - Label of the released Effect, absent for an owner-wide release.
-   * @param cleanupFailures - Cleanup failures in attempt order.
+   * @param cleanupFailures - Cleanup failures in the target records' reverse acceptance order.
    */
   constructor(
     target: EffectDisposalTarget,
