@@ -1,7 +1,7 @@
 /** Configuration interaction owns drafts and confirmations; original adapters own validation and files. */
 import { dirname, join, resolve } from 'node:path'
 import { useEffect, useState } from 'react'
-import { Box, Text, useInput, useWindowSize } from 'ink'
+import { Box, Text, useInput } from 'ink'
 import type { JsonObject, JsonValue } from '../foundation/json.js'
 import type { ConfigEditableDocument, ConfigKind, ConfigOperation } from '../operator/config-types.js'
 import { CONFIG_KINDS, applyConfigOperations, cloneOperatorHost, configReadiness, createOperatorConfig,
@@ -16,7 +16,7 @@ import { TreeEditor } from './tree.js'
 import { DraftInput } from './input.js'
 import { Picker } from './picker.js'
 import { displayValue, plainText } from './text.js'
-import { CommandCardsPanel } from './panels.js'
+import { CommandCardsPanel, ResultPanel } from './panels.js'
 import { serviceCommandCards, powershellCommand } from './command-cards.js'
 
 type ConfigModal = { readonly kind: 'field'; readonly label: string; readonly initial?: string; readonly confirm: (text: string) => void }
@@ -54,14 +54,13 @@ export function ConfigurationPage(props: ConfigurationPageProps) {
   const [document, setDocument] = useState<ConfigEditableDocument | null>(null), [modal, setModal] = useState<ConfigModal | null>(null)
   const [working, setWorking] = useState(false), [notice, setNotice] = useState<unknown>(null)
   const [treeError, setTreeError] = useState<unknown>(null)
-  const [noticeOffset, setNoticeOffset] = useState(0), { rows } = useWindowSize()
   const [cardForms, setCardForms] = useState<Readonly<Record<'automation' | 'experiment', JsonObject>>>({ automation: {}, experiment: {} })
   const kind = CONFIG_KINDS[selected]!, profilePath = props.profile.profilePath
   const cardFields = kind === 'automation' || kind === 'experiment' ? cardForms[kind] : {}
   useEffect(() => { props.onEditing(modal !== null || working); return () => props.onEditing(false) }, [modal, working, props.onEditing])
   useEffect(() => { setTreeError(null) }, [modal])
   const perform = async (operation: () => Promise<unknown>) => {
-    setModal(null); setWorking(true); setNoticeOffset(0)
+    setModal(null); setWorking(true)
     try { const task = operation(); props.onWork(task); const result = await task; setNotice(result); props.onResult(result) }
     catch (cause) { const failure = configFailure(cause); setNotice(failure); props.onResult(failure) }
     finally { setWorking(false) }
@@ -105,12 +104,10 @@ export function ConfigurationPage(props: ConfigurationPageProps) {
     } })
   }
   useInput((input, key) => {
-    if (key.pageDown) setNoticeOffset(current => current + Math.max(1, rows - 18))
-    else if (key.pageUp) setNoticeOffset(current => Math.max(0, current - Math.max(1, rows - 18)))
-    else if (key.upArrow) { setSelected(current => Math.max(0, current - 1)); setDocument(null) }
-    else if (key.downArrow) { setSelected(current => Math.min(CONFIG_KINDS.length - 1, current + 1)); setDocument(null) }
+    if (key.upArrow) { setSelected(current => Math.max(0, current - 1)); setDocument(null); setNotice(null) }
+    else if (key.downArrow) { setSelected(current => Math.min(CONFIG_KINDS.length - 1, current + 1)); setDocument(null); setNotice(null) }
     else if (key.return) void editDocument().catch(cause => setNotice(configFailure(cause)))
-    else if (key.escape) props.onDone?.()
+    else if (key.escape) { if (notice !== null) setNotice(null); else props.onDone?.() }
     else if (input === 'k') void perform(async () => { const read = await readConfigDocument(profilePath, kind); setDocument({ ...read, failure: null }); return read.check })
     else if (input === 'y') void perform(() => configReadiness(profilePath, kind, props.environment))
     else if (input === 'p' && kind === 'host') void load().then(read => confirm('分配并保存尚缺 Host 身份', read.check,
@@ -132,31 +129,32 @@ export function ConfigurationPage(props: ConfigurationPageProps) {
         unitKey: '', evaluatorKey: '', comparisonKey: '', otherRoot: '', variantA: '', variantB: '', sessionId: '', fixtureOutput: '',
         reportKey: 'report', finalize: false, expectedToken: '', evidenceKey: '', evidenceFile: '', sourceFile: '', ...cardFields },
       confirm: value => {
-        try { const fields = commandFields(value); setCardForms(current => ({ ...current, [kind]: fields })); setNoticeOffset(0); setModal(null) }
+        try { const fields = commandFields(value); setCardForms(current => ({ ...current, [kind]: fields })); setNotice(null); setModal(null) }
         catch { const failure = { message: '命令字段需为字符串；mode为fixture/live，finalize为boolean。候选保留供修正。Esc 继续编辑' }; setNotice(failure); setTreeError(failure) }
       } })
   }, { isActive: modal === null && !working })
   if (modal?.kind === 'field') return <DraftInput label={modal.label} secrets={props.secrets} {...(modal.initial === undefined ? {} : { initial: modal.initial })} onConfirm={modal.confirm} onCancel={() => setModal(null)} />
-  if (modal?.kind === 'tree') return <Box flexDirection="column">{treeError !== null && <Text color="red">{displayValue(treeError, props.profile.display.maxTextBytes, props.secrets)}</Text>}
+  if (modal?.kind === 'tree') return <Box flexDirection="column" flexGrow={1} flexBasis={0}>{treeError !== null && <Text color="red">{displayValue(treeError, props.profile.display.maxTextBytes, props.secrets)}</Text>}
     <TreeEditor key={modal.title} title={modal.title} initial={modal.value} maxTextBytes={props.profile.display.maxTextBytes} secrets={props.secrets} onSubmit={modal.confirm} onCancel={() => setModal(null)} /></Box>
   if (modal?.kind === 'preset') return <Picker title="选择建立模板；全部字段随后可编辑" items={modal.items.map(value => ({ label: value, value }))} onSelect={modal.choose} onCancel={() => setModal(null)} />
-  if (modal?.kind === 'confirm') return <Box flexDirection="column"><Text>{displayValue(modal.detail, props.profile.display.maxTextBytes, props.secrets)}</Text>
-    <Picker title={modal.title} items={[{ label: '采用', value: true }, { label: '返回', value: false }]} onSelect={accepted => { if (accepted) void perform(modal.run); else setModal(null) }} onCancel={() => setModal(null)} /></Box>
+  if (modal?.kind === 'confirm') return <Box flexDirection="column" flexGrow={1} flexBasis={0}><ResultPanel label="采用内容" result={modal.detail} maxTextBytes={props.profile.display.maxTextBytes} secrets={props.secrets} />
+    <Picker title={modal.title} compact items={[{ label: '采用', value: true }, { label: '返回', value: false }]} onSelect={accepted => { if (accepted) void perform(modal.run); else setModal(null) }} onCancel={() => setModal(null)} /></Box>
   const raw = document?.value as JsonObject | undefined, storage = raw?.storage as JsonObject | undefined
   const cards = serviceCommandCards({ automation: kind === 'automation' ? props.profile.files.automation : null,
     definition: kind === 'experiment' ? props.profile.files.experiment : null,
     plan: kind === 'experiment' ? join(props.profile.directory, 'experiment-plan.json') : null,
     root: kind === 'experiment' && typeof storage?.controlRoot === 'string' ? resolve(dirname(document!.path), storage.controlRoot) : null, reportKey: 'report',
     ...Object.fromEntries(Object.entries(cardFields).filter(([, value]) => typeof value !== 'string' || value.length > 0)) })
-  return <Box flexDirection="column"><Text bold>配置 · 文件保存与运行事实分别显示{working ? ' · 正在操作' : ''}</Text>
+  return <Box flexDirection="column" flexGrow={1} flexBasis={0}><Box flexDirection="column" flexShrink={0}><Text bold wrap="truncate">配置 · 文件保存与运行事实分别显示{working ? ' · 正在操作' : ''}</Text>
     {CONFIG_KINDS.map((item, index) => <Text key={item} inverse={index === selected}>{item}</Text>)}
-    {document !== null && <><Text>{plainText(document.path, props.secrets)} · {document.check?.status ?? document.failure?.code ?? 'invalid'}</Text><Text dimColor>revision {document.revision}</Text></>}
-    <Text dimColor>Enter 字段/结构编辑 · c 创建 · l 登记 · k 检查 · y readiness · p plan · w Workflow重绑定 · m 导入 · o 导出 · h clone</Text>
-    <Text dimColor>{powershellCommand(['atomic-harness', 'init', '--profile', profilePath])}</Text>
-    <Text dimColor>init/恢复由明确维护命令拥有；运行中的本地Host需先退出释放锁</Text>
-    {(kind === 'automation' || kind === 'experiment') && <><Text dimColor>v 编辑未知run/残锁/实验动作参数 · PgUp/PgDn 阅读卡片</Text>
-      <CommandCardsPanel cards={cards} maxTextBytes={props.profile.display.maxTextBytes} offset={noticeOffset} rows={Math.max(1, rows - 18)} secrets={props.secrets} /></>}
-    {notice !== null && <><Text dimColor>操作结果 · PgUp/PgDn 阅读 · 起始行 {noticeOffset + 1}</Text>
-      <Text>{displayValue(notice, props.profile.display.maxTextBytes, props.secrets).split('\n').slice(noticeOffset, noticeOffset + Math.max(1, rows - 18)).join('\n')}</Text></>}
+    {document !== null && <><Text wrap="truncate">{plainText(document.path, props.secrets)} · {document.check?.status ?? document.failure?.code ?? 'invalid'}</Text><Text dimColor wrap="truncate">revision {document.revision}</Text></>}
+    <Text dimColor wrap="truncate">Enter 编辑 · c 创建 · l 登记 · k 检查</Text>
+    <Text dimColor wrap="truncate">y readiness · p plan · w 重绑定</Text>
+    <Text dimColor wrap="truncate">m 导入 · o 导出 · h clone · Esc 返回</Text>
+    <Text dimColor wrap="truncate">init/恢复需退出本端Host后明确执行</Text>
+    {(kind === 'automation' || kind === 'experiment') && <Text dimColor wrap="truncate">v 编辑命令参数 · PgUp/PgDn 阅读</Text>}</Box>
+    {notice !== null ? <ResultPanel label="操作结果 · Esc 返回" result={notice} maxTextBytes={props.profile.display.maxTextBytes} secrets={props.secrets} />
+      : kind === 'automation' || kind === 'experiment' ? <CommandCardsPanel cards={cards} maxTextBytes={props.profile.display.maxTextBytes} secrets={props.secrets} />
+        : <ResultPanel label="维护命令 · 另一终端执行" text={powershellCommand(['atomic-harness', 'init', '--profile', profilePath])} maxTextBytes={props.profile.display.maxTextBytes} secrets={props.secrets} />}
   </Box>
 }

@@ -29,7 +29,8 @@ export function DraftInput(props: DraftInputProps) {
   const currentDraft = useRef(draft)
   const box = useRef<DOMElement | null>(null), metrics = useBoxMetrics(box)
   const { columns, rows } = useWindowSize(), { setCursorPosition } = useCursor()
-  const layout = layoutDraft(draft, metrics.clientWidth || columns - 4, props.rows ?? Math.max(1, Math.min(8, rows - 8)), props.secret, props.secrets)
+  const visibleRows = props.rows ?? Math.max(1, Math.min(8, rows - 8))
+  const layout = layoutDraft(draft, metrics.clientWidth || columns - 4, Math.min(visibleRows, Math.max(1, metrics.clientHeight || visibleRows)), props.secret, props.secrets)
   const change = (edit: DraftEdit) => {
     const next = editDraft(currentDraft.current, edit); currentDraft.current = next; setDraft(next); props.onChange?.(next.text)
   }
@@ -56,12 +57,13 @@ export function DraftInput(props: DraftInputProps) {
     setCursorPosition({ x: position.x + 1 + layout.cursor.x, y: position.y + 1 + layout.cursor.y })
     return () => setCursorPosition(undefined)
   }, [draft, metrics, columns, rows, layout.cursor.x, layout.cursor.y, setCursorPosition])
-  return <Box flexDirection="column">
-    <Text bold>{plainText(props.label, props.secrets)}</Text>
-    <Box ref={box} borderStyle="single" flexDirection="column" minHeight={3}>
+  return <Box flexDirection="column" flexGrow={1} flexBasis={0} minHeight={6}>
+    <Box flexShrink={0}><Text bold wrap="truncate">{plainText(props.label, props.secrets)}</Text></Box>
+    <Box ref={box} borderStyle="single" flexDirection="column" flexGrow={1} flexBasis={0} minHeight={3} maxHeight={visibleRows + 2} overflowY="hidden">
       {layout.lines.map((line, index) => <Text key={index} wrap="truncate">{line.length === 0 ? ' ' : line}</Text>)}
     </Box>
-    <Text dimColor>{props.secret ? '隐藏输入；取消结束启动' : `${draft.cursor}/${graphemes(draft.text).length} 字符组 · 显示行 ${layout.firstLine + 1}/${layout.totalLines}`}</Text>
-    <Text dimColor>{props.multiline ? 'Enter 换行 · Ctrl+S 提交 · Tab 切换提交方式 · Esc 放弃' : 'Enter 确认 · Esc 返回'}</Text>
+    <Box flexDirection="column" flexShrink={0}><Text dimColor wrap="truncate">{props.secret ? '隐藏输入；取消结束启动' : `${draft.cursor}/${graphemes(draft.text).length} 字符组 · 显示行 ${layout.firstLine + 1}/${layout.totalLines}`}</Text>
+      <Text dimColor wrap="truncate">{props.multiline ? 'Enter 换行 · Ctrl+S 提交' : 'Enter 确认 · Esc 返回'}</Text>
+      {props.multiline && <Text dimColor wrap="truncate">Tab 切换提交方式 · Esc 放弃</Text>}</Box>
   </Box>
 }

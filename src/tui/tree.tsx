@@ -1,6 +1,7 @@
 /** Structured edits record the same typed operations used by the configuration CLI. */
-import { useState } from 'react'
-import { Box, Text, useInput, useWindowSize } from 'ink'
+import { useRef, useState } from 'react'
+import { Box, Text, useBoxMetrics, useInput } from 'ink'
+import type { DOMElement } from 'ink'
 import type { JsonObject, JsonValue } from '../foundation/json.js'
 import { applyConfigTreeOperations } from '../operator/config-tree.js'
 import type { ConfigOperation } from '../operator/config-types.js'
@@ -9,6 +10,7 @@ import { Picker } from './picker.js'
 import { VALUE_TYPES, emptyValue, isContainer, pointerSegment, rowSummary, schemaSeed, treeRows, valueType } from './tree-model.js'
 import type { TreeRow, ValueType } from './tree-model.js'
 import { displayValue, plainText } from './text.js'
+import { ResultPanel } from './panels.js'
 
 type FieldEdit = { readonly kind: 'scalar'; readonly row: TreeRow }
   | { readonly kind: 'insert'; readonly row: TreeRow }
@@ -62,9 +64,9 @@ export interface TreeEditorProps {
 export function TreeEditor(props: TreeEditorProps) {
   const [candidate, setCandidate] = useState(props.initial), [operations, setOperations] = useState<readonly ConfigOperation[]>([])
   const [expanded, setExpanded] = useState<ReadonlySet<string>>(new Set([''])), [selected, setSelected] = useState(0)
-  const [edit, setEdit] = useState<FieldEdit | null>(null), [preview, setPreview] = useState(false), [previewOffset, setPreviewOffset] = useState(0), [error, setError] = useState<string | null>(null)
-  const { rows: terminalRows } = useWindowSize(), rows = treeRows(candidate, expanded), row = rows[Math.min(selected, rows.length - 1)]!
-  const pageRows = Math.max(1, terminalRows - 10), first = Math.max(0, Math.min(selected, rows.length - 1) - pageRows + 1)
+  const [edit, setEdit] = useState<FieldEdit | null>(null), [preview, setPreview] = useState(false), [error, setError] = useState<string | null>(null)
+  const viewport = useRef<DOMElement | null>(null), metrics = useBoxMetrics(viewport), rows = treeRows(candidate, expanded), row = rows[Math.min(selected, rows.length - 1)]!
+  const pageRows = Math.max(1, Math.floor(metrics.clientHeight)), first = Math.max(0, Math.min(selected, rows.length - 1) - pageRows + 1)
   const append = (operation: ConfigOperation) => {
     try {
       setCandidate(applyConfigTreeOperations(candidate, [operation])); setOperations([...operations, operation]); setEdit(null); setError(null)
@@ -77,11 +79,9 @@ export function TreeEditor(props: TreeEditorProps) {
     if (key.escape) { if (preview) setPreview(false); else props.onCancel(); return }
     if (preview) {
       if (key.return) props.onSubmit(candidate, operations)
-      else if (key.pageDown || key.downArrow) setPreviewOffset(current => current + (key.pageDown ? pageRows : 1))
-      else if (key.pageUp || key.upArrow) setPreviewOffset(current => Math.max(0, current - (key.pageUp ? pageRows : 1)))
       return
     }
-    if (key.ctrl && input === 's') { setPreview(true); setPreviewOffset(0); return }
+    if (key.ctrl && input === 's') { setPreview(true); return }
     if (key.upArrow) setSelected(current => Math.max(0, current - 1))
     else if (key.downArrow) setSelected(current => Math.min(rows.length - 1, current + 1))
     else if (key.pageUp) setSelected(current => Math.max(0, current - pageRows))
@@ -125,16 +125,16 @@ export function TreeEditor(props: TreeEditorProps) {
     }} />
   if (edit?.kind === 'choices') return <Picker title="选择 schema 值或分支" items={edit.choices.map(value => ({ label: displayValue(value, 512, props.secrets), value }))}
     onCancel={() => setEdit(null)} onSelect={value => append({ op: 'set', pointer: edit.row.pointer, value })} />
-  return <Box flexDirection="column">
-    <Text bold>{plainText(props.title, props.secrets)}</Text>
-    {preview ? <><Text color="yellow">候选预览 · {operations.length} 项结构操作 · Enter {props.submitLabel ?? '采用'} · Esc 继续编辑</Text>
-      <Text dimColor>↑↓/PgUp/PgDn 阅读预览 · 显示起始行 {previewOffset + 1}</Text>
-      <Text>{displayValue(candidate, props.maxTextBytes, props.secrets).split('\n').slice(previewOffset, previewOffset + pageRows).join('\n')}</Text></>
-      : <>{rows.slice(first, first + pageRows).map((item, index) => <Text key={item.pointer} inverse={first + index === Math.min(selected, rows.length - 1)} wrap="truncate">
+  return <Box flexDirection="column" flexGrow={1} flexBasis={0} minHeight={3}>
+    <Box flexShrink={0}><Text bold wrap="truncate">{plainText(props.title, props.secrets)}</Text></Box>
+    {preview ? <><Box flexDirection="column" flexShrink={0}><Text color="yellow">候选预览 · {operations.length} 项结构操作</Text>
+      <Text color="yellow">Enter {props.submitLabel ?? '采用'} · Esc 继续编辑</Text></Box>
+      <ResultPanel label="候选数据" result={candidate} maxTextBytes={props.maxTextBytes} secrets={props.secrets ?? []} scrollArrows /></>
+      : <><Box ref={viewport} flexDirection="column" flexGrow={1} flexBasis={0} minHeight={1} overflowY="hidden">{rows.slice(first, first + pageRows).map((item, index) => <Text key={item.pointer} inverse={first + index === Math.min(selected, rows.length - 1)} wrap="truncate">
         {'  '.repeat(item.depth)}{isContainer(item.value) ? expanded.has(item.pointer) ? '▾ ' : '▸ ' : '  '}{plainText(item.label, props.secrets)}: {isContainer(item.value) ? rowSummary(item) : displayValue(item.value, props.maxTextBytes, props.secrets)}
-      </Text>)}
+      </Text>)}</Box><Box flexDirection="column" flexShrink={0}>
       <Text color="cyan" wrap="truncate">{plainText(row.pointer || '(根)', props.secrets)} · {hints[row.label] ?? '完整字段；保存时由原配置/协议解析器验证'}</Text>
-      <Text dimColor>↑↓/PgUp/PgDn 选择 · ←→ 展开 · Enter 编辑 · i 新增 · d 删除 · t 类型 · v schema分支 · Ctrl+S 预览 · Esc 放弃</Text></>}
+      <Text dimColor wrap="truncate">↑↓/PgUp/PgDn 选择 · ←→ 展开 · Enter 编辑</Text><Text dimColor wrap="truncate">i 新增 · d 删除 · t 类型 · v schema分支</Text><Text dimColor wrap="truncate">Ctrl+S 预览 · Esc 放弃</Text></Box></>}
     {error !== null && <Text color="red">{error}</Text>}
   </Box>
 }

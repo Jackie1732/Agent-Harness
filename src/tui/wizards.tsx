@@ -17,6 +17,7 @@ import { Picker } from './picker.js'
 import { runTerminalDialog } from './lifecycle.js'
 import { displayValue, plainText } from './text.js'
 import { powershellCommand } from './command-cards.js'
+import { ResultPanel } from './panels.js'
 
 type Track = (task: Promise<unknown>) => void
 const presets = (kind: Exclude<ConfigKind, 'operator'>) => kind === 'host' ? ['solo-scripted', 'solo-http', 'collaboration']
@@ -55,18 +56,18 @@ function SetupDialog(props: { readonly path: string; readonly mode: 'local' | 'r
       .catch(cause => setError(configFailure(cause))).finally(() => setWorking(false))
   }
   if (working) return <Text>正在发布已确认候选；每个文件的实际结果将分别显示</Text>
-  if (result !== null) return <Box flexDirection="column"><Text bold>实际发布结果</Text>
-    {savedSteps.current.map(step => <Box key={step.kind} flexDirection="column"><Text>已发布 {step.kind} · {plainText(step.path)}</Text><Text dimColor>revision {step.revision}</Text></Box>)}
-    <Text color={result.failure === null ? 'green' : 'red'}>{result.failure === null ? '失败：无' : displayValue(result.failure, 4096)}</Text>
-    <Text dimColor>后续明确步骤：</Text>{(props.mode === 'local' ? [['config', 'check', '--kind', 'host'], ['config', 'plan', '--kind', 'host', '--yes'], ['init'], ['tui']] : [['connection', 'probe'], ['tui']]).map((argv, index) =>
-      <Text key={index}>{plainText(powershellCommand(['atomic-harness', ...argv, '--profile', resolve(props.path)]))}</Text>)}
-    <Picker title={result.failure === null ? '配置已保存；尚未初始化或启动' : '部分文件已保存；保留同一候选和身份'}
+  if (result !== null) return <Box flexDirection="column" flexGrow={1} flexBasis={0}>
+    <ResultPanel label="实际发布结果" text={[...savedSteps.current.flatMap(step => [`已发布 ${step.kind}`, plainText(step.path), `revision ${step.revision}`]),
+      result.failure === null ? '失败：无' : displayValue(result.failure, 4096), '后续明确步骤：',
+      ...(props.mode === 'local' ? [['config', 'check', '--kind', 'host'], ['config', 'plan', '--kind', 'host', '--yes'], ['init'], ['tui']] : [['connection', 'probe'], ['tui']]).map(argv =>
+        powershellCommand(['atomic-harness', ...argv, '--profile', resolve(props.path)]))].join('\n')} maxTextBytes={65536} secrets={[]} />
+    <Picker title={result.failure === null ? '配置已保存；尚未初始化或启动' : '部分文件已保存；保留同一候选和身份'} compact
       items={[{ label: '结束', value: 'done' }, ...(result.failure === null ? [] : [{ label: '继续同一候选（保留已发布revision）', value: 'retry' }])]}
       onSelect={value => { if (value === 'retry') { setResult(null); setError(null) } else props.finish(result.failure === null ? 0 : 1) }} onCancel={() => props.finish(result.failure === null ? 0 : 1)} /></Box>
-  if (candidate !== null) return <Box flexDirection="column">{error !== null && <Text color="red">{displayValue(error, 4096)}</Text>}
+  if (candidate !== null) return <Box flexDirection="column" flexGrow={1} flexBasis={0}>{error !== null && <Text color="red">{displayValue(error, 4096)}</Text>}
     <TreeEditor key="complete-setup" title={`${props.mode} setup · profile 与完整 Host 候选`} initial={candidate} maxTextBytes={65536} submitLabel="保存这些文件" onSubmit={publish} onCancel={() => props.finish()} /></Box>
   if (preset === null) return <Picker title="本地建立模板" items={presets('host').map(value => ({ label: value, value }))} onSelect={setPreset} onCancel={() => props.finish()} />
-  return <Box flexDirection="column">{error !== null && <Text color="red">{displayValue(error, 4096)}</Text>}
+  return <Box flexDirection="column" flexGrow={1} flexBasis={0}>{error !== null && <Text color="red">{displayValue(error, 4096)}</Text>}
     <TreeEditor key="setup-parameters" title="常用部署字段；下一步完整配置仍可编辑" initial={hostParameters(directory, preset)} maxTextBytes={65536} onCancel={() => setPreset(null)} onSubmit={value => {
       try { setCandidate({ profile: buildOperatorProfile({ kind: 'local', hostConfig: './host.json', shutdownMode: 'cancel' }) as unknown as JsonValue,
         host: hostPreset(preset, value, directory) }); setError(null) } catch (cause) { setError(configFailure(cause)) }
@@ -80,7 +81,7 @@ function CreateDialog(props: { readonly profilePath: string; readonly kind: Excl
   const [resultCode, setResultCode] = useState(0)
   const directory = dirname(resolve(props.output))
   if (working) return <Text>正在发布完整配置与登记引用…</Text>
-  if (result !== null) return <Box flexDirection="column"><Text>{displayValue(result, 65536)}</Text><Picker title="实际发布结果" items={[{ label: '结束', value: true }, { label: '返回同一候选', value: false }]}
+  if (result !== null) return <Box flexDirection="column" flexGrow={1} flexBasis={0}><ResultPanel result={result} maxTextBytes={65536} secrets={[]} /><Picker title="实际发布结果" compact items={[{ label: '结束', value: true }, { label: '返回同一候选', value: false }]}
     onSelect={done => { if (done) props.finish(resultCode); else setResult(null) }} onCancel={() => props.finish(resultCode)} /></Box>
   if (candidate !== null) return <TreeEditor key="complete-create" title={`${props.kind} 完整原格式候选 · ${props.output}`} initial={candidate} maxTextBytes={65536} submitLabel="创建并登记" onCancel={() => setCandidate(null)} onSubmit={value => {
     setCandidate(value); setWorking(true)
@@ -102,10 +103,10 @@ function EditDialog(props: { readonly profilePath: string; readonly document: Co
   const [result, setResult] = useState<unknown>(null), [working, setWorking] = useState(false)
   const [resultCode, setResultCode] = useState(0)
   if (working) return <Text>正在验证/发布当前候选…</Text>
-  if (result !== null) return <Box flexDirection="column"><Text>{displayValue(result, 65536)}</Text><Picker title="配置操作结果" items={[{ label: '结束', value: true }, { label: '继续候选编辑', value: false }]}
+  if (result !== null) return <Box flexDirection="column" flexGrow={1} flexBasis={0}><ResultPanel result={result} maxTextBytes={65536} secrets={[]} /><Picker title="配置操作结果" compact items={[{ label: '结束', value: true }, { label: '继续候选编辑', value: false }]}
     onSelect={done => { if (done) props.finish(resultCode); else { setResult(null); setPending(null) } }} onCancel={() => props.finish(resultCode)} /></Box>
-  if (pending !== null) return <Box flexDirection="column"><Text>{displayValue(pending.diff, 65536)}</Text>
-    <Picker title="采用差异；保存不更改当前运行实例" items={[{ label: '发布候选', value: true }, { label: '返回', value: false }]} onCancel={() => setPending(null)} onSelect={yes => {
+  if (pending !== null) return <Box flexDirection="column" flexGrow={1} flexBasis={0}><ResultPanel label="候选差异" result={pending.diff} maxTextBytes={65536} secrets={[]} />
+    <Picker title="采用差异；保存不更改当前运行实例" compact items={[{ label: '发布候选', value: true }, { label: '返回', value: false }]} onCancel={() => setPending(null)} onSelect={yes => {
       if (!yes) { setPending(null); return }
       setWorking(true)
       const operations = [{ op: 'set' as const, pointer: '', value: pending.candidate }]

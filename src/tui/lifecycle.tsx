@@ -1,6 +1,6 @@
 /** One terminal Effect owner restores Ink before joining the existing operation-session owner. */
 import type { ReactNode } from 'react'
-import { Box, Text, render, useInput } from 'ink'
+import { Box, Text, render, useInput, useWindowSize } from 'ink'
 import type { Instance, RenderOptions } from 'ink'
 import { EffectOwner } from '../effect/owner.js'
 import type { EffectLease } from '../effect/types.js'
@@ -159,6 +159,7 @@ export async function runTerminalDialog(io: HostCliIo, view: (finish: (code?: nu
 }
 
 function DialogControl(props: { readonly finish: (code?: number) => void; readonly children: ReactNode }) {
+  const { columns, rows } = useWindowSize()
   useInput((input, key) => { if (key.ctrl && input === 'c') props.finish(130) })
-  return <>{props.children}</>
+  return <Box flexDirection="column" height={Math.max(8, rows)} width={columns}>{props.children}</Box>
 }

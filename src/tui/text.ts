@@ -22,6 +22,15 @@ export function plainText(value: string, secrets: readonly string[] = []): strin
  */
 export function displayValue(value: unknown, maxBytes: number, secrets: readonly string[] = []): string {
   const text = plainText(JSON.stringify(value, null, 2) ?? 'null', secrets.flatMap(secret => [secret, JSON.stringify(secret).slice(1, -1)]))
+  return boundedText(text, maxBytes)
+}
+
+/** @param text Plain result or command text. @param maxBytes Display budget. @param secrets Invocation credentials. @returns Sanitized, bounded text retaining original line breaks. */
+export function displayText(text: string, maxBytes: number, secrets: readonly string[] = []): string {
+  return boundedText(plainText(text, secrets), maxBytes)
+}
+
+function boundedText(text: string, maxBytes: number): string {
   if (Buffer.byteLength(text) <= maxBytes) return text
   const parts: string[] = []
   let bytes = 0

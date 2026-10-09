@@ -52,6 +52,7 @@ export function TuiApp(props: TuiAppProps) {
   const [workflowAddresses, setWorkflowAddresses] = useState<Readonly<Record<string, string>>>({})
   const [selectedMethod, setSelectedMethod] = useState(0), [modal, setModal] = useState<Modal | null>(null)
   const [lastResult, setLastResult] = useState<unknown>(null), [configurationEditing, setConfigurationEditing] = useState(false)
+  const [resultExpanded, setResultExpanded] = useState(false)
   const [requestError, setRequestError] = useState<{ readonly request: Modal; readonly message: string } | null>(null)
   const [selectedRoot, setSelectedRoot] = useState<Params<'root.get'> | null>(null), [pending, setPending] = useState<readonly string[]>([])
   const [events, setEvents] = useState(EMPTY_EVENT_BUFFER), [following, setFollowing] = useState(false)
@@ -167,6 +168,8 @@ export function TuiApp(props: TuiAppProps) {
   useInput((input, key) => {
     if (key.ctrl && input === 'c') { props.onClose(undefined, 130); return }
     if (modal !== null || configurationEditing) return
+    if (key.tab && lastResult !== null && page !== 'configuration' && page !== 'events') { setResultExpanded(current => !current); return }
+    if (key.escape && resultExpanded) { setResultExpanded(false); return }
     if (key.escape) { void stopEvents().catch(onFailure); return }
     if (input === 'q') {
       setModal({ kind: 'picker', title: profile.connection.kind === 'local' ? '关闭本端拥有的 Host' : '关闭本端；服务器继续运行', items: profile.connection.kind === 'local'
@@ -174,7 +177,8 @@ export function TuiApp(props: TuiAppProps) {
         : [{ label: '关闭 Client 与本端记录', value: () => props.onClose() }] }); return
     }
     const navigation: Readonly<Record<string, Page>> = { '1': 'overview', '2': 'tasks', '3': 'collaboration', '4': 'configuration', '5': 'events' }
-    if (navigation[input] !== undefined) { void stopEvents().catch(onFailure); setPage(navigation[input]); return }
+    if (navigation[input] !== undefined) { void stopEvents().catch(onFailure); setResultExpanded(false); setPage(navigation[input]); return }
+    if (resultExpanded) return
     if (page === 'configuration') return
     if (input === 'j') { setModal({ kind: 'picker', title: '本端持久操作；旧 unknown 保留', items: session.intents().map(intent => ({ label: `${intent.id} · ${intent.method} · ${intent.outcome?.acceptance ?? 'unknown'}`,
       value: () => { setModal(null); reportResult(intent) } })) }); return }
@@ -211,11 +215,10 @@ export function TuiApp(props: TuiAppProps) {
       .then(reportResult).catch(cause => reportResult(configFailure(cause))) }
     if (drive) confirmRun(run); else run()
   }
-  const methodRows = Math.max(1, rows - 12), firstMethod = Math.max(0, selectedMethod - methodRows + 1)
   const show = modal?.kind === 'picker' ? <Picker title={modal.title} items={modal.items} onSelect={callback => callback()} onCancel={() => setModal(null)} />
     : modal?.kind === 'task' ? <TaskComposer agentKey={modal.input.agentKey} {...(modal.input.wait === undefined ? {} : { wait: modal.input.wait })}
       {...(modal.question === undefined ? {} : { question: modal.question })} secrets={props.secrets} onSubmit={(text, drive) => submitTask(modal.input, text, drive)} onCancel={() => setModal(null)} />
-    : modal?.kind === 'request' ? <Box flexDirection="column">{requestError?.request === modal && <Text color="red">{requestError.message}</Text>}
+    : modal?.kind === 'request' ? <Box flexDirection="column" flexGrow={1} flexBasis={0}>{requestError?.request === modal && <Text color="red">{requestError.message}</Text>}
       <TreeEditor title={`${modal.method} · 原协议完整参数${modal.follow ? ' · 跟随' : ''}`} initial={modal.value} schema={PARAMS_SCHEMAS[modal.method]}
       maxTextBytes={profile.display.maxTextBytes} secrets={props.secrets} submitLabel="采用参数" onCancel={() => setModal(null)} onSubmit={candidate => {
         try {
@@ -224,11 +227,11 @@ export function TuiApp(props: TuiAppProps) {
           else run()
         } catch { const message = '参数未通过原协议校验；检查完整字段、引用和预算。Esc 继续编辑'; setRequestError({ request: modal, message }); reportResult({ code: 'API_PROTOCOL_INVALID', message }) }
       }} /></Box>
-    : modal?.kind === 'confirm' ? <Box flexDirection="column"><Text>{displayValue(modal.detail, profile.display.maxTextBytes, props.secrets)}</Text><Picker title={modal.title}
+    : modal?.kind === 'confirm' ? <Box flexDirection="column" flexGrow={1} flexBasis={0}><ResultPanel label="采用内容" result={modal.detail} maxTextBytes={profile.display.maxTextBytes} secrets={props.secrets} /><Picker title={modal.title} compact
       items={[{ label: '明确采用', value: true }, { label: '返回', value: false }]} onCancel={() => setModal(null)} onSelect={yes => { if (yes) modal.run(); else setModal(null) }} /></Box>
-    : page === 'overview' ? <OverviewPanel session={session} observation={status} selectedAgent={selectedAgent} secrets={props.secrets} />
-    : page === 'tasks' ? <TasksPanel observation={agent} root={root} rootObservation={rootObservation} maxTextBytes={profile.display.maxTextBytes} secrets={props.secrets} />
-    : page === 'collaboration' ? <CollaborationPanel methods={collaborationMethods.slice(firstMethod, firstMethod + methodRows)} selected={selectedMethod - firstMethod} agentKey={selectedAgent} remote={profile.connection.kind === 'remote'} />
+    : page === 'overview' ? <OverviewPanel session={session} observation={status} selectedAgent={selectedAgent} secrets={props.secrets} isActive={!resultExpanded} />
+    : page === 'tasks' ? <TasksPanel observation={agent} root={root} rootObservation={rootObservation} maxTextBytes={profile.display.maxTextBytes} secrets={props.secrets} isActive={!resultExpanded} />
+    : page === 'collaboration' ? <CollaborationPanel methods={collaborationMethods} selected={selectedMethod} agentKey={selectedAgent} remote={profile.connection.kind === 'remote'} />
     : page === 'configuration' ? <ConfigurationPage profile={profile} secrets={props.secrets} environment={props.environment} onEditing={setConfigurationEditing} onResult={reportResult} onWork={props.onConfigurationWork} />
     : <Box flexDirection="column" flexGrow={1}><Text bold>事件 · {events.sessionId ?? '先用 e 选择目标'} · 固定cut {events.through} · {following ? '观察中' : eventSummary === null && !eventRetired ? '单页' : '已停止'}</Text>
       <Text color="yellow">本端保留 {events.events.length} 项 · 省略历史 {events.omitted} 项</Text>
@@ -238,11 +241,16 @@ export function TuiApp(props: TuiAppProps) {
       </Text>}
       {eventFailure !== null && <Text color="red">{displayValue(eventFailure, profile.display.maxTextBytes, props.secrets)}</Text>}
       <ResultPanel label="事件内容" result={events.events} resetKey={events.sessionId} maxTextBytes={profile.display.maxTextBytes} secrets={props.secrets} /></Box>
+  const notice = lastResult !== null && typeof lastResult === 'object' ? lastResult as { readonly command?: unknown; readonly status?: unknown; readonly acceptance?: unknown;
+    readonly code?: unknown; readonly error?: { readonly code?: unknown } | null; readonly failure?: { readonly code?: unknown } | null } : null
+  const caption = [notice?.command, notice?.status, notice?.acceptance, notice?.code, notice?.error?.code, notice?.failure?.code].filter(value => typeof value === 'string').join(' · ') || '已收到结果'
   return <Box flexDirection="column" height={Math.max(8, rows)} width={columns}>
     <Text bold color="green">Atomic Harness · 1概览 2任务 3协作 4配置 5事件 · {profile.connection.kind} · {page}</Text>
-    <Box flexDirection="column" flexGrow={1} overflowY="hidden">{show}</Box>
-    {modal === null && page !== 'configuration' && page !== 'events' && lastResult !== null && <Box flexDirection="column" height={Math.max(3, Math.floor(rows / 4))} overflowY="hidden">
-      <ResultPanel result={lastResult} maxTextBytes={profile.display.maxTextBytes} secrets={props.secrets} /></Box>}
-    <Text dimColor wrap="truncate">{pending.length > 0 ? `调用中 ${pending.join(', ')} · ` : ''}j 操作记录 · u 原输入恢复 · b 有限run · s 显式host stop · q 退出 · Ctrl+C 统一关闭</Text>
+    <Box flexDirection="column" flexGrow={1} flexBasis={0} overflowY="hidden">
+      <Box flexDirection="column" flexGrow={1} flexBasis={0} display={resultExpanded && modal === null ? 'none' : 'flex'}>{show}</Box>
+      {resultExpanded && modal === null && lastResult !== null && <ResultPanel label="回执全文 · Tab/Esc 返回" result={lastResult} maxTextBytes={profile.display.maxTextBytes} secrets={props.secrets} />}
+    </Box>
+    {modal === null && page !== 'configuration' && page !== 'events' && lastResult !== null && <Box flexShrink={0}><Text dimColor wrap="truncate">Tab 回执 · {plainText(caption, props.secrets)}</Text></Box>}
+    <Box flexShrink={0}><Text dimColor wrap="truncate">q 退出 · Ctrl+C 关闭 · Tab 回执 · j 记录 · u 恢复 · b run · s stop{pending.length > 0 ? ` · 调用中 ${pending.join(', ')}` : ''}</Text></Box>
   </Box>
 }

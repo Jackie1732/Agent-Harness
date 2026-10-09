@@ -2,7 +2,7 @@ import { EventEmitter } from 'node:events'
 import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { render } from 'ink'
+import { Box, render } from 'ink'
 import type { Instance } from 'ink'
 import { expect, it } from 'vitest'
 import { runTui } from '../src/tui/lifecycle.js'
@@ -95,8 +95,8 @@ it('keeps invalid command fields visible and edits them to generate cards withou
   const automation = join(f.directory, 'automation.json')
   await writeFile(automation, await readFile('examples/automation-config.json'))
   const loaded = (await readOperatorProfile(f.profilePath)).profile, profile = { ...loaded, files: { ...loaded.files, automation } }
-  const instance = render(<ConfigurationPage profile={profile} initialKind="automation" secrets={[]} environment={{}}
-    onEditing={() => undefined} onResult={value => results.push(value)} onWork={value => work.push(value)} />,
+  const instance = render(<Box flexDirection="column" width={io.stdout.columns} height={io.stdout.rows}><ConfigurationPage profile={profile} initialKind="automation" secrets={[]} environment={{}}
+    onEditing={() => undefined} onResult={value => results.push(value)} onWork={value => work.push(value)} /></Box>,
   { ...io, interactive: true, exitOnCtrlC: false, patchConsole: false })
   const send = (data: string) => sendTui(io.stdin, instance, data)
   try {
@@ -126,6 +126,7 @@ it('projects only published setup steps and failures into the completed wizard',
     send('\r'); await expect.poll(() => io.stdout.frames).toContain('local setup · profile 与完整 Host 候选')
     io.stdout.frames = ''; send('\u0013'); await expect.poll(() => io.stdout.frames).toContain('保存这些文件')
     io.stdout.frames = ''; send('\r'); await expect.poll(() => io.stdout.frames).toContain('配置已保存；尚未初始化或启动')
+    await expect.poll(() => io.stdout.frames).toContain(join(directory, 'host.json'))
     expect(io.stdout.frames).toContain('已发布 host')
     expect(io.stdout.frames).toContain(join(directory, 'host.json'))
     expect(io.stdout.frames).toContain('已发布 operator')
@@ -143,7 +144,7 @@ it('projects only published setup steps and failures into the completed wizard',
 it('shows original configuration validation errors inside the candidate preview', async () => {
   const f = await fixture(), io = tuiStreams()
   const profile = (await readOperatorProfile(f.profilePath)).profile
-  const instance = render(<ConfigurationPage profile={profile} secrets={[]} environment={{}} onEditing={() => undefined} onResult={() => undefined} onWork={() => undefined} />,
+  const instance = render(<Box flexDirection="column" width={io.stdout.columns} height={io.stdout.rows}><ConfigurationPage profile={profile} secrets={[]} environment={{}} onEditing={() => undefined} onResult={() => undefined} onWork={() => undefined} /></Box>,
   { ...io, interactive: true, exitOnCtrlC: false, patchConsole: false })
   const send = (data: string) => sendTui(io.stdin, instance, data)
   try {
