@@ -1,4 +1,4 @@
-import { mkdtemp, readFile, rm, stat } from 'node:fs/promises'
+import { mkdtemp, open, readFile, rm, stat, unlink } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
@@ -8,6 +8,7 @@ import { buildOperatorProfile } from '../src/operator/profile.js'
 import { buildHostPreset } from '../src/operator/config-presets.js'
 import { readConfigDocument } from '../src/operator/config-operations.js'
 import { uiConfig } from './ui/fixtures.js'
+import { decodeHostConfig, planHostConfig } from '../src/host/config.js'
 
 const roots: string[] = []
 async function fixture() {
@@ -21,6 +22,45 @@ async function fixture() {
 }
 afterEach(async () => { for (const root of roots.splice(0)) await rm(root, { recursive: true, force: true }) })
 describe('parsed noninteractive configuration commands', () => {
+  it('continues a Host-only setup by retaining the exact saved bytes, revision and identities', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'operator-config-setup-resume-')); roots.push(root)
+    const path = join(root, 'profile.json'), hostPath = join(root, 'host.json'), marker = join(root, '.profile.json.operator-lease')
+    const profile = buildOperatorProfile({ kind: 'local', hostConfig: './host.json', shutdownMode: 'cancel' })
+    const host = planHostConfig(decodeHostConfig(buildHostPreset('solo-scripted', { hostKey: 'resume-host', storageRoot: './store' }, root), root)) as unknown as JsonObject
+    const options = new Map<string, string | true>([['--profile', path], ['--mode', 'local']])
+    const lease = await open(marker, 'wx')
+    let first!: Awaited<ReturnType<typeof executeConfigCommand>>
+    try { first = await executeConfigCommand(['setup'], options, async () => ({ profile, host } as unknown as JsonValue)) }
+    finally { await lease.close(); await unlink(marker) }
+    expect(first.result).toMatchObject({ steps: [{ kind: 'host', path: hostPath }], failure: { code: 'HOST_LOCKED' } })
+    const before = await readFile(hostPath), modified = (await stat(hostPath)).mtimeMs
+    await expect(stat(path)).rejects.toMatchObject({ code: 'ENOENT' })
+    const candidate = Object.fromEntries(Object.entries(host).reverse()) as JsonObject
+    const resumed = await executeConfigCommand(['setup'], options, async () => ({ profile, host: candidate } as unknown as JsonValue))
+    expect(resumed.result).toMatchObject({ steps: [{ kind: 'host', path: hostPath }, { kind: 'operator', path }], failure: null })
+    expect(((resumed.result as JsonObject).steps as JsonObject[])[0]!.revision).toBe(((first.result as JsonObject).steps as JsonObject[])[0]!.revision)
+    expect(await readFile(hostPath)).toEqual(before)
+    expect((await stat(hostPath)).mtimeMs).toBe(modified)
+    expect((await readConfigDocument(path, 'host')).value).toEqual(host)
+  })
+  it('refuses a changed Host candidate when continuing a partial setup', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'operator-config-setup-conflict-')); roots.push(root)
+    const path = join(root, 'profile.json'), hostPath = join(root, 'host.json'), marker = join(root, '.profile.json.operator-lease')
+    const profile = buildOperatorProfile({ kind: 'local', hostConfig: './host.json', shutdownMode: 'cancel' })
+    const host = buildHostPreset('solo-scripted', { hostKey: 'resume-host', storageRoot: './store' }, root)
+    const options = new Map<string, string | true>([['--profile', path], ['--mode', 'local']])
+    const lease = await open(marker, 'wx')
+    try {
+      const first = await executeConfigCommand(['setup'], options, async () => ({ profile, host } as unknown as JsonValue))
+      expect(first.result).toMatchObject({ steps: [{ kind: 'host' }], failure: { code: 'HOST_LOCKED' } })
+    } finally { await lease.close(); await unlink(marker) }
+    const before = await readFile(hostPath), candidate = { ...(host as JsonObject), hostKey: 'changed-host',
+      routes: [{ memberKey: 'writer', ownerHost: 'changed-host', origin: null, serverName: null }] }
+    await expect(executeConfigCommand(['setup'], options, async () => ({ profile, host: candidate } as unknown as JsonValue)))
+      .rejects.toMatchObject({ code: 'HOST_BINDING_CONFLICT', message: 'config-revision-conflict' })
+    expect(await readFile(hostPath)).toEqual(before)
+    await expect(stat(path)).rejects.toMatchObject({ code: 'ENOENT' })
+  })
   it('establishes complete candidates and forwards plan, root set, typed edits and explicit revision conflicts', async () => {
     const { path, call, setup } = await fixture()
     expect((setup.result as JsonObject).steps).toHaveLength(2)

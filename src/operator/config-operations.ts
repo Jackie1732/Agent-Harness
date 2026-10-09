@@ -170,7 +170,7 @@ export async function linkOperatorConfig(profilePath: string, kind: Exclude<Conf
   return { document: { kind, ...file, check }, diff: { revision: current.revision, changedPointers: [kind === 'host' ? '/connection/hostConfig' : `/files/${kind}`],
     effect: 'restart', binding: 'not-checked', reason: null }, steps: [step], failure: null }
 }
-/** Set up explicit complete candidates; each published step remains visible after a later failure. */
+/** Set up complete candidates; continuation retains equivalent Host bytes, revisions and identities. */
 export async function setupOperator(input: { readonly profilePath: string; readonly profile: OperatorProfile | JsonValue; readonly host: JsonValue | null;
   readonly writeOptions?: ConfigWriteOptions; readonly hostWriteOptions?: ConfigWriteOptions }): Promise<{ readonly steps: readonly ConfigWriteStep[]; readonly profile: ResolvedOperatorProfile; readonly failure: ConfigMutationResult['failure'] }> {
   const path = resolve(input.profilePath), profile = resolveOperatorProfile(decodeOperatorProfile(input.profile), path), steps: ConfigWriteStep[] = []
@@ -195,7 +195,14 @@ export async function setupOperator(input: { readonly profilePath: string; reado
   let failure: ConfigMutationResult['failure'] = null
   try {
     if (profile.connection.kind === 'local') {
-      const revision = await publishConfigFile(profile.connection.hostConfig, input.host!, input.hostWriteOptions ?? {}, configLimits('host'))
+      let revision: string
+      if (!input.hostWriteOptions?.replace && input.hostWriteOptions?.expectedRevision === undefined && await exists(profile.connection.hostConfig)) {
+        const retained = await readConfigFile(profile.connection.hostConfig, configLimits('host'))
+        if (!Buffer.from(canonicalJsonBytes(retained.value)).equals(Buffer.from(canonicalJsonBytes(input.host!)))) {
+          throw new HostError('HOST_BINDING_CONFLICT', 'config-revision-conflict', { currentRevision: retained.revision })
+        }
+        revision = retained.revision
+      } else revision = await publishConfigFile(profile.connection.hostConfig, input.host!, input.hostWriteOptions ?? {}, configLimits('host'))
       steps.push({ kind: 'host', path: profile.connection.hostConfig, revision })
     }
     if (profile.files.api !== null) {
