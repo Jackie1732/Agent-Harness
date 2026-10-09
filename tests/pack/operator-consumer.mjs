@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import { spawn } from 'node:child_process'
-import { readFile, readdir } from 'node:fs/promises'
+import { readFile, readdir, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 
@@ -59,7 +59,20 @@ export async function verifyLocalOperatorCli(library, directory, node = process.
   assert.equal(completed.result.outcome, 'completed'); assert.equal(completed.result.final.text, '科研笔记完成 👩‍💻')
   const intents = await command(['journal', 'inspect'])
   assert.deepEqual(intents.result.filter(fact => fact.kind === 'prepared').map(fact => fact.intent.method), ['input.submit', 'host.run'])
-  return { schemaVersion: 3, separateCliProcesses: 10, submitOnly: true, reopenedInstance: true, inputEventId: accepted.result.inputEventId, final: completed.result.final.text }
+  await writeFile(profilePath, JSON.stringify({ ...profile, output: { ...profile.output, maxBytes: 2048 },
+    observation: { ...profile.observation, maxPageBytes: 4096 } }))
+  const events = ['events', '--params-stdin'], eventQuery = { target: { kind: 'member', agentKey: 'writer' },
+    after: Number(accepted.result.inputEventId.split(':').at(-1)) - 1, maxEvents: profile.observation.maxPageEvents }
+  for (const json of [true, false]) {
+    const output = await command(events, { input: JSON.stringify(eventQuery), json })
+    const page = json ? output : JSON.parse(output)
+    assert.ok(Buffer.byteLength(json ? JSON.stringify(output) + '\n' : output) <= 2048)
+    assert.equal(page.result.events[0].eventId, accepted.result.inputEventId)
+    assert.equal(page.result.nextCursor.nextSequence, page.result.events.at(-1).sequence + 1)
+    assert.equal(page.closing.status, 'released')
+  }
+  return { schemaVersion: 3, separateCliProcesses: 12, submitOnly: true, reopenedInstance: true, boundedEventEncodings: ['json', 'plain'],
+    inputEventId: accepted.result.inputEventId, final: completed.result.final.text }
 }
 
 if (process.argv[1] === fileURLToPath(import.meta.url)) {

@@ -11,7 +11,7 @@ import { inspectOperatorJournal } from './intents.js'
 import { openOperatorSession } from './session.js'
 import type { OperatorResult, OperatorSession, OperatorScope } from './types.js'
 import { OperatorError, operatorFailure } from './errors.js'
-import { operatorResult, operatorExitCode } from './result.js'
+import { operatorResult, operatorExitCode, operatorCloseFailure } from './result.js'
 import { parseOperatorArguments, requiredOption, configWrites } from './cli-arguments.js'
 import { parseOperatorInput, readOperatorInput } from './cli-input.js'
 import { executeOperatorCommand, operatorParams } from './commands.js'
@@ -119,7 +119,7 @@ export async function runOperatorCli(argv: readonly string[], io: HostCliIo,
       try { await session.close(closeMode); if (received !== undefined && profile?.connection.kind === 'local') received = { ...received, closing: { status: 'released', mode: closeMode ?? profile.connection.shutdownMode } } }
       catch {
         code = code === 4 ? 4 : 1
-        if (received !== undefined) received = { ...received, status: 'failed', closing: { status: profile?.connection.kind === 'local' ? 'failed' : 'not-owned', mode: profile?.connection.kind === 'local' ? profile.connection.shutdownMode : null }, error: received.error ?? { code: 'OPERATOR_CLOSE_FAILED', domainCode: null, message: 'Owned resources did not release successfully' } }
+        if (received !== undefined) received = operatorCloseFailure(received, profile?.connection.kind === 'local' ? closeMode ?? profile.connection.shutdownMode : null)
       }
     } else if (received !== undefined) received = { ...received, closing: { status: 'not-owned', mode: null } }
     process.off('SIGINT', onInt); process.off('SIGTERM', onTerm)

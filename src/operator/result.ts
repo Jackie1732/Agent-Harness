@@ -3,6 +3,7 @@ import type { HostRunReport } from '../host/report-data.js'
 import type { ControlMethod } from '../protocol/index.js'
 import type { SessionProjectionCoverage } from '../session/types.js'
 import type { ResolvedOperatorProfile } from './profile.js'
+import type { HostShutdownMode } from '../host/runtime.js'
 import type { OperatorResult, OperatorScope, OperatorAcceptance } from './types.js'
 import { operatorFailure } from './errors.js'
 
@@ -21,6 +22,12 @@ export function operatorResult(command: string, profile: ResolvedOperatorProfile
     receivedAt: result === null && error === undefined ? null : new Date().toISOString(), cuts: value?.cuts ?? null,
     result, error: failure === null ? null : { code: failure.code, domainCode: failure.domainCode, message: failure.message },
     closing: { status: profile?.connection.kind === 'local' ? 'pending' : 'not-owned', mode: null } }
+}
+
+/** Preserve returned effect evidence when local resource release fails; null mode owns no Host. */
+export function operatorCloseFailure(result: OperatorResult, mode: HostShutdownMode | null): OperatorResult {
+  return { ...result, status: 'failed', closing: { status: mode === null ? 'not-owned' : 'failed', mode },
+    error: result.error ?? { code: 'OPERATOR_CLOSE_FAILED', domainCode: null, message: 'Owned resources did not release successfully' } }
 }
 
 /** Querying a failed Root succeeds; only run/drive interprets Host execution settlement. */

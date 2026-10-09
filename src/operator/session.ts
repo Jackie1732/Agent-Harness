@@ -16,6 +16,7 @@ import { operatorResult } from './result.js'
 import type { OperatorSession, OperatorIntent, OperatorScope, OperatorCallOptions, OperatorResult, OperatorSubmit } from './types.js'
 import { restoreOperatorInput } from './continuity.js'
 import { requireOperatorReceiptRead } from './preflight.js'
+import { readOperatorEventPage } from './event-pages.js'
 import type { AnyControlOperation } from '../control/types.js'
 
 /** Open one connection and one separately locked journal under their existing Effect owner. */
@@ -92,7 +93,9 @@ export async function openOperatorSession(profilePath: string, options: { readon
             acknowledgedIntent: call.acknowledgeIntent ?? null })
         }
         if (call.signal?.aborted) throw new OperatorError('OPERATOR_ABORTED', 1)
-        actual = await link.request(method, params, call.signal)
+        actual = method === 'session.events'
+          ? await readOperatorEventPage(link, profile, scope, params as Params<'session.events'>, call.signal)
+          : await link.request(method, params, call.signal)
         let envelope = operatorResult(method, profile, scope, actual, intent?.id ?? null)
         if (intent !== undefined) {
           const messageRejected = (method === 'message.send' || method === 'message.reply') && (actual as Result<'message.send'>).status === 'not-accepted'
