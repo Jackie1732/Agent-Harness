@@ -68,6 +68,7 @@
     "test:python:pack": "node scripts/verify-python-package.mjs",
     "test:extensions:built": "node --test tests/ui-control.built.node.mjs tests/automation-control.built.node.mjs",
     "test:operator:built": "node --test tests/step15-operator.built.node.mjs tests/step15-config-files.node.mjs tests/step15-command-cards.built.node.mjs tests/step15-operator-remote-continuity.built.node.mjs",
+    "test:terminal:native": "node tests/pack/terminal-consumer.mjs . --native",
     "test:tool:built": "node --test tests/tool-native.node.mjs tests/tool-pipeline.node.mjs tests/tool-model.node.mjs tests/tool-registration.node.mjs tests/tool-recovery.node.mjs tests/tool-coexistence.node.mjs && node tests/tool-built-smoke.mjs"
   },
   "devDependencies": {

@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import { createRequire } from 'node:module'
-import { realpath, readFile } from 'node:fs/promises'
-import { dirname, join } from 'node:path'
+import { mkdir, realpath, readFile, writeFile } from 'node:fs/promises'
+import { dirname, join, resolve } from 'node:path'
 import { PassThrough, Writable } from 'node:stream'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 
@@ -36,7 +36,7 @@ export async function verifyTerminalConsumer(library, native = false) {
   assert.equal(inkPackage.version, '8.0.0'); assert.equal(reactPackage.version, '19.3.0')
   const { createElement } = await import(pathToFileURL(reactEntry))
   const { render, renderToString, Text, useInput } = await import(pathToFileURL(inkEntry))
-  const text = '仓库外 学习 Harness 👩‍💻 é'
+  const text = '仓库外 学习 Harness 全角ＡＢ 👩‍💻 é'
   assert.ok((await renderToString(createElement(Text, null, text))).includes(text))
   let instance, frames = '', raw = []
   const stdin = native ? process.stdin : new PassThrough()
@@ -60,7 +60,9 @@ export async function verifyTerminalConsumer(library, native = false) {
     await instance.waitUntilExit()
     assert.notEqual(stdin.isRaw, true)
     if (!native) { assert.equal(raw.at(-1), false); assert.equal(stdin.listenerCount('readable'), 0) }
-    return { node: process.version, ink: inkPackage.version, react: reactPackage.version, yoga: yogaPackage.version,
+    return { node: process.version, platform: process.platform, columns: stdout.columns, rows: stdout.rows,
+      windowsTerminalSession: native && process.env.WT_SESSION !== undefined,
+      ink: inkPackage.version, react: reactPackage.version, yoga: yogaPackage.version,
       rendered: text, rendererReleased: true, nativeTerminal: native, rawAfterUnmount: stdin.isRaw }
   } finally {
     instance?.unmount()
@@ -69,5 +71,12 @@ export async function verifyTerminalConsumer(library, native = false) {
 }
 
 if (process.argv[1] === fileURLToPath(import.meta.url)) {
-  console.log(JSON.stringify(await verifyTerminalConsumer(process.argv[2], process.argv.includes('--native'))))
+  const result = await verifyTerminalConsumer(process.argv[2], process.argv.includes('--native'))
+  const record = process.argv.find(arg => arg.startsWith('--record='))?.slice('--record='.length)
+  if (record !== undefined) {
+    assert.ok(record.length > 0, 'A terminal record requires an output path')
+    await mkdir(dirname(resolve(record)), { recursive: true })
+    await writeFile(record, JSON.stringify(result, null, 2) + '\n')
+  }
+  console.log(JSON.stringify(result))
 }
