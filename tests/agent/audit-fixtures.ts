@@ -21,6 +21,6 @@ export function auditProvider(options: Partial<ConstructorParameters<typeof Scri
 export function interceptedBackend(before: (event: StoredSessionEvent) => Promise<void>, after: (event: StoredSessionEvent) => Promise<void> = async () => {}): SessionBackend {
   const inner = new MemorySessionBackend({ maxRecordBytes: 2 * 1024 * 1024 })
   return { maxRecordBytes: inner.maxRecordBytes, create: header => inner.create(header), readPrefix: (id, through) => inner.readPrefix(id, through), dispose: () => inner.dispose(),
-    async openWriter(id) { const writer = await inner.openWriter(id); return { header: writer.header, readCommitted: () => writer.readCommitted(), dispose: () => writer.dispose(),
+    async openWriter(id, validateCommitted) { const writer = await inner.openWriter(id, validateCommitted); return { header: writer.header, readCommitted: () => writer.readCommitted(), dispose: () => writer.dispose(),
       async append(position, event) { await before(event); const committed = await writer.append(position, event); await after(event); return committed } } } }
 }

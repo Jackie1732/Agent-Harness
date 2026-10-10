@@ -51,8 +51,8 @@ for (const method of ['root.cancel', 'workflow.pause'] as const) it(`retains ${m
   const entered = gate(), release = gate(), closing = gate()
   const originalWriter = FileSessionBackend.prototype.openWriter, originalHost = hostRuntime.openHost
   const eventType = method === 'root.cancel' ? 'agent/control-requested' : 'workflow/control-requested'
-  vi.spyOn(FileSessionBackend.prototype, 'openWriter').mockImplementation(async function (this: FileSessionBackend, id) {
-    const writer = await originalWriter.call(this, id)
+  vi.spyOn(FileSessionBackend.prototype, 'openWriter').mockImplementation(async function (this: FileSessionBackend, id, validateCommitted) {
+    const writer = await originalWriter.call(this, id, validateCommitted)
     return { ...writer, append: async (position, event) => {
       if (event.type === eventType) { entered.resolve(); await release.promise }
       return writer.append(position, event)
@@ -112,8 +112,8 @@ it('keeps cancellation acceptance unknown when a concurrent input faults its rem
   const rootId = await pendingRoot(spec), entered = gate(), release = gate()
   const originalWriter = FileSessionBackend.prototype.openWriter, originalAppend = AgentJournal.prototype.append
   let faultInput = false
-  vi.spyOn(FileSessionBackend.prototype, 'openWriter').mockImplementation(async function (this: FileSessionBackend, id) {
-    const writer = await originalWriter.call(this, id)
+  vi.spyOn(FileSessionBackend.prototype, 'openWriter').mockImplementation(async function (this: FileSessionBackend, id, validateCommitted) {
+    const writer = await originalWriter.call(this, id, validateCommitted)
     return { ...writer, append: async (position, event) => {
       const result = await writer.append(position, event)
       if (faultInput && event.type === 'agent/input-accepted') throw new Error('Input acknowledgement lost')

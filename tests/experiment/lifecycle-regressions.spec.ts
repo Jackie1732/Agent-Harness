@@ -26,8 +26,8 @@ describe('experiment admission and acquisition failures', () => {
         workflowKey: 'research', durationMs: 60_000, nodeTasks: [{ nodeKey: 'read', prefix: 'Research: ' }],
         output: { kind: 'workflow-artifact', nodeKey: 'write', artifactName: 'report' } }] }] })
     const original = FileSessionBackend.prototype.openWriter
-    const fault = vi.spyOn(FileSessionBackend.prototype, 'openWriter').mockImplementation(async function (this: FileSessionBackend, id) {
-      const writer = await original.call(this, id)
+    const fault = vi.spyOn(FileSessionBackend.prototype, 'openWriter').mockImplementation(async function (this: FileSessionBackend, id, validateCommitted) {
+      const writer = await original.call(this, id, validateCommitted)
       return { ...writer, append: async (position, event) => {
         if (event.type === 'experiment/unit-started') throw new Error('append rejected before committing')
         return writer.append(position, event)

@@ -28,8 +28,8 @@ function callbacks(root: string): JsonObject {
 
 function loseAcknowledgement(type: string) {
   const original = FileSessionBackend.prototype.openWriter
-  return vi.spyOn(FileSessionBackend.prototype, 'openWriter').mockImplementation(async function (this: FileSessionBackend, id) {
-    const writer = await original.call(this, id)
+  return vi.spyOn(FileSessionBackend.prototype, 'openWriter').mockImplementation(async function (this: FileSessionBackend, id, validateCommitted) {
+    const writer = await original.call(this, id, validateCommitted)
     return { ...writer, append: async (position, event) => {
       const result = await writer.append(position, event)
       if (event.type === type) throw new Error('committed but acknowledgement lost')

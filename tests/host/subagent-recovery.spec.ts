@@ -133,8 +133,8 @@ it('waits for the resumed Child execution to release before publishing its resul
       return append.apply(this, args)
     }))
     const openWriter = FileSessionBackend.prototype.openWriter
-    spies.push(vi.spyOn(FileSessionBackend.prototype, 'openWriter').mockImplementation(async function (this: FileSessionBackend, id) {
-      const writer = await openWriter.call(this, id)
+    spies.push(vi.spyOn(FileSessionBackend.prototype, 'openWriter').mockImplementation(async function (this: FileSessionBackend, id, validateCommitted) {
+      const writer = await openWriter.call(this, id, validateCommitted)
       if (id !== child.header.sessionId) return writer
       return { ...writer, append: async (position, event) => {
         if (event.type === 'agent/run-settled') { reached(); await hold }

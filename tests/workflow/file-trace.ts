@@ -14,8 +14,8 @@ export async function captureWorkflowTrace(operation: () => Promise<void>): Prom
   FileSessionBackend.prototype.create = async function (header) {
     await create.call(this, header); trace.push({ kind: 'header', header })
   }
-  FileSessionBackend.prototype.openWriter = async function (id) {
-    const writer = await open.call(this, id)
+  FileSessionBackend.prototype.openWriter = async function (id, validateCommitted) {
+    const writer = await open.call(this, id, validateCommitted)
     return { header: writer.header, readCommitted: () => writer.readCommitted(), dispose: () => writer.dispose(),
       append: async (position, event) => { const next = await writer.append(position, event); trace.push({ kind: 'event', event }); return next } }
   }

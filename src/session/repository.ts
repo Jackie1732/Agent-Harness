@@ -156,10 +156,9 @@ export class SessionRepository implements SessionHandleOwner {
     this.#status = 'disposing'
     const task = (async () => {
       await Promise.allSettled(this.#operations)
-      const handleResults = await Promise.allSettled([...this.#handles].map(handle => handle.dispose()))
-      const failures = handleResults
-        .filter((result): result is PromiseRejectedResult => result.status === 'rejected')
-        .map(result => result.reason)
+      // The Effect Owner reports every Writer inverse failure once after Handles settle.
+      await Promise.allSettled([...this.#handles].map(handle => handle.dispose()))
+      const failures: unknown[] = []
       try {
         await this.#owner.dispose()
       } catch (cause) {
@@ -208,7 +207,7 @@ export class SessionRepository implements SessionHandleOwner {
     return await this.#owner.run(`Session writer ${sessionId}`, async effect => {
       return await effect.apply(
         'open Session writer',
-        () => this.#backend.openWriter(sessionId),
+        () => this.#backend.openWriter(sessionId, async local => { await this.#loadHistory(local) }),
         writer => writer.dispose(),
       )
     })

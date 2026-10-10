@@ -32,7 +32,7 @@ export function persistenceCases(test: RegisterCase): void {
     let backendConflict = false
     const backend: SessionBackend = {
       get maxRecordBytes() { return inner.maxRecordBytes }, create: header => inner.create(header),
-      openWriter: async id => { const writer = await inner.openWriter(id); return { ...writer, append: async (position, value) => { if (backendConflict) throw new SessionError('SESSION_POSITION_CONFLICT', 'injected stale backend'); return writer.append(position, value) } } },
+      openWriter: async (id, validateCommitted) => { const writer = await inner.openWriter(id, validateCommitted); return { ...writer, append: async (position, value) => { if (backendConflict) throw new SessionError('SESSION_POSITION_CONFLICT', 'injected stale backend'); return writer.append(position, value) } } },
       readPrefix: (id, through) => inner.readPrefix(id, through), dispose: () => inner.dispose(),
     }
     const repo = new SessionRepository({ backend, catalog: createDurableEventCatalog([event]), maxLineageDepth: 0 }); const handle = await repo.create()
@@ -120,14 +120,14 @@ export function persistenceCases(test: RegisterCase): void {
   test('S6-15: abort after committed CP1 but before start keeps dispatch intent and records not-issued', async () => {
     const abort = new AbortController(); const inner = new MemorySessionBackend({ maxRecordBytes: 65536 }); let starts = 0
     const backend: SessionBackend = { get maxRecordBytes() { return inner.maxRecordBytes }, create: header => inner.create(header),
-      openWriter: async id => { const writer = await inner.openWriter(id); return { ...writer, append: async (position, event) => { const result = await writer.append(position, event); if (event.type === modelStartedEvent.type) abort.abort(); return result } } }, readPrefix: (id, through) => inner.readPrefix(id, through), dispose: () => inner.dispose() }
+      openWriter: async (id, validateCommitted) => { const writer = await inner.openWriter(id, validateCommitted); return { ...writer, append: async (position, event) => { const result = await writer.append(position, event); if (event.type === modelStartedEvent.type) abort.abort(); return result } } }, readPrefix: (id, through) => inner.readPrefix(id, through), dispose: () => inner.dispose() }
     const repo = repository(backend); const provider = scripted({ script: async function* () { starts++; yield* textFrames() } }); const session = await repo.create(); const runner = new SessionModelRunner({ session, provider, limits: runnerLimits })
     try { const result = await runner.invoke(request(), { signal: abort.signal }); assert.equal(result.payload.outcome, 'cancelled'); assert.equal(result.payload.external, 'not-issued'); assert.equal(starts, 0); assert.equal(session.snapshot().localPosition, 3) }
     finally { await runner.dispose(); await provider.dispose(); await repo.dispose() }
   })
   test('S6-35: known-not-written settlement failure rejects instead of returning a provider result', async () => {
     const inner = new MemorySessionBackend({ maxRecordBytes: 65536 }); const backend: SessionBackend = { get maxRecordBytes() { return inner.maxRecordBytes }, create: header => inner.create(header),
-      openWriter: async id => { const writer = await inner.openWriter(id); return { ...writer, append: (position, event) => { if (event.type === modelSettledEvent.type) return Promise.reject(new SessionError('SESSION_RECORD_TOO_LARGE', 'injected known prewrite failure')); return writer.append(position, event) } } }, readPrefix: (id, through) => inner.readPrefix(id, through), dispose: () => inner.dispose() }
+      openWriter: async (id, validateCommitted) => { const writer = await inner.openWriter(id, validateCommitted); return { ...writer, append: (position, event) => { if (event.type === modelSettledEvent.type) return Promise.reject(new SessionError('SESSION_RECORD_TOO_LARGE', 'injected known prewrite failure')); return writer.append(position, event) } } }, readPrefix: (id, through) => inner.readPrefix(id, through), dispose: () => inner.dispose() }
     const repo = repository(backend); const provider = scripted(); const session = await repo.create(); const runner = new SessionModelRunner({ session, provider, limits: runnerLimits })
     try { await assert.rejects(runner.invoke(request()), hasCode('MODEL_JOURNAL_WRITE_FAILED')); assert.equal(session.snapshot().localPosition, 2); assert.equal(runner.snapshot().invocations[0]?.state, 'started') }
     finally { await runner.dispose().catch(() => undefined); await provider.dispose(); await repo.dispose() }

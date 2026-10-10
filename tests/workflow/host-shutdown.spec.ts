@@ -18,8 +18,8 @@ it.each(['drain', 'cancel', 'upgrade', 'work-cancel', 'control-failure', 'offlin
   const directory = await mkdtemp(join(tmpdir(), 'workflow-shutdown-'))
   let failControl = false
   const openWriter = FileSessionBackend.prototype.openWriter
-  const spy = vi.spyOn(FileSessionBackend.prototype, 'openWriter').mockImplementation(async function (this: FileSessionBackend, id) {
-    const writer = await openWriter.call(this, id)
+  const spy = vi.spyOn(FileSessionBackend.prototype, 'openWriter').mockImplementation(async function (this: FileSessionBackend, id, validateCommitted) {
+    const writer = await openWriter.call(this, id, validateCommitted)
     return { ...writer, append: async (position, event) => {
       if (failControl && event.type === 'workflow/control-requested') { failControl = false; throw new Error('coordinator write failed') }
       return writer.append(position, event)

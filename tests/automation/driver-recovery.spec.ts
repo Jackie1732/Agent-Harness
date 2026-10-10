@@ -15,8 +15,8 @@ afterEach(async () => { for (const close of cleanup.splice(0).reverse()) await c
 function loseInputAcknowledgement() {
   const original = FileSessionBackend.prototype.openWriter
   let armed = false
-  const spy = vi.spyOn(FileSessionBackend.prototype, 'openWriter').mockImplementation(async function (this: FileSessionBackend, id) {
-    const writer = await original.call(this, id)
+  const spy = vi.spyOn(FileSessionBackend.prototype, 'openWriter').mockImplementation(async function (this: FileSessionBackend, id, validateCommitted) {
+    const writer = await original.call(this, id, validateCommitted)
     return { ...writer, append: async (position, event) => {
       const committed = await writer.append(position, event)
       if (armed && event.type === 'agent/input-accepted' && event.payloadVersion === 2) {

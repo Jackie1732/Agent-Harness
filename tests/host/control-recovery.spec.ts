@@ -22,8 +22,8 @@ it('reports uncertified online absence after a real File append acknowledgement 
   await initializeHost(spec)
   const openWriter = FileSessionBackend.prototype.openWriter
   let lost = false
-  const spy = vi.spyOn(FileSessionBackend.prototype, 'openWriter').mockImplementation(async function (this: FileSessionBackend, id) {
-    const writer = await openWriter.call(this, id)
+  const spy = vi.spyOn(FileSessionBackend.prototype, 'openWriter').mockImplementation(async function (this: FileSessionBackend, id, validateCommitted) {
+    const writer = await openWriter.call(this, id, validateCommitted)
     return { ...writer, append: async (position, event) => {
       const committed = await writer.append(position, event)
       if (!lost && event.type === 'agent/input-accepted' && event.payloadVersion === 2) { lost = true; throw new Error('acknowledgement lost after commit') }
@@ -100,8 +100,8 @@ it('distinguishes an active Child Run from a committed settlement whose acknowle
   let committedEvent: string | undefined
   let running: Promise<unknown> | undefined
   const openWriter = FileSessionBackend.prototype.openWriter
-  const spy = vi.spyOn(FileSessionBackend.prototype, 'openWriter').mockImplementation(async function (this: FileSessionBackend, id) {
-    const writer = await openWriter.call(this, id)
+  const spy = vi.spyOn(FileSessionBackend.prototype, 'openWriter').mockImplementation(async function (this: FileSessionBackend, id, validateCommitted) {
+    const writer = await openWriter.call(this, id, validateCommitted)
     if (id !== receipt.childSessionId) return writer
     return { ...writer, append: async (position, event) => {
       if (event.type !== 'agent/run-settled' || committedEvent !== undefined) return writer.append(position, event)
@@ -161,8 +161,8 @@ it('attributes a faulted private Child to its owning Root and Workflow without b
     const known = new Set([...spec.members.map(member => member.sessionId), ...spec.workflows.definitions.map(entry => entry.sessionId)])
     await initializeHost(spec, { clock })
     const openWriter = FileSessionBackend.prototype.openWriter
-    spy = vi.spyOn(FileSessionBackend.prototype, 'openWriter').mockImplementation(async function (this: FileSessionBackend, id) {
-      const writer = await openWriter.call(this, id)
+    spy = vi.spyOn(FileSessionBackend.prototype, 'openWriter').mockImplementation(async function (this: FileSessionBackend, id, validateCommitted) {
+      const writer = await openWriter.call(this, id, validateCommitted)
       if (known.has(id)) return writer
       return { ...writer, append: async (position, event) => {
         if (event.type !== 'agent/run-settled' || committed) return writer.append(position, event)

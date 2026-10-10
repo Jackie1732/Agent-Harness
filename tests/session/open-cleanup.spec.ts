@@ -16,8 +16,8 @@ async function failedRead(operation: 'open' | 'create' | 'fork', cleanupFails: b
   const backend: SessionBackend = {
     get maxRecordBytes() { return inner.maxRecordBytes },
     create: header => inner.create(header),
-    openWriter: async sessionId => {
-      const writer = await inner.openWriter(sessionId)
+    openWriter: async (sessionId, validateCommitted) => {
+      const writer = await inner.openWriter(sessionId, validateCommitted)
       const failing = injectFailure
       return {
         header: writer.header,

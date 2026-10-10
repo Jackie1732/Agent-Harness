@@ -103,8 +103,8 @@ it('bounds pending calls and closes only local resources while remote accepted w
   const arrived = new Promise<void>(resolve => { entered = resolve }), held = new Promise<void>(resolve => { release = resolve })
   let submitted!: () => void
   const accepted = new Promise<void>(resolve => { submitted = resolve }), originalHost = hostRuntime.openHost
-  vi.spyOn(FileSessionBackend.prototype, 'openWriter').mockImplementation(async function (this: FileSessionBackend, id) {
-    const writer = await original.call(this, id)
+  vi.spyOn(FileSessionBackend.prototype, 'openWriter').mockImplementation(async function (this: FileSessionBackend, id, validateCommitted) {
+    const writer = await original.call(this, id, validateCommitted)
     return { ...writer, append: async (position, event) => { if (event.type === 'agent/input-accepted') { entered(); await held } return writer.append(position, event) } }
   })
   vi.spyOn(hostRuntime, 'openHost').mockImplementation(async (...args) => {

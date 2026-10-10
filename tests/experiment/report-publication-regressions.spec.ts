@@ -20,8 +20,8 @@ afterEach(async () => { vi.restoreAllMocks(); await Promise.all(roots.splice(0).
 
 function interruptReportAppend(committed = false) {
   const original = FileSessionBackend.prototype.openWriter
-  return vi.spyOn(FileSessionBackend.prototype, 'openWriter').mockImplementation(async function (this: FileSessionBackend, id) {
-    const writer = await original.call(this, id)
+  return vi.spyOn(FileSessionBackend.prototype, 'openWriter').mockImplementation(async function (this: FileSessionBackend, id, validateCommitted) {
+    const writer = await original.call(this, id, validateCommitted)
     return { ...writer, append: async (position, event) => {
       if (event.type !== 'experiment/report-recorded') return writer.append(position, event)
       if (committed) await writer.append(position, event)

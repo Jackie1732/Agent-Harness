@@ -260,9 +260,8 @@ export async function fileSessionLogSize(path: string, sessionId: SessionId): Pr
   }
 }
 
-/** Atomically publish one complete empty Session directory. */
-export async function createFileSession(root: PreparedFileRoot, headerInput: SessionHeader): Promise<void> {
-  const header = decodeSessionHeader(encodeSessionHeader(headerInput))
+/** Atomically publish one empty Session directory from an immutable canonical Header. */
+export async function createFileSession(root: PreparedFileRoot, header: SessionHeader): Promise<void> {
   const finalDirectory = fileSessionDirectory(root, header.sessionId)
   const temporaryDirectory = join(root.sessions, `.create-${header.sessionId}-${randomUUID()}`)
   let temporaryCreated = false

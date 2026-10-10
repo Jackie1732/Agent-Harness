@@ -84,8 +84,8 @@ export class FaultBackend {
   }
   get maxRecordBytes() { return this.base.maxRecordBytes }
   create(header) { return this.base.create(header) }
-  async openWriter(id) {
-    const writer = await this.base.openWriter(id)
+  async openWriter(id, validateCommitted) {
+    const writer = await this.base.openWriter(id, validateCommitted)
     return { header: writer.header, readCommitted: () => writer.readCommitted(),
       append: async (position, event) => {
         try {

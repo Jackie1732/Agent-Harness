@@ -9,6 +9,7 @@ import {
 } from '../../src/index.js'
 import type {
   JsonObject,
+  LocalStoredSession,
   SessionBackend,
   SessionHeader,
   SessionId,
@@ -54,8 +55,8 @@ describe('Session append failures', () => {
         return this.inner.create(header)
       }
 
-      async openWriter(sessionId: SessionId): Promise<SessionWriter> {
-        const writer = await this.inner.openWriter(sessionId)
+      async openWriter(sessionId: SessionId, validateCommitted?: (local: LocalStoredSession) => void | Promise<void>): Promise<SessionWriter> {
+        const writer = await this.inner.openWriter(sessionId, validateCommitted)
         this.writerLive = true
         return {
           header: writer.header,

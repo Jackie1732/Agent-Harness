@@ -20,8 +20,8 @@ function loseAcknowledgement(inner: SessionBackend): SessionBackend {
     get maxRecordBytes() { return inner.maxRecordBytes },
     create: header => inner.create(header),
     readPrefix: (sessionId, through) => inner.readPrefix(sessionId, through),
-    async openWriter(sessionId): Promise<SessionWriter> {
-      const writer = await inner.openWriter(sessionId)
+    async openWriter(sessionId, validateCommitted): Promise<SessionWriter> {
+      const writer = await inner.openWriter(sessionId, validateCommitted)
       return {
         header: writer.header,
         readCommitted: () => writer.readCommitted(),

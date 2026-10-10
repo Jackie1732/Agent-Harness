@@ -86,7 +86,10 @@ export class MemorySessionBackend implements SessionBackend {
     })
   }
 
-  async openWriter(sessionId: SessionId): Promise<SessionWriter> {
+  async openWriter(
+    sessionId: SessionId,
+    validateCommitted?: (local: LocalStoredSession) => void | Promise<void>,
+  ): Promise<SessionWriter> {
     this.#assertActive()
     parseSessionId(sessionId)
     const record = this.#sessions.get(sessionId)
@@ -110,6 +113,20 @@ export class MemorySessionBackend implements SessionBackend {
         })
       }
     }
+    const disposeWriter = async (): Promise<void> => {
+      if (!active) return
+      await record.gate.run(() => {
+        if (record.writerToken === token) record.writerToken = undefined
+        active = false
+      })
+    }
+    try {
+      if (validateCommitted !== undefined) await validateCommitted(this.#snapshot(record))
+      assertWriter()
+    } catch (cause) {
+      await disposeWriter()
+      throw cause
+    }
     return Object.freeze({
       header: record.header,
       readCommitted: async () => await record.gate.run(() => {
@@ -119,26 +136,24 @@ export class MemorySessionBackend implements SessionBackend {
       append: async (
         expectedPosition: SessionLogPosition,
         event: StoredSessionEvent,
-      ) => await record.gate.run(() => {
+      ) => {
         assertWriter()
-        const position = sessionLogPosition(record.events.length)
-        if (expectedPosition !== position) {
-          throw new SessionError('SESSION_POSITION_CONFLICT', 'committed Session position changed', {
-            details: { sessionId, expectedPosition, actualPosition: position },
-          })
-        }
-        ensureEventPosition(sessionId, position, event)
-        encodeFrame(encodeStoredSessionEvent(event), this.#maxRecordBytes)
-        record.events.push(copyEvent(event))
-        return sessionLogPosition(record.events.length)
-      }),
-      dispose: async () => {
-        if (!active) return
-        await record.gate.run(() => {
-          if (record.writerToken === token) record.writerToken = undefined
-          active = false
+        const canonical = copyEvent(event)
+        encodeFrame(encodeStoredSessionEvent(canonical), this.#maxRecordBytes)
+        return await record.gate.run(() => {
+          assertWriter()
+          const position = sessionLogPosition(record.events.length)
+          if (expectedPosition !== position) {
+            throw new SessionError('SESSION_POSITION_CONFLICT', 'committed Session position changed', {
+              details: { sessionId, expectedPosition, actualPosition: position },
+            })
+          }
+          ensureEventPosition(sessionId, position, canonical)
+          record.events.push(canonical)
+          return sessionLogPosition(record.events.length)
         })
       },
+      dispose: disposeWriter,
     })
   }
 
@@ -179,7 +194,7 @@ export class MemorySessionBackend implements SessionBackend {
     record: MemorySessionRecord,
     position = sessionLogPosition(record.events.length),
   ): LocalStoredSession {
-    const events = record.events.slice(0, position).map(copyEvent)
+    const events = record.events.slice(0, position)
     return Object.freeze({
       header: record.header,
       events: Object.freeze(events),

@@ -29,8 +29,14 @@ export interface SessionBackend {
   readonly maxRecordBytes: number
   /** Atomically create one empty Session and its immutable Header. */
   create(header: SessionHeader): Promise<void>
-  /** Acquire the sole process-local writer for one Session. */
-  openWriter(sessionId: SessionId): Promise<SessionWriter>
+  /**
+   * Acquire the sole process-local Writer; optional committed validation precedes physical recovery.
+   * Validation runs while the lease is held, outside the commit gate; failure releases the lease and preserves its cause.
+   */
+  openWriter(
+    sessionId: SessionId,
+    validateCommitted?: (local: LocalStoredSession) => void | Promise<void>,
+  ): Promise<SessionWriter>
   /** Read a structurally verified committed local prefix. */
   readPrefix(sessionId: SessionId, through?: SessionLogPosition): Promise<LocalStoredSession>
   /** Release Backend-owned resources and reject later work. */

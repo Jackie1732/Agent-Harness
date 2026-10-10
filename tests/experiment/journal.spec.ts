@@ -20,8 +20,8 @@ async function setup(options: { readonly unknownAppend?: boolean; readonly repet
   const memory = new MemorySessionBackend({ maxRecordBytes: plan.storage.maxRecordBytes })
   const backend: SessionBackend = options.unknownAppend === true ? {
     maxRecordBytes: memory.maxRecordBytes, create: header => memory.create(header), readPrefix: (id, through) => memory.readPrefix(id, through), dispose: () => memory.dispose(),
-    openWriter: async id => {
-      const writer = await memory.openWriter(id)
+    openWriter: async (id, validateCommitted) => {
+      const writer = await memory.openWriter(id, validateCommitted)
       return { ...writer, append: async (position, event) => {
         const result = await writer.append(position, event)
         if (event.type === 'experiment/unit-started') throw new Error('lost append acknowledgment')

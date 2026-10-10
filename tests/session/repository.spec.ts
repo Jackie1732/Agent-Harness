@@ -64,8 +64,8 @@ describe('Session Repository and Handle', () => {
     const backend: SessionBackend = {
       get maxRecordBytes() { return inner.maxRecordBytes },
       create: header => inner.create(header),
-      openWriter: async sessionId => {
-        const writer = await inner.openWriter(sessionId)
+      openWriter: async (sessionId, validateCommitted) => {
+        const writer = await inner.openWriter(sessionId, validateCommitted)
         return {
           header: writer.header,
           readCommitted: () => writer.readCommitted(),
@@ -124,7 +124,7 @@ describe('Session Repository and Handle', () => {
     const backend: SessionBackend = {
       get maxRecordBytes() { return inner.maxRecordBytes },
       create: header => inner.create(header),
-      openWriter: sessionId => inner.openWriter(sessionId),
+      openWriter: (sessionId, validateCommitted) => inner.openWriter(sessionId, validateCommitted),
       readPrefix: async (sessionId, through) => {
         if (blockReads) {
           readStarted.resolve(undefined)

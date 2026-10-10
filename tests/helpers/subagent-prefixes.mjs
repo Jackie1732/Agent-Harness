@@ -16,8 +16,8 @@ export async function captureFileCommits(operation) {
     await create.call(this, header)
     frames.push({ kind: 'header', header })
   }
-  h.FileSessionBackend.prototype.openWriter = async function (id) {
-    const writer = await open.call(this, id)
+  h.FileSessionBackend.prototype.openWriter = async function (id, validateCommitted) {
+    const writer = await open.call(this, id, validateCommitted)
     return { header: writer.header, readCommitted: () => writer.readCommitted(), dispose: () => writer.dispose(),
       append: async (position, event) => {
         const next = await writer.append(position, event)
