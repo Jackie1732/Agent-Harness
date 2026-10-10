@@ -55,6 +55,29 @@ it('rejects start self-join and requests disposal before rejecting its reentrant
   } finally { await agent.dispose(); await f.close() }
 })
 
+for (const failClose of [false, true]) it('shares Agent release with a Model cancellation listener; cleanup failure=' + failClose, async () => {
+  const entered = createDeferred<void>(); const release = createDeferred<void>()
+  let agent: ReturnType<typeof auditedAgent>; let nested: Promise<void> | undefined; let closes = 0
+  const provider = auditProvider({ script: async function* (_submission, signal) {
+    signal.addEventListener('abort', () => { nested = agent.dispose(); void nested.catch(() => undefined) }, { once: true })
+    entered.resolve(); await release.promise; yield* finalFrames()
+  }, onClose: () => { closes++; if (failClose) throw new Error('release failed') } })
+  const f = await agentFixture({}, provider); agent = auditedAgent(f)
+  try {
+    await agent.submitInput({ kind: 'task', text: 'active Model', originLabel: 'audit' })
+    const run = agent.start(); await entered.promise
+    const outer = agent.dispose(); const observed = outer.catch(error => error)
+    expect(nested).toBe(outer); expect(agent.dispose()).toBe(outer)
+    expect(agent.status).toBe('disposing'); expect(closes).toBe(0)
+    release.resolve(); await run
+    const result = await observed
+    if (failClose) expect(result).toMatchObject({ code: 'AGENT_CLEANUP_FAILED' })
+    else expect(result).toBeUndefined()
+    expect(agent.status).toBe('disposed'); expect(closes).toBe(1)
+    expect(f.session.status).toBe('open')
+  } finally { release.resolve(); await agent.dispose().catch(() => undefined); await f.close().catch(() => undefined) }
+})
+
 it('guards inherited A to B to A task joins', async () => {
   let a: ReturnType<typeof auditedAgent>; let b: ReturnType<typeof auditedAgent>
   const bf = await agentFixture({}, auditProvider({ script: async function* () {

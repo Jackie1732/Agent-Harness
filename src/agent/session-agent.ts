@@ -260,14 +260,14 @@ export class SessionAgent {
     return this.#endTask
   }
 
-  /** Request cancellation and join owned resources; borrowed Session/Service/providers and durable waits survive. */
+  /** Stop admission, cancel current work and share release settlement; borrowed Session/Service/providers and durable waits survive. */
   dispose(): Promise<void> {
     if (this.#disposeTask !== undefined) {
       if (this.#isReentrant()) throw new AgentError('AGENT_REENTRANT_WAIT', 'driver-cannot-dispose-itself')
       return this.#disposeTask
     }
-    this.#status = 'disposing'; this.#desired = 'pause'; this.#driveController?.abort(); this.#turn?.controller.abort()
-    this.#disposeTask = (async () => {
+    this.#status = 'disposing'; this.#desired = 'pause'
+    this.#disposeTask = Promise.resolve().then(async () => {
       await Promise.allSettled([...this.#operations, ...(this.#task === undefined ? [] : [this.#task])])
       const results = await Promise.allSettled([this.#runtime.context.dispose(), this.#runtime.model.dispose(), ...(this.#runtime.tools === undefined ? [] : [this.#runtime.tools.dispose()]),
         ...(this.#ownsMailbox ? [this.#runtime.mailbox!.dispose()] : [])])
@@ -276,8 +276,9 @@ export class SessionAgent {
         this.#failure ??= new AgentError('AGENT_CLEANUP_FAILED', 'owned-runner-release-failed')
         throw this.#failure
       }
-    })()
+    })
     void this.#disposeTask.catch(() => { /* The shared task retains cleanup failure for external joiners. */ })
+    this.#driveController?.abort(); this.#turn?.controller.abort()
     if (this.#isReentrant()) throw new AgentError('AGENT_REENTRANT_WAIT', 'driver-cannot-dispose-itself')
     return this.#disposeTask
   }
