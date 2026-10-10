@@ -43,7 +43,7 @@ export interface SessionHandle {
   ): Promise<CommittedSessionEvent<TPayload>>
   /** Check exact Catalog ownership without exposing the Catalog itself. */
   supportsEventDefinition(definition: DurableEventDefinition): boolean
-  /** Validate, serialize, and append one Catalog-owned durable event. */
+  /** Validate and append one Catalog-owned event; a terminal event closes write admission. */
   append<TPayload extends JsonValue>(definition: DurableEventDefinition<TPayload>, payload: JsonValue): Promise<CommittedSessionEvent<TPayload>>
   /** Append the built-in terminal event; concurrent calls share its result. */
   end(reason?: string): Promise<CommittedSessionEvent<SessionEndedPayload>>
@@ -51,7 +51,7 @@ export interface SessionHandle {
   snapshot(): SessionSnapshot
   /** Replay the current immutable view through one Projection. */
   project<TState extends JsonValue>(projection: SessionProjection<TState>): SessionProjectionResult<TState>
-  /** Stop accepting writes and release the Writer after accepted work settles. */
+  /** Release the Writer after accepted work, retiring history while retaining header and Catalog queries. */
   dispose(): Promise<void>
 }
 
@@ -62,6 +62,13 @@ export interface SessionHandleOwner {
 }
 
 type AcceptanceStatus = 'accepting' | 'ending' | 'ended'
+
+interface HandleRuntime {
+  readonly owner: SessionHandleOwner
+  readonly clock: Clock
+  readonly writerLease: EffectLease<SessionWriter>
+  view: SessionSnapshot
+}
 
 /** Build the frozen public view from a root-to-target history. */
 export function freezeSessionSnapshot(history: readonly SessionHistorySegment[]): SessionSnapshot {
@@ -86,12 +93,10 @@ function eventInvalid(definition: DurableEventDefinition, cause: unknown): Sessi
 
 /** Handle implementation that owns append order and one Effect-managed Writer lease. */
 export class SessionHandleImpl implements SessionHandle {
-  readonly #owner: SessionHandleOwner
+  readonly #header: SessionHeader
   readonly #catalog: DurableEventCatalog
-  readonly #clock: Clock
   readonly #maxRecordBytes: number
-  readonly #writerLease: EffectLease<SessionWriter>
-  #view: SessionSnapshot
+  #runtime: HandleRuntime | undefined
   #tail: Promise<void> = Promise.resolve()
   #status: SessionHandleStatus = 'open'
   #acceptance: AcceptanceStatus
@@ -108,14 +113,13 @@ export class SessionHandleImpl implements SessionHandle {
     maxRecordBytes: number,
   ) {
     this.#maxRecordBytes = maxRecordBytes
-    this.#owner = owner
     this.#catalog = catalog
-    this.#clock = clock
-    this.#writerLease = writerLease
-    this.#view = freezeSessionSnapshot(history)
-    this.#acceptance = this.#view.lifecycle === 'ended' ? 'ended' : 'accepting'
+    const view = freezeSessionSnapshot(history)
+    this.#header = view.header
+    this.#runtime = { owner, clock, writerLease, view }
+    this.#acceptance = view.lifecycle === 'ended' ? 'ended' : 'accepting'
     if (this.#acceptance === 'ended') {
-      const record = this.#view.history.at(-1)?.events.at(-1)
+      const record = view.history.at(-1)?.events.at(-1)
       if (
         record?.kind !== 'known'
         || !isSessionEndedRecord(record.stored)
@@ -127,7 +131,7 @@ export class SessionHandleImpl implements SessionHandle {
   }
 
   get header(): SessionHeader {
-    return this.#view.header
+    return this.#header
   }
 
   get status(): SessionHandleStatus {
@@ -173,28 +177,12 @@ export class SessionHandleImpl implements SessionHandle {
     this.#assertWritable()
     if (this.#endedEvent !== undefined) return Promise.resolve(this.#endedEvent)
     if (this.#endingTask !== undefined) return this.#endingTask
-    if (reason !== undefined && typeof reason !== 'string') {
-      throw eventInvalid(sessionEndedEvent, new TypeError('end reason must be a string'))
-    }
-    this.#acceptance = 'ending'
-    const task = this.#prepareAndQueue(sessionEndedEvent, reason === undefined ? {} : { reason })
-    this.#endingTask = task
-    void task.then(
-      event => {
-        this.#endedEvent = event
-        this.#acceptance = 'ended'
-      },
-      () => {
-        if (this.#status === 'open') this.#acceptance = 'accepting'
-        this.#endingTask = undefined
-      },
-    )
-    return task
+    return this.#prepareAndQueue(sessionEndedEvent, reason === undefined ? {} : { reason })
   }
 
   snapshot(): SessionSnapshot {
-    if (this.#status === 'disposed') this.#inactive()
-    return this.#view
+    if (this.#runtime === undefined) this.#inactive()
+    return this.#runtime.view
   }
 
   project<TState extends JsonValue>(projection: SessionProjection<TState>): SessionProjectionResult<TState> {
@@ -203,16 +191,22 @@ export class SessionHandleImpl implements SessionHandle {
 
   dispose(): Promise<void> {
     if (this.#disposeTask !== undefined) return this.#disposeTask
-    const task = this.#tail.then(() => this.#writerLease.dispose()).finally(() => {
+    const runtime = this.#runtime
+    if (runtime === undefined) this.#inactive()
+    const task = this.#tail.then(() => runtime.writerLease.dispose()).finally(() => {
       this.#status = 'disposed'
-      this.#owner.releaseHandle(this)
+      runtime.owner.releaseHandle(this)
+      this.#runtime = undefined
+      this.#endingTask = undefined
+      this.#endedEvent = undefined
     })
     this.#disposeTask = task
     return task
   }
 
   #assertWritable(): void {
-    this.#owner.assertActive()
+    if (this.#runtime === undefined) this.#inactive()
+    this.#runtime.owner.assertActive()
     if (this.#status !== 'open' || this.#disposeTask !== undefined) this.#inactive()
   }
 
@@ -247,6 +241,14 @@ export class SessionHandleImpl implements SessionHandle {
       () => undefined,
       () => undefined,
     )
+    if (definition === sessionEndedEvent) {
+      this.#acceptance = 'ending'
+      this.#endingTask = task as Promise<CommittedSessionEvent<SessionEndedPayload>>
+      void task.then(undefined, () => {
+        if (this.#status === 'open') this.#acceptance = 'accepting'
+        this.#endingTask = undefined
+      })
+    }
     return task
   }
 
@@ -256,7 +258,14 @@ export class SessionHandleImpl implements SessionHandle {
     expectedPosition?: SessionLogPosition,
   ): Promise<CommittedSessionEvent<TPayload>> {
     if (this.#status !== 'open') this.#inactive()
-    const position = this.#view.localPosition
+    const runtime = this.#runtime
+    if (runtime === undefined) this.#inactive()
+    if (runtime.view.lifecycle === 'ended') {
+      throw new SessionError('SESSION_ENDED', `Session ${this.header.sessionId} is ended`, {
+        details: { sessionId: this.header.sessionId },
+      })
+    }
+    const position = runtime.view.localPosition
     if (expectedPosition !== undefined && expectedPosition !== position) {
       throw new SessionError('SESSION_PRECONDITION_FAILED', 'Session local prefix changed before conditional append', {
         details: { sessionId: this.header.sessionId, expectedPosition, actualPosition: position },
@@ -268,14 +277,14 @@ export class SessionHandleImpl implements SessionHandle {
       sessionId: this.header.sessionId,
       eventId: formatSessionEventId(this.header.sessionId, sequence),
       sequence,
-      recordedAt: clockTimestamp(this.#clock),
+      recordedAt: clockTimestamp(runtime.clock),
       type: definition.type,
       payloadVersion: definition.payloadVersion,
       ...(definition.ignorable ? { ignorable: true as const } : {}),
       payload,
     })
     try {
-      const committedPosition = await this.#writerLease.value.append(position, stored)
+      const committedPosition = await runtime.writerLease.value.append(position, stored)
       if (committedPosition !== position + 1) {
         throw new SessionError('SESSION_POSITION_CONFLICT', 'Backend returned an unexpected committed position', {
           details: { expectedPosition: position + 1, actualPosition: committedPosition },
@@ -294,11 +303,15 @@ export class SessionHandleImpl implements SessionHandle {
       })
     }
     const event = Object.freeze({ kind: 'known' as const, stored, payload })
-    const history = [...this.#view.history]
+    const history = [...runtime.view.history]
     const target = history.at(-1)
     if (target === undefined) throw new Error('Session history must contain its target')
     history[history.length - 1] = extendLocalSegment(target, event)
-    this.#view = freezeSessionSnapshot(history)
+    runtime.view = freezeSessionSnapshot(history)
+    if (isSessionEndedRecord(stored)) {
+      this.#endedEvent = event as CommittedSessionEvent<SessionEndedPayload>
+      this.#acceptance = 'ended'
+    }
     return event
   }
 }

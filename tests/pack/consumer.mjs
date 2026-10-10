@@ -7,6 +7,20 @@ import { decodeApiConfig, resolveApiConfig, openHarnessApiServer } from '@atomic
 import { CONTROL_METHODS } from '@atomic-harness/core/protocol'
 import { createHarnessClient } from '@atomic-harness/core/client'
 import { decodeUiConfig, resolveUiConfig, openHarnessUiServer } from '@atomic-harness/core/ui'
+import { createDurableEventCatalog, MemorySessionBackend, SessionRepository, sessionEndedEvent } from '@atomic-harness/core'
+
+const sessions = new SessionRepository({ backend: new MemorySessionBackend({ maxRecordBytes: 4096 }),
+  catalog: createDurableEventCatalog(), maxLineageDepth: 1 })
+try {
+  const session = await sessions.create()
+  const terminal = session.append(sessionEndedEvent, { reason: 'offline package verification' })
+  assert.equal(session.end(), terminal)
+  const committed = await terminal
+  assert.equal((await session.end()).stored.eventId, committed.stored.eventId)
+  assert.throws(() => session.append(sessionEndedEvent, {}), { code: 'SESSION_ENDED' })
+  await session.dispose()
+  assert.deepEqual((await sessions.open(session.header.sessionId)).snapshot().history[0].events.at(-1), committed)
+} finally { await sessions.dispose() }
 
 const raw = JSON.parse(await readFile('host.json', 'utf8'))
 raw.storage.root = resolve('sessions')
