@@ -17,6 +17,15 @@ import type {
   MiddlewareNext,
 } from './types.js'
 
+interface NextState<TRequest, TResult> {
+  readonly middlewareName: string
+  readonly registrationId: string
+  readonly scopeId: string
+  readonly handlerLabel: string
+  called: boolean
+  delegate: ((...args: [] | [TRequest]) => Promise<TResult>) | undefined
+}
+
 /** Dispatch one event against the eligible registration sequence. */
 export function emitEvent<TPayload>(
   scope: ScopeRecord,
@@ -95,43 +104,64 @@ async function runWaterfall<TRequest, TResult>(
     return await terminal(request)
   }
 
-  let open = true
-  let called = false
-  const next = ((...args: [] | [TRequest]): Promise<TResult> => {
-    if (called) {
-      return Promise.reject(new MiddlewareNextRepeatedError(
-        name.name,
-        String(registration.id),
-        String(registration.scope.id),
-        registration.label,
-      ))
-    }
-    if (!open) {
-      return Promise.reject(new MiddlewareNextInactiveError(
-        name.name,
-        String(registration.id),
-        String(registration.scope.id),
-        registration.label,
-      ))
-    }
-    called = true
-    return tasks.startContinuation(origin, () => runWaterfall(
+  return await tasks.runFrame(registration, () => {
+    const continuation = tasks.createContinuation(origin, (downstreamRequest: TRequest) => runWaterfall(
       origin,
       originScope,
       name,
-      args.length === 0 ? request : args[0],
+      downstreamRequest,
       terminal,
       registration.ordinal,
       upperBound,
       registrations,
       tasks,
     ))
-  }) as MiddlewareNext<TRequest, TResult>
+    const state: NextState<TRequest, TResult> = {
+      middlewareName: name.name,
+      registrationId: String(registration.id),
+      scopeId: String(registration.scope.id),
+      handlerLabel: registration.label,
+      called: false,
+      delegate: (...args) => continuation(args.length === 0 ? request : args[0]),
+    }
+    const next = createNext(state)
 
-  try {
-    return await tasks.runFrame(registration, () =>
-      (registration.callback as MiddlewareHandler<TRequest, TResult>)(request, next))
-  } finally {
-    open = false
+    try {
+      const result = (registration.callback as MiddlewareHandler<TRequest, TResult>)(request, next)
+      if (isPromiseLike(result)) {
+        return Promise.resolve(result).finally(() => { state.delegate = undefined })
+      }
+      state.delegate = undefined
+      return result
+    } catch (reason) {
+      state.delegate = undefined
+      throw reason
+    }
+  })
+}
+
+/** Keep saved next diagnostics independent of the invocation's retired private references. */
+function createNext<TRequest, TResult>(state: NextState<TRequest, TResult>): MiddlewareNext<TRequest, TResult> {
+  return (...args: [] | [TRequest]): Promise<TResult> => {
+    if (state.called) {
+      return Promise.reject(new MiddlewareNextRepeatedError(
+        state.middlewareName, state.registrationId, state.scopeId, state.handlerLabel,
+      ))
+    }
+    const delegate = state.delegate
+    if (delegate === undefined) {
+      return Promise.reject(new MiddlewareNextInactiveError(
+        state.middlewareName, state.registrationId, state.scopeId, state.handlerLabel,
+      ))
+    }
+    state.called = true
+    state.delegate = undefined
+    return delegate(...args)
   }
+}
+
+function isPromiseLike<T>(value: Awaitable<T>): value is PromiseLike<T> {
+  return value !== null
+    && (typeof value === 'object' || typeof value === 'function')
+    && typeof (value as PromiseLike<T>).then === 'function'
 }

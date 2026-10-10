@@ -73,8 +73,21 @@ export class TaskTracker {
     return task
   }
 
-  /** Keep a delegated middleware branch attached to its Origin Task until it settles. */
-  startContinuation<T>(
+  /** Capture the handler's task chain for a delegated call, including external caller tasks. */
+  createContinuation<TRequest, TResult>(
+    origin: OriginTaskRecord,
+    operation: (request: TRequest) => Promise<TResult>,
+  ): (request: TRequest) => Promise<TResult> {
+    const inherited = new Set(executionContext.getStore())
+    inherited.add(origin.token)
+    return request => {
+      const tokens = new Set(executionContext.getStore())
+      for (const token of inherited) tokens.add(token)
+      return executionContext.run(tokens, () => this.#startContinuation(origin, () => operation(request)))
+    }
+  }
+
+  #startContinuation<T>(
     origin: OriginTaskRecord,
     operation: () => Promise<T>,
   ): Promise<T> {
