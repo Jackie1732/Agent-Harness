@@ -33,19 +33,25 @@ function requireLabel(label: string): void {
 }
 
 class RootScopeFacade implements RootScope {
-  constructor(private readonly tree: ScopeTree, private readonly record: ScopeRecord) {}
+  readonly #tree: ScopeTree
+  readonly #record: ScopeRecord
 
-  get id(): ScopeId { return this.record.id }
-  get label(): string { return this.record.label }
-  get status(): ScopeStatus { return this.record.status }
-  get signal(): AbortSignal { return this.record.abort.signal }
+  constructor(tree: ScopeTree, record: ScopeRecord) {
+    this.#tree = tree
+    this.#record = record
+  }
+
+  get id(): ScopeId { return this.#record.id }
+  get label(): string { return this.#record.label }
+  get status(): ScopeStatus { return this.#record.status }
+  get signal(): AbortSignal { return this.#record.abort.signal }
 
   on<TPayload>(
     event: EventName<TPayload>,
     label: string,
     listener: EventListener<TPayload>,
   ): RegistrationHandle {
-    return this.tree.registerListener(this.record, event, label, listener)
+    return this.#tree.registerListener(this.#record, event, label, listener)
   }
 
   intercept<TRequest, TResult>(
@@ -53,11 +59,11 @@ class RootScopeFacade implements RootScope {
     label: string,
     handler: MiddlewareHandler<TRequest, TResult>,
   ): RegistrationHandle {
-    return this.tree.registerMiddleware(this.record, name, label, handler)
+    return this.#tree.registerMiddleware(this.#record, name, label, handler)
   }
 
   emit<TPayload>(event: EventName<TPayload>, payload: TPayload): Promise<void> {
-    return this.tree.emit(this.record, event, payload)
+    return this.#tree.emit(this.#record, event, payload)
   }
 
   invoke<TRequest, TResult>(
@@ -65,33 +71,36 @@ class RootScopeFacade implements RootScope {
     request: TRequest,
     terminal?: (request: TRequest) => Awaitable<TResult>,
   ): Promise<TResult> {
-    return this.tree.invoke(this.record, name, request, terminal)
+    return this.#tree.invoke(this.#record, name, request, terminal)
   }
 
   derive(label: string): Scope {
-    return this.tree.derive(this.record, label)
+    return this.#tree.derive(this.#record, label)
   }
 
   whenQuiescent(): Promise<ScopeSnapshot> {
-    return this.tree.whenQuiescent(this.record)
+    return this.#tree.whenQuiescent(this.#record)
   }
 
   snapshot(): ScopeSnapshot {
-    return this.tree.snapshot(this.record)
+    return this.#tree.snapshot(this.#record)
   }
 }
 
 class ScopeFacade extends RootScopeFacade implements Scope {
+  readonly #disposeScope: () => Promise<void>
+
   constructor(
     tree: ScopeTree,
     record: ScopeRecord,
-    private readonly disposeScope: () => Promise<void>,
+    disposeScope: () => Promise<void>,
   ) {
     super(tree, record)
+    this.#disposeScope = disposeScope
   }
 
   dispose(): Promise<void> {
-    return this.disposeScope()
+    return this.#disposeScope()
   }
 }
 
@@ -295,10 +304,10 @@ export class ScopeTree {
     }
 
     const subtree = collectSubtree(scope)
-    for (const record of subtree) {
-      if (record.status === 'disposed' || record.status === 'disposing') continue
+    const closing = subtree.filter(record =>
+      record.status !== 'disposed' && record.status !== 'disposing')
+    for (const record of closing) {
       record.status = 'disposing'
-      record.abort.abort(new Error(`scope "${record.label}" is disposing`))
       const registrations = [...record.registrations]
       for (const registration of registrations) void this.#registrations.dispose(registration)
       this.#touch()
@@ -306,6 +315,10 @@ export class ScopeTree {
 
     for (const record of [...subtree].reverse()) {
       record.disposalTask ??= this.#settleScope(record)
+    }
+    // Abort observers may immediately join disposal or inspect another descendant.
+    for (const record of closing) {
+      record.abort.abort(new Error(`scope "${record.label}" is disposing`))
     }
     const task = scope.disposalTask
     if (task === undefined) throw new Error('scope disposal task was not created')

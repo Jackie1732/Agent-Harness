@@ -285,15 +285,11 @@ export class CapabilityRegistry {
       }
       return this.#disposalTask
     }
-    const scopeDisposal = this.#scopeTree.beginRootDispose()
-    this.#scopeShutdownTask = scopeDisposal
     this.#status = 'disposing'
     const records = this.#ordered()
     const targets = records.filter(record => record.status !== 'disposed')
     for (const record of targets) record.releasing = true
-    this.#interruptInvalidActivations()
-    this.#touch()
-    const disposal = scopeDisposal.then(() => this.#barrier()).then(() => {
+    const disposal = this.#barrier().then(() => {
       const failures = records
         .filter(record => record.failure !== undefined && (
           record.failurePhase === 'deactivation'
@@ -312,6 +308,9 @@ export class CapabilityRegistry {
       throw reason
     })
     this.#disposalTask = disposal
+    this.#scopeShutdownTask = this.#scopeTree.beginRootDispose()
+    this.#interruptInvalidActivations()
+    this.#touch()
     if (lifecycle !== undefined) {
       void disposal.catch(() => undefined)
       return Promise.reject(new RegistryReentrantWaitError(lifecycle.record.label, lifecycle.phase))
@@ -577,10 +576,6 @@ export class CapabilityRegistry {
     // Recording the request is synchronous; the executor owns the transitions that carry
     // it out, so lifecycle code calling this cannot wait for the reconciliation running it.
     record.releasing = true
-    const scopeDisposal = record.activationScope?.beginDispose()
-    if (scopeDisposal !== undefined) void scopeDisposal.catch(() => undefined)
-    this.#interruptInvalidActivations()
-    this.#touch()
     const scopeReentrant = lifecycle === undefined ? this.#retiringScopeWait('component.dispose()') : undefined
     const task = this.#barrier().then(() => {
       if (record.failure !== undefined) {
@@ -589,6 +584,10 @@ export class CapabilityRegistry {
     })
     record.releasePending = true
     record.releaseTask = task.finally(() => { record.releasePending = false })
+    const scopeDisposal = record.activationScope?.beginDispose()
+    if (scopeDisposal !== undefined) void scopeDisposal.catch(() => undefined)
+    this.#interruptInvalidActivations()
+    this.#touch()
     if (lifecycle !== undefined) {
       void record.releaseTask.catch(() => undefined)
       return Promise.reject(new RegistryReentrantWaitError(lifecycle.record.label, lifecycle.phase))
