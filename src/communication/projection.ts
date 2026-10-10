@@ -171,6 +171,15 @@ function applyOutboxEvent(
     if (state.terminal !== undefined || state.openAttempt !== undefined || payload.attempt !== state.attemptCount + 1) {
       invalid('outbox attempt sequence is invalid', { messageId: payload.messageId, attempt: payload.attempt })
     }
+    const envelope = state.accepted.payload.envelope
+    const key = channelKey(envelope.recipient, envelope.channelId)
+    for (const prior of outbox.values()) {
+      const priorEnvelope = prior.accepted.payload.envelope
+      if (prior.terminal === undefined && channelKey(priorEnvelope.recipient, priorEnvelope.channelId) === key
+        && priorEnvelope.channelSequence < envelope.channelSequence) {
+        invalid('outbox attempt does not target its Channel head', { messageId: payload.messageId, attempt: payload.attempt })
+      }
+    }
     state.attemptCount = payload.attempt
     state.openAttempt = payload.attempt
     return true

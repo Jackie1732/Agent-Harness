@@ -9,7 +9,10 @@ const MAX_MESSAGE_TYPE_LENGTH = 128
 export interface MessageDefinition<TPayload extends JsonValue = JsonValue> {
   readonly type: string
   readonly payloadVersion: number
-  /** Decode and normalize one JSON payload. */
+  /**
+   * Decode synchronously without side effects or ambient state. Equal inputs must produce equal
+   * canonical JSON; decoding the returned payload again must yield a deeply equal value.
+   */
   readonly decode: (value: JsonValue) => TPayload
 }
 
@@ -17,6 +20,7 @@ export interface MessageDefinition<TPayload extends JsonValue = JsonValue> {
 export interface MessageDefinitionOptions<TPayload extends JsonValue> {
   readonly type: string
   readonly payloadVersion: number
+  /** Follows the canonical decoder requirements of MessageDefinition.decode. */
   readonly decode: (value: JsonValue) => TPayload
 }
 
