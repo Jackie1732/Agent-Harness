@@ -20,6 +20,13 @@ export interface ScriptedModelProviderOptions {
   readonly onClose?: (submission: PreparedSubmission) => Awaitable<void>
 }
 
+interface ScriptRuntime {
+  readonly script: ScriptedModelProviderOptions['script']
+  readonly onPrepare: ScriptedModelProviderOptions['onPrepare']
+  readonly onAcquire: ScriptedModelProviderOptions['onAcquire']
+  readonly onClose: ScriptedModelProviderOptions['onClose']
+}
+
 /** Derive the immutable binding recorded by a scripted Provider without creating runtime state. */
 export function scriptedModelDescriptor(
   options: Pick<ScriptedModelProviderOptions, 'providerId' | 'maxConcurrentExchanges' | 'streamLimits'>,
@@ -32,30 +39,24 @@ export function scriptedModelDescriptor(
   }))
 }
 
-/** Scripted requests obey the same prepared/started/settled and ownership contracts. */
+/** Scripted requests obey the durable call protocol; disposal retires callbacks after exchanges finish. */
 export class ScriptedModelProvider implements ModelProvider {
   readonly descriptor: ModelProviderDescriptor
   readonly #capacity: ExchangeCapacity
-  readonly #script: ScriptedModelProviderOptions['script']
-  readonly #onPrepare: ScriptedModelProviderOptions['onPrepare']
-  readonly #onAcquire: ScriptedModelProviderOptions['onAcquire']
-  readonly #onClose: ScriptedModelProviderOptions['onClose']
+  #runtime: ScriptRuntime | undefined
 
   constructor(options: ScriptedModelProviderOptions) {
     if (typeof options.script !== 'function') throw new ModelError('MODEL_REQUEST_INVALID', 'Scripted provider requires a script')
     this.descriptor = scriptedModelDescriptor(options)
     this.#capacity = new ExchangeCapacity(options.maxConcurrentExchanges)
-    this.#script = options.script
-    this.#onPrepare = options.onPrepare
-    this.#onAcquire = options.onAcquire
-    this.#onClose = options.onClose
+    this.#runtime = { script: options.script, onPrepare: options.onPrepare, onAcquire: options.onAcquire, onClose: options.onClose }
     Object.freeze(this)
   }
 
   prepare(request: ModelRequest): PreparedModelCall {
     this.#capacity.assertActive()
     const submission = createPreparedSubmission(request, this.descriptor, request)
-    this.#onPrepare?.(submission.request)
+    this.#runtime!.onPrepare?.(submission.request)
     let acquired = false
     return Object.freeze({
       submission,
@@ -63,13 +64,16 @@ export class ScriptedModelProvider implements ModelProvider {
         if (acquired) throw new ModelError('MODEL_STATE_INVALID', 'prepared binding cannot acquire a second exchange')
         assertSameSubmission(submission, committed)
         const ticket = this.#capacity.reserve()
+        const runtime = this.#runtime!
+        const capacity = this.#capacity
+        const limits = this.descriptor.streamLimits
         acquired = true
         try {
-          await inModelTask(ticket.token, () => this.#onAcquire?.(committed, signal))
+          await inModelTask(ticket.token, () => runtime.onAcquire?.(committed, signal))
           return new ManagedModelExchange({
-            assertActive: () => this.#capacity.assertActive(),
-            open: async currentSignal => boundedScript(await this.#script(committed, currentSignal), this.descriptor.streamLimits),
-            release: async () => { await this.#onClose?.(committed) },
+            assertActive: () => capacity.assertActive(),
+            open: async currentSignal => boundedScript(await runtime.script(committed, currentSignal), limits),
+            release: async () => { await runtime.onClose?.(committed) },
           }, signal, ticket)
         } catch (reason) {
           ticket.settle()
@@ -79,7 +83,7 @@ export class ScriptedModelProvider implements ModelProvider {
     })
   }
 
-  dispose(): Promise<void> { return this.#capacity.dispose(() => undefined) }
+  dispose(): Promise<void> { return this.#capacity.dispose(() => { this.#runtime = undefined }) }
 }
 
 async function* boundedScript(source: AsyncIterable<ModelFrame>, limits: ModelStreamLimits): AsyncGenerator<ModelFrame> {

@@ -169,7 +169,7 @@ export interface NormalizedModelResult extends JsonObject {
   readonly requestId?: string
 }
 
-/** Request-scoped resources. close must settle all started I/O, even after failure. */
+/** Request resources: close settles started I/O and retires borrows, including after failure. */
 export interface ModelExchange {
   /** At most once. Calling this method is the external emission boundary. */
   start(): Awaitable<AsyncIterable<ModelFrame>>
@@ -182,6 +182,6 @@ export interface ModelProvider {
   readonly descriptor: ModelProviderDescriptor
   /** Synchronous, pure request validation/compilation and runtime binding capture. */
   prepare(request: ModelRequest): PreparedModelCall
-  /** Stop admission and wait for outstanding exchanges to relinquish the client. */
+  /** Stop admission, wait for outstanding exchanges, then retire callbacks and client resources. */
   dispose(): Promise<void>
 }

@@ -1,6 +1,8 @@
 {
   "schemaVersion": 1,
   "checkedAt": "2026-09-14",
+  "recheckedAt": "2026-10-10",
+  "recheckScope": "supported text/client-function-tool profiles only; the adapter paths are tested against local HTTP fixtures, not cloud recordings",
   "fixtureKind": "hand-authored official-protocol fixtures; NOT recordings of cloud calls",
   "sourceFiles": [
     "tests/model/fixtures.ts",
@@ -11,6 +13,7 @@
     {
       "url": "https://api-docs.deepseek.com/api/create-chat-completion/",
       "basis": "accepted Step 6 plan sections 17, 24, 33 and implementation protocol review; final repeated fetch timed out",
+      "recheckBasis": "official page fetched on 2026-10-10: exactly one streamed choice, usage on the final content chunk and an independent [DONE] terminal; current explicitly supported controls retained",
       "implemented": "one choice, final content/usage, [DONE], explicit supported profile; no claim for other compatible endpoints"
     },
     {
@@ -21,6 +24,7 @@
     {
       "url": "https://platform.claude.com/docs/en/build-with-claude/streaming",
       "basis": "official page fetched during implementation and final review",
+      "recheckBasis": "official page fetched on 2026-10-10: ordered text/tool blocks, cumulative message_delta usage, ping and an independent message_stop terminal",
       "implemented": "message/block/delta/message_stop, cumulative usage, input_json_delta, ping and stream errors; unsupported fallback/thinking rejected"
     }
   ],

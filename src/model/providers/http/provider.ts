@@ -28,6 +28,12 @@ export interface HttpProtocol {
   readonly decode: ModelStreamDecoder
 }
 
+interface HttpProviderRuntime {
+  readonly client: ModelHttpClient
+  readonly protocol: HttpProtocol
+  readonly authentication: Readonly<Record<string, string>>
+}
+
 /** Derive one HTTP Provider descriptor without reading credentials or creating a client. */
 export function httpModelDescriptor(
   options: Omit<HttpModelProviderOptions, 'apiKey'>,
@@ -46,13 +52,11 @@ export function httpModelDescriptor(
   }))
 }
 
-/** Shared HTTP provider owner: explicit admission, client lifetime, immutable binding. */
+/** Owns admission and socket-pool lifetime; disposal retains only the safe descriptor and outcome. */
 export class HttpModelProvider {
   readonly descriptor: ModelProviderDescriptor
   readonly #capacity: ExchangeCapacity
-  readonly #client = new ModelHttpClient()
-  readonly #protocol: HttpProtocol
-  readonly #authentication: Readonly<Record<string, string>>
+  #runtime: HttpProviderRuntime | undefined
 
   constructor(options: HttpModelProviderOptions, protocol: HttpProtocol) {
     if (typeof options.apiKey !== 'string' || options.apiKey.length === 0 || /[^\x21-\x7e]/.test(options.apiKey)) {
@@ -60,14 +64,13 @@ export class HttpModelProvider {
     }
     this.descriptor = httpModelDescriptor(options, protocol)
     this.#capacity = new ExchangeCapacity(options.maxConcurrentExchanges)
-    this.#protocol = protocol
-    this.#authentication = Object.freeze(protocol.authentication(options.apiKey))
+    this.#runtime = { client: new ModelHttpClient(), protocol, authentication: Object.freeze(protocol.authentication(options.apiKey)) }
     Object.freeze(this)
   }
 
   prepare(request: ModelRequest): PreparedModelCall {
     this.#capacity.assertActive()
-    const submission = createPreparedSubmission(request, this.descriptor, this.#protocol.encode(request, this.descriptor))
+    const submission = createPreparedSubmission(request, this.descriptor, this.#runtime!.protocol.encode(request, this.descriptor))
     let acquired = false
     return Object.freeze({
       submission,
@@ -75,11 +78,13 @@ export class HttpModelProvider {
         if (acquired) throw new ModelError('MODEL_STATE_INVALID', 'prepared HTTP binding may acquire only once')
         assertSameSubmission(submission, committed)
         const ticket = this.#capacity.reserve()
+        const runtime = this.#runtime!
+        const capacity = this.#capacity
         acquired = true
         try {
-          const request = this.#client.create(committed, this.#authentication, this.#protocol.decode)
+          const request = runtime.client.create(committed, runtime.authentication, runtime.protocol.decode)
           return new ManagedModelExchange({
-            assertActive: () => this.#capacity.assertActive(),
+            assertActive: () => capacity.assertActive(),
             open: currentSignal => request.open(currentSignal), release: () => request.close(),
           }, signal, ticket)
         } catch (reason) { ticket.settle(); throw reason }
@@ -87,5 +92,11 @@ export class HttpModelProvider {
     })
   }
 
-  dispose(): Promise<void> { return this.#capacity.dispose(() => this.#client.close()) }
+  dispose(): Promise<void> {
+    return this.#capacity.dispose(() => {
+      const runtime = this.#runtime!
+      this.#runtime = undefined
+      runtime.client.close()
+    })
+  }
 }

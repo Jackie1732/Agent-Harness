@@ -1,6 +1,7 @@
 import { strict as assert } from 'node:assert'
 import { InvocationControl } from '../../src/model/control.js'
 import { ModelError } from '../../src/model/errors.js'
+import { projectModelSession } from '../../src/model/projection.js'
 import { SessionModelRunner } from '../../src/model/runner.js'
 import { createAnthropicModelProvider } from '../../src/model/providers/anthropic.js'
 import { createDeepSeekModelProvider } from '../../src/model/providers/deepseek.js'
@@ -257,7 +258,7 @@ export function terminalCancellationCases(test: RegisterCase): void {
       release.resolve()
       await assert.rejects(invocation, hasCode('MODEL_CLEANUP_FAILED'))
       await assert.rejects(disposal, hasCode('MODEL_CLEANUP_FAILED'))
-      const snapshot = runner.snapshot().invocations[0]
+      const snapshot = projectModelSession(session.snapshot()).invocations[0]
       assert.ok(snapshot?.state === 'settled')
       assert.equal(snapshot.settled.payload.result.protocolComplete, true)
       assert.equal(snapshot.settled.payload.cleanup.status, 'incomplete')

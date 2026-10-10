@@ -26,7 +26,7 @@ export function lifecycleCases(test: RegisterCase): void {
       assert.notEqual(runner.snapshot().invocations[0]?.invocationId, runner.snapshot().invocations[1]?.invocationId)
       const close = runner.dispose(); assert.equal(close, runner.dispose()); await close
       assert.throws(() => runner.invoke(request()), hasCode('MODEL_RUNNER_INACTIVE'))
-      assert.equal(runner.snapshot().invocations.length, 2); assert.equal(session.status, 'open'); await session.end()
+      assert.throws(() => runner.snapshot(), hasCode('MODEL_RUNNER_INACTIVE')); assert.equal(session.status, 'open'); await session.end()
     } finally { await provider.dispose(); await repo.dispose() }
   })
   test('S6-03/08: input accessors and unsupported fields fail before durable acceptance', async () => {
