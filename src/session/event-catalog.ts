@@ -8,7 +8,14 @@ export interface DurableEventDefinition<TPayload extends JsonValue = JsonValue> 
   readonly type: string
   readonly payloadVersion: number
   readonly ignorable: boolean
-  /** Decode and validate one JSON payload. */
+  /**
+   * Synchronously and deterministically decode JSON without side effects or ambient state.
+   * Return canonical JSON: decoding a returned payload again must produce a deeply equal value.
+   * The decoder author preserves this fixed point across append and recovery.
+   *
+   * @param value - JSON input to validate and normalize.
+   * @returns The canonical payload for this event version.
+   */
   readonly decode: (value: JsonValue) => TPayload
 }
 
@@ -25,6 +32,7 @@ export interface DurableEventDefinitionOptions<TPayload extends JsonValue> {
   readonly type: string
   readonly payloadVersion: number
   readonly ignorable: boolean
+  /** The synchronous, deterministic canonical decoder defined by {@link DurableEventDefinition.decode}. */
   readonly decode: (value: JsonValue) => TPayload
 }
 

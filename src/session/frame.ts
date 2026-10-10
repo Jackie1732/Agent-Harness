@@ -51,12 +51,12 @@ function findByte(bytes: Uint8Array, value: number, from = 0): number {
   return -1
 }
 
-function ascii(bytes: Uint8Array): string {
-  return Buffer.from(bytes).toString('ascii')
+function headerText(bytes: Uint8Array): string {
+  return Buffer.from(bytes).toString('latin1')
 }
 
 function parseLength(bytes: Uint8Array, absoluteOffset: number, maxRecordBytes: number): number {
-  const text = ascii(bytes)
+  const text = headerText(bytes)
   if (!/^(?:0|[1-9][0-9]*)$/.test(text)) throw invalid('frame length is not canonical', absoluteOffset)
   const length = Number(text)
   if (!Number.isSafeInteger(length) || length > maxRecordBytes) {
@@ -68,7 +68,7 @@ function parseLength(bytes: Uint8Array, absoluteOffset: number, maxRecordBytes: 
 }
 
 function validateChecksumText(bytes: Uint8Array, absoluteOffset: number): string {
-  const text = ascii(bytes)
+  const text = headerText(bytes)
   if (!/^[0-9a-f]{64}$/.test(text)) throw invalid('frame checksum is not canonical SHA-256', absoluteOffset)
   return text
 }
@@ -76,7 +76,7 @@ function validateChecksumText(bytes: Uint8Array, absoluteOffset: number): string
 function isPhysicalFramePrefix(bytes: Uint8Array, maxRecordBytes: number): boolean {
   const firstTab = findByte(bytes, TAB)
   if (firstTab < 0) {
-    const lengthText = ascii(bytes)
+    const lengthText = headerText(bytes)
     const minimumLength = Number(lengthText)
     return bytes.byteLength > 0
       && bytes.byteLength <= MAX_LENGTH_DIGITS
@@ -94,7 +94,7 @@ function isPhysicalFramePrefix(bytes: Uint8Array, maxRecordBytes: number): boole
   }
   const secondTab = findByte(bytes, TAB, firstTab + 1)
   if (secondTab < 0) {
-    const checksumPrefix = ascii(bytes.subarray(firstTab + 1))
+    const checksumPrefix = headerText(bytes.subarray(firstTab + 1))
     return checksumPrefix.length <= CHECKSUM_LENGTH && /^[0-9a-f]*$/.test(checksumPrefix)
   }
   if (secondTab - firstTab - 1 !== CHECKSUM_LENGTH) return false

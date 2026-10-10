@@ -122,8 +122,16 @@ export function decodeSessionHeader(bytes: Uint8Array): SessionHeader {
   })
 }
 
-/** Encode one stored Session event to canonical JSON payload bytes. */
+/** Encode a stored event, rejecting non-JSON payloads before any storage write. */
 export function encodeStoredSessionEvent(event: StoredSessionEvent): Uint8Array {
+  try {
+    assertJsonValue(event.payload, 'session event payload')
+  } catch (cause) {
+    throw new SessionError('SESSION_EVENT_INVALID', 'stored event payload is not valid JSON', {
+      details: { sessionId: event.sessionId, eventId: event.eventId },
+      cause,
+    })
+  }
   return Buffer.from(JSON.stringify(event), 'utf8')
 }
 
