@@ -17,8 +17,13 @@ import { foldAgentSession } from '../agent/projection.js'
 /** Binds local protocol writers to a committed assignment; no Peer receives these handles. */
 export class WorkflowChannels {
   readonly #bindings = new Map<SessionEventId, { coordinator: SessionHandle; member: SessionHandle }>()
+  #closed = false
+
+  /** Retire process-local bindings after protocol writes and Mailboxes have settled. */
+  retireRuntime(): void { this.#closed = true; this.#bindings.clear() }
 
   bind(coordinator: SessionHandle, assignment: SessionEventId, member: SessionHandle): void {
+    if (this.#closed) forbidden('workflow-channel-retired')
     const work = projectWorkflowSession(coordinator.snapshot()).assignments.find(item => item.stored.eventId === assignment)
     if (work?.payload.memberAddress !== member.header.address) forbidden('workflow-channel-assignment')
     const prior = this.#bindings.get(assignment)

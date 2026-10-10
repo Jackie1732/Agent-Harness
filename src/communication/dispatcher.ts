@@ -1,12 +1,11 @@
 import { assertNever } from '../foundation/never.js'
 import { CommunicationError } from './errors.js'
 import { SessionMailboxImpl } from './mailbox.js'
-import type { MessageTransport } from './transport.js'
 import type { MessageDeliveryOutcome, OutboxDispatchReport, OutboxMessageSnapshot } from './types.js'
 
 /** Explicit, bounded driver for one Session Outbox. */
 export interface OutboxDispatcher {
-  /** Run eligible Channel heads once within the configured run budget. */
+  /** Run eligible Channel heads within the configured budget; a released Mailbox rejects new runs. */
   dispatch(options?: OutboxDispatchOptions): Promise<OutboxDispatchReport>
 }
 
@@ -39,7 +38,6 @@ function nextChannelHead(
 /** Create the single-run coordinator for one Service-owned Mailbox. */
 export function createOutboxDispatcher(
   mailbox: SessionMailboxImpl,
-  transport: MessageTransport,
 ): OutboxDispatcher {
   let runTask: Promise<OutboxDispatchReport> | undefined
 
@@ -89,7 +87,7 @@ export function createOutboxDispatcher(
       let outcome: MessageDeliveryOutcome
       let deliveryFailure: CommunicationError | undefined
       try {
-        outcome = await transport.deliver(prepared.lease.envelope, { signal: prepared.lease.signal })
+        outcome = await mailbox.transport.deliver(prepared.lease.envelope, { signal: prepared.lease.signal })
       } catch (cause) {
         if (cause instanceof CommunicationError) deliveryFailure = cause
         outcome = Object.freeze({ kind: 'retry', code: 'transport-outcome-unknown' })
@@ -124,10 +122,11 @@ export function createOutboxDispatcher(
         ...(options.onlyMessageIds === undefined ? {} : { onlyMessageIds: new Set(options.onlyMessageIds) }),
         ...(options.maxAttempts === undefined ? {} : { maxAttempts: options.maxAttempts }),
       }
-      const task = run(accepted).finally(() => {
+      const task = Promise.resolve().then(() => run(accepted)).finally(() => {
         if (runTask === task) runTask = undefined
       })
       runTask = task
+      mailbox.trackDispatch(task)
       return task
     },
   })

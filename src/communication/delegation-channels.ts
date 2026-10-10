@@ -29,12 +29,19 @@ type Reservation = {
 export class DelegationChannels {
   readonly #capacity: ProtocolCapacity
   readonly #reservations = new Map<SessionEventId, Reservation>()
-  readonly #tokens = new WeakMap<DelegationChannelLease, Reservation>()
+  #tokens = new WeakMap<DelegationChannelLease, Reservation>()
   #uncertain = false
   #closed = false
   closeAdmission(): void { this.#closed = true; this.#capacity.closeAdmission() }
   drain(): Promise<void> { return this.#capacity.drain() }
   constructor(readonly limits: MailboxLimits, capacity = new ProtocolCapacity(limits)) { this.#capacity = capacity }
+
+  /** Retire process-local leases after protocol writes and Mailboxes have settled. */
+  retireRuntime(): void {
+    this.closeAdmission()
+    this.#reservations.clear()
+    this.#tokens = new WeakMap()
+  }
 
   run<T>(write: () => Promise<T>): Promise<T> { return this.#capacity.run(write) }
 

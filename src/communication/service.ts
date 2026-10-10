@@ -41,6 +41,8 @@ export interface MailboxAttachmentOptions {
 
 type ServiceStatus = 'active' | 'disposing' | 'disposed'
 
+const attachedHandles = new WeakSet<SessionHandle>()
+
 /** Owns Session attachment, private receiver registration, and Dispatcher identity. */
 export class CommunicationService {
   readonly workflowChannels = new WorkflowChannels()
@@ -69,7 +71,7 @@ export class CommunicationService {
     this.#identitySource = options.identitySource ?? systemCommunicationIdentitySource
   }
 
-  /** Attach one active Session Handle to its address and private receiver route. */
+  /** Exclusively attach a borrowed Handle; its owner must keep it active until Mailbox disposal completes. */
   attach(handle: SessionHandle, options: MailboxAttachmentOptions): Promise<SessionMailbox> {
     this.#assertActive()
     const policy = validateCommunicationPolicy(options.policy)
@@ -94,59 +96,76 @@ export class CommunicationService {
           details: { address: handle.header.address },
         })
       }
-      const snapshot = projectMailbox(handle.snapshot(), options.catalog)
-      if (handle.snapshot().lifecycle === 'ended') {
-        const pending = snapshot.outbox.some(item => item.status === 'pending')
-          || snapshot.inbox.some(item => item.status === 'pending')
-        if (pending) {
-          throw new CommunicationError('MESSAGE_STATE_INVALID', 'ended Session contains stranded communication', {
+
+      if (attachedHandles.has(handle)) {
+        throw new CommunicationError('MESSAGE_MAILBOX_ALREADY_ATTACHED', 'Session Handle already has an attached Mailbox', {
+          details: { address: handle.header.address },
+        })
+      }
+      attachedHandles.add(handle)
+      let declaration = this.#ownedDeclarations.get(handle.header.address)
+      let createdDeclaration = false
+      try {
+        const directoryStatus = this.#directory.status(handle.header.address)
+        if (directoryStatus.kind === 'unknown') {
+          declaration = await this.#directory.declare(handle.header.address, 'active')
+          this.#ownedDeclarations.set(handle.header.address, declaration)
+          createdDeclaration = true
+        } else if (directoryStatus.kind === 'ended') {
+          throw new CommunicationError('MESSAGE_SESSION_ENDED', 'Directory address is already ended', {
+            details: { address: handle.header.address },
+          })
+        } else if (directoryStatus.kind === 'online') {
+          throw new CommunicationError('MESSAGE_MAILBOX_ALREADY_ATTACHED', 'Directory address already has an online Mailbox', {
             details: { address: handle.header.address },
           })
         }
-        throw new CommunicationError('MESSAGE_SESSION_ENDED', 'ended Session cannot attach a Mailbox', {
-          details: { address: handle.header.address },
-        })
-      }
 
-      let declaration = this.#ownedDeclarations.get(handle.header.address)
-      let createdDeclaration = false
-      const directoryStatus = this.#directory.status(handle.header.address)
-      if (directoryStatus.kind === 'unknown') {
-        declaration = await this.#directory.declare(handle.header.address, 'active')
-        this.#ownedDeclarations.set(handle.header.address, declaration)
-        createdDeclaration = true
-      } else if (directoryStatus.kind === 'ended') {
-        throw new CommunicationError('MESSAGE_SESSION_ENDED', 'Directory address is already ended', {
-          details: { address: handle.header.address },
-        })
-      } else if (directoryStatus.kind === 'online') {
-        throw new CommunicationError('MESSAGE_MAILBOX_ALREADY_ATTACHED', 'Directory address already has an online Mailbox', {
-          details: { address: handle.header.address },
-        })
-      }
+        this.#assertActive()
+        if (handle.status !== 'open') {
+          throw new CommunicationError('MESSAGE_MAILBOX_INACTIVE', 'Session Handle is not active for Mailbox attachment', {
+            details: { address: handle.header.address, handleStatus: handle.status },
+          })
+        }
+        const session = handle.snapshot()
+        const snapshot = projectMailbox(session, options.catalog)
+        if (session.lifecycle === 'ended') {
+          const pending = snapshot.outbox.some(item => item.status === 'pending')
+            || snapshot.inbox.some(item => item.status === 'pending')
+          if (pending) {
+            throw new CommunicationError('MESSAGE_STATE_INVALID', 'ended Session contains stranded communication', {
+              details: { address: handle.header.address },
+            })
+          }
+          throw new CommunicationError('MESSAGE_SESSION_ENDED', 'ended Session cannot attach a Mailbox', {
+            details: { address: handle.header.address },
+          })
+        }
 
-      let receiverLease: EffectLease<unknown> | undefined
-      const mailbox = new SessionMailboxImpl({
-        handle,
-        channels: this.delegationChannels,
-        workflowChannels: this.workflowChannels,
-        catalog: options.catalog,
-        policy,
-        limits: this.#limits,
-        clock: this.#clock,
-        identitySource: this.#identitySource,
-        onEnded: () => markDirectoryAddressEnded(this.#directory, handle.header.address),
-        onDispose: async () => {
-          await receiverLease?.dispose()
-          if (this.#mailboxes.get(handle.header.address) === mailbox) this.#mailboxes.delete(handle.header.address)
-          this.#dispatchers.delete(mailbox)
-        },
-      })
-      try {
+        let receiverLease: EffectLease<unknown> | undefined
+        const mailbox = new SessionMailboxImpl({
+          handle,
+          channels: this.delegationChannels,
+          workflowChannels: this.workflowChannels,
+          catalog: options.catalog,
+          transport: this.#transport,
+          policy,
+          limits: this.#limits,
+          clock: this.#clock,
+          identitySource: this.#identitySource,
+          onEnded: () => markDirectoryAddressEnded(this.#directory, handle.header.address),
+          onDispose: async () => {
+            await receiverLease?.dispose()
+            if (this.#mailboxes.get(handle.header.address) === mailbox) this.#mailboxes.delete(handle.header.address)
+            this.#dispatchers.delete(mailbox)
+            attachedHandles.delete(handle)
+          },
+        })
         receiverLease = registerDirectoryReceiver(this.#directory, handle.header.address, mailbox)
         this.#mailboxes.set(handle.header.address, mailbox)
         return mailbox
       } catch (cause) {
+        attachedHandles.delete(handle)
         if (createdDeclaration && declaration !== undefined) {
           this.#ownedDeclarations.delete(handle.header.address)
           await declaration.dispose()
@@ -175,7 +194,7 @@ export class CommunicationService {
     const implementation = mailbox
     const existing = this.#dispatchers.get(implementation)
     if (existing !== undefined) return existing
-    const dispatcher = createOutboxDispatcher(implementation, this.#transport)
+    const dispatcher = createOutboxDispatcher(implementation)
     this.#dispatchers.set(implementation, dispatcher)
     return dispatcher
   }
@@ -185,20 +204,25 @@ export class CommunicationService {
     if (this.#disposeTask !== undefined) return this.#disposeTask
     this.#status = 'disposing'
     this.delegationChannels.closeAdmission()
-    const task = (async () => {
+    const mailboxTasks: Promise<void>[] = []
+    this.#disposeTask = Promise.resolve().then(async () => {
       await Promise.allSettled(this.#operations)
       await this.delegationChannels.drain()
-      const mailboxResults = await Promise.allSettled([...this.#mailboxes.values()].map(mailbox => mailbox.dispose()))
+      const mailboxResults = await Promise.allSettled(mailboxTasks)
       const declarationResults = await Promise.allSettled([...this.#ownedDeclarations.values()].map(lease => lease.dispose()))
+      this.delegationChannels.retireRuntime()
+      this.workflowChannels.retireRuntime()
+      this.protocolCapacity.retireRuntime()
       this.#ownedDeclarations.clear()
       this.#status = 'disposed'
       const failures = [...mailboxResults, ...declarationResults]
         .filter((result): result is PromiseRejectedResult => result.status === 'rejected')
         .map(result => result.reason)
       if (failures.length > 0) throw new AggregateError(failures, 'Communication Service disposal failed')
-    })()
-    this.#disposeTask = task
-    return task
+    })
+    for (const mailbox of this.#mailboxes.values()) mailbox.closeAdmission()
+    for (const mailbox of this.#mailboxes.values()) mailboxTasks.push(mailbox.dispose())
+    return this.#disposeTask
   }
 
   #assertActive(): void {

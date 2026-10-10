@@ -23,6 +23,9 @@ export class ProtocolCapacity {
   drain(): Promise<void> { return this.run(async () => undefined) }
   closeAdmission(): void { this.#closed = true }
 
+  /** Release only volatile quotas after every accepted protocol write has settled. */
+  retireRuntime(): void { this.#closed = true; this.#held.clear() }
+
   /** Call under run() before the domain's durable reservation commit. */
   check(quotas: ReadonlyMap<string, MailboxReservation>, handles: ReadonlyMap<string, SessionHandle>,
     restoring?: (envelope: MessageEnvelope, address: string, direction: MailboxDirection) => boolean): void {

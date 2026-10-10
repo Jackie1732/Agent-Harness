@@ -1,9 +1,10 @@
 import { expect, it } from 'vitest'
+import { OutboxAcceptance } from '../../src/communication/outbox-acceptance.js'
 import { CommunicationService, MemorySessionBackend, SessionRepository, allowAllCommunicationPolicy, communicationSessionEventDefinitions,
   createDurableEventCatalog, createDurableEventDefinition, createInProcessMessageTransport, createMessageCatalog, createMessageDefinition,
   createSessionDirectory, parseChannelId, projectCommunicationFacts } from '../../src/index.js'
-import type { CommunicationPolicy, MessageCatalog, SessionBackend } from '../../src/index.js'
-import { channelIds, communicationIdentities, limits, loseFirstCommitAcknowledgement, messageCatalog, requestMessage, sessionIdentities } from './fixtures.js'
+import type { CommunicationPolicy, MessageCatalog, SessionBackend, SessionHandle, MailboxLimits } from '../../src/index.js'
+import { channelIds, communicationIdentities, limits, loseFirstCommitAcknowledgement, messageCatalog, messageIds, requestMessage, sessionIdentities } from './fixtures.js'
 
 const commandEvent = createDurableEventDefinition({ type: 'test/command', payloadVersion: 1, ignorable: false, decode: value => value })
 const content = { type: requestMessage.type, payloadVersion: 1, payload: { text: 'hello' } }
@@ -27,6 +28,12 @@ async function fixture(backend: SessionBackend = new MemorySessionBackend({ maxR
     for (const service of services) await service.dispose()
     await repo.dispose()
   } }
+}
+
+function acceptance(handle: SessionHandle, index: number, overrides: Partial<MailboxLimits> = {}) {
+  return new OutboxAcceptance({ handle, catalog: messageCatalog, policy: allowAllCommunicationPolicy,
+    limits: { ...limits, ...overrides }, clock: { now: () => 1_789_257_600_000 },
+    identitySource: communicationIdentities(messageIds.slice(index)), fault: () => {} })
 }
 
 it('returns the original acceptance before decoding or authorization and rejects a changed raw command', async () => {
@@ -58,11 +65,12 @@ it('reads the accepted command after its decoder is removed and the current poli
   } finally { await f.dispose() }
 })
 
-it('uses conditional acceptance across independent mailbox objects sharing the same handle', async () => {
+it('uses conditional acceptance across independent acceptance owners sharing the same handle', async () => {
   const f = await fixture()
   try {
-    const a = await f.attach(), b = await f.attach()
-    const [left, right] = await Promise.all([a.mailbox.sendOnce(f.key, f.request, content), b.mailbox.sendOnce(f.key, f.request, content)])
+    const a = acceptance(f.session, 0), b = acceptance(f.session, 1)
+    const command = { ...content, kind: 'send' as const, request: f.request }
+    const [left, right] = await Promise.all([a.sendOnce(f.key, command), b.sendOnce(f.key, command)])
     expect(left).toEqual(right)
     expect(projectCommunicationFacts(f.session.snapshot()).outbox).toHaveLength(1)
   } finally { await f.dispose() }
@@ -78,18 +86,17 @@ it('keeps a single channel sequence across concurrent keyed and ordinary sends',
   } finally { await f.dispose() }
 })
 
-it('rechecks shared capacity after another mailbox wins its conditional append', async () => {
+it('rechecks shared capacity after another acceptance owner wins its conditional append', async () => {
   const f = await fixture()
-  const directories = [createSessionDirectory(), createSessionDirectory()]
-  const services = directories.map(directory => new CommunicationService({ directory, transport: createInProcessMessageTransport(directory),
-    limits: { ...limits, maxPendingOutbox: 1 } }))
   try {
-    const [a, b] = await Promise.all(services.map(service => service.attach(f.session, { catalog: messageCatalog, policy: allowAllCommunicationPolicy })))
-    const results = await Promise.allSettled([a!.sendOnce(f.key, f.request, content), b!.sendOnce({ ...f.key, index: 1 }, f.request, content)])
+    const a = acceptance(f.session, 0, { maxPendingOutbox: 1 })
+    const b = acceptance(f.session, 1, { maxPendingOutbox: 1 })
+    const command = { ...content, kind: 'send' as const, request: f.request }
+    const results = await Promise.allSettled([a.sendOnce(f.key, command), b.sendOnce({ ...f.key, index: 1 }, command)])
     expect(results.filter(result => result.status === 'fulfilled')).toHaveLength(1)
     expect(results.find(result => result.status === 'rejected')).toMatchObject({ reason: { code: 'MESSAGE_OUTBOX_FULL' } })
     expect(projectCommunicationFacts(f.session.snapshot()).outbox).toHaveLength(1)
-  } finally { for (const service of services) await service.dispose(); await f.dispose() }
+  } finally { await f.dispose() }
 })
 
 it('recovers a lost acceptance acknowledgement from its key without a second message', async () => {
