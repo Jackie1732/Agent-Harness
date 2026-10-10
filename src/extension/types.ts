@@ -20,22 +20,26 @@ export type RegistrationId = Brand<string, 'RegistrationId'>
 export interface EventName<TPayload> {
   /** Diagnostic name; object identity selects the event. */
   readonly name: string
-  /** Required compile-time marker that prevents structural construction. */
-  readonly [eventPayload]: { readonly value: TPayload }
+  /** Invariant compile-time marker that prevents reconstruction or payload widening. */
+  readonly [eventPayload]: (payload: TPayload) => TPayload
 }
 
 /** Typed identity of one middleware call. */
 export interface MiddlewareName<TRequest, TResult> {
   /** Diagnostic name; object identity selects the middleware chain. */
   readonly name: string
-  /** Required compile-time markers that prevent structural construction. */
+  /** Invariant compile-time markers that fix the registered request and result types. */
   readonly [middlewareTypes]: {
-    readonly request: TRequest
-    readonly result: TResult
+    readonly request: (request: TRequest) => TRequest
+    readonly result: (result: TResult) => TResult
   }
 }
 
-/** Continue one middleware chain at most once. */
+/**
+ * Continue one middleware chain at most once while its handler is unsettled.
+ * External calls preserve the original handler's task chain and the caller's tasks.
+ * A saved next retains only misuse diagnostics after it is called or its handler settles.
+ */
 export interface MiddlewareNext<TRequest, TResult> {
   /** Continue with the request received by the current handler. */
   (): Promise<TResult>
@@ -65,6 +69,8 @@ export interface RegistrationHandle {
 
   /**
    * Remove this registration without waiting for an already running callback.
+   * The terminal handle retains diagnostics and its release promise; admitted Frames
+   * retain callback captures until their work settles.
    *
    * @returns The shared settlement promise for this registration release.
    */
@@ -187,6 +193,8 @@ export interface Scope {
 
   /**
    * Stop this subtree synchronously, then wait for all accepted work to settle.
+   * Subtree admission closes and shared settlement tasks are published before cancellation
+   * observers run. Cancellation remains cooperative and does not end admitted callbacks.
    *
    * @returns The shared settlement promise outside a re-entrant task chain.
    */

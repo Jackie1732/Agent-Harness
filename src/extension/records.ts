@@ -43,6 +43,7 @@ export interface RegistrationRecord {
   readonly label: string
   readonly callback: EventListener<unknown> | MiddlewareHandler<unknown, unknown>
   readonly scope: ScopeRecord
+  readonly retireHandle: (disposalTask: Promise<void>) => void
   status: RegistrationStatus
   published: boolean
   disposalTask: Promise<void> | undefined

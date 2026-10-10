@@ -2,6 +2,8 @@ import { createHarnessClient } from '@atomic-harness/core/client'
 import type { ControlMethod, Params, Result } from '@atomic-harness/core/protocol'
 import { openHarnessUiServer } from '@atomic-harness/core/ui'
 import { openHarnessAutomation } from '@atomic-harness/core/automation'
+import { createEventName, createMiddlewareName } from '@atomic-harness/core'
+import type { EventName, MiddlewareName, RootScope } from '@atomic-harness/core'
 
 void openHarnessUiServer
 void openHarnessAutomation
@@ -28,3 +30,25 @@ async function typed(client: ReturnType<typeof createHarnessClient>) {
   await client.request('message.send', { agentKey: 'writer', kind: 'reply', messageId: 'arbitrary', type: 'test/note', payloadVersion: 1, payloadJson: '{}' })
 }
 void typed
+
+interface Payload { readonly kind: string }
+interface Reading extends Payload { readonly value: number }
+const reading = createEventName<Reading>('pack.reading')
+const transform = createMiddlewareName<Reading, Reading>('pack.transform')
+function extensions(scope: RootScope) {
+  scope.on(reading, 'general listener', (payload: Payload) => { void payload.kind })
+  void scope.emit(reading, { kind: 'measurement', value: 1 })
+  void scope.invoke(transform, { kind: 'measurement', value: 1 }, request => request)
+  // @ts-expect-error A token cannot admit payloads incompatible with its listeners.
+  const widenedEvent: EventName<Payload> = reading
+  // @ts-expect-error A middleware token fixes its request type.
+  const widenedRequest: MiddlewareName<Payload, Reading> = transform
+  // @ts-expect-error A middleware token fixes its result type.
+  const widenedResult: MiddlewareName<Reading, Payload> = transform
+  // @ts-expect-error The terminal cannot widen the registered result type.
+  void scope.invoke(transform, { kind: 'measurement', value: 1 }, () => ({ kind: 'missing value' }))
+  void widenedEvent
+  void widenedRequest
+  void widenedResult
+}
+void extensions

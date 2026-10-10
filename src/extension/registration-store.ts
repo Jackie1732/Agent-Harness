@@ -26,6 +26,39 @@ function nameTable(names: StagedNames, kind: RegistrationKind): Map<string, Name
   return kind === 'listener' ? names.events : names.middleware
 }
 
+/** Retains the runtime registration only until its contribution is withdrawn. */
+class RegistrationHandleImpl implements RegistrationHandle {
+  readonly id: RegistrationId
+  readonly scopeId: RegistrationHandle['scopeId']
+  readonly label: string
+  #disposeOperation: (() => Promise<void>) | undefined
+  #disposalTask: Promise<void> | undefined
+
+  constructor(
+    registration: Omit<RegistrationRecord, 'retireHandle'>,
+    attach: (retire: RegistrationRecord['retireHandle']) => () => Promise<void>,
+  ) {
+    this.id = registration.id
+    this.scopeId = registration.scope.id
+    this.label = registration.label
+    this.#disposeOperation = attach(this.#retire.bind(this))
+  }
+
+  #retire(disposalTask: Promise<void>): void {
+    this.#disposalTask = disposalTask
+    this.#disposeOperation = undefined
+  }
+
+  get status(): RegistrationStatus {
+    return this.#disposalTask === undefined ? 'registered' : 'disposed'
+  }
+
+  dispose(): Promise<void> {
+    if (this.#disposalTask !== undefined) return this.#disposalTask
+    return this.#disposeOperation!()
+  }
+}
+
 /** Owns registration identity, publication, name consistency, and removal. */
 export class RegistrationStore {
   readonly #published = new Map<number, RegistrationRecord>()
@@ -57,7 +90,7 @@ export class RegistrationStore {
     this.#assertNameAvailable(kind, token, scope)
     this.#nextId += 1
     this.#nextOrdinal += 1
-    const record: RegistrationRecord = {
+    const registration: Omit<RegistrationRecord, 'retireHandle'> = {
       id: `r${this.#nextId}` as RegistrationId,
       ordinal: this.#nextOrdinal,
       kind,
@@ -70,6 +103,11 @@ export class RegistrationStore {
       published: scope.status === 'accepting',
       disposalTask: undefined,
     }
+    let record!: RegistrationRecord
+    const handle = new RegistrationHandleImpl(registration, retireHandle => {
+      record = { ...registration, retireHandle }
+      return this.dispose.bind(this, record)
+    })
     scope.registrations.add(record)
     if (record.published) {
       this.#published.set(record.ordinal, record)
@@ -81,25 +119,24 @@ export class RegistrationStore {
       this.#addName(nameTable(names, kind), record)
     }
     this.onChange()
-    return this.#createHandle(record)
+    return handle
   }
 
   /** Remove one registration immediately and return its stable release task. */
   dispose(record: RegistrationRecord): Promise<void> {
     if (record.disposalTask !== undefined) return record.disposalTask
-    if (record.status === 'registered') {
-      record.status = 'disposed'
-      record.scope.registrations.delete(record)
-      if (record.published) {
-        this.#published.delete(record.ordinal)
-        this.#removeName(this.#activeNames(record.kind), record)
-      } else {
-        const names = record.scope.stagingRoot?.stagedNames
-        if (names !== undefined) this.#removeName(nameTable(names, record.kind), record)
-      }
-      this.onChange()
-    }
     record.disposalTask = Promise.resolve()
+    record.status = 'disposed'
+    record.scope.registrations.delete(record)
+    if (record.published) {
+      this.#published.delete(record.ordinal)
+      this.#removeName(this.#activeNames(record.kind), record)
+    } else {
+      const names = record.scope.stagingRoot?.stagedNames
+      if (names !== undefined) this.#removeName(nameTable(names, record.kind), record)
+    }
+    record.retireHandle(record.disposalTask)
+    this.onChange()
     return record.disposalTask
   }
 
@@ -152,16 +189,6 @@ export class RegistrationStore {
       if (found === undefined || registration.ordinal < found.ordinal) found = registration
     }
     return found
-  }
-
-  #createHandle(record: RegistrationRecord): RegistrationHandle {
-    return {
-      id: record.id,
-      scopeId: record.scope.id,
-      label: record.label,
-      get status(): RegistrationStatus { return record.status },
-      dispose: () => this.dispose(record),
-    }
   }
 
   #assertNameAvailable(
