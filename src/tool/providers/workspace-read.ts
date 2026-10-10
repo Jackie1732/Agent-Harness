@@ -56,6 +56,7 @@ export async function createWorkspaceReadTextProviderWithIO(options: WorkspaceRe
   let descriptor: ToolProviderDescriptor
   let maxPathBytes: number
   let maxReadBytes: number
+  const access = options.access
   try {
     const rootId = safeCode(options.rootId)
     maxPathBytes = integer(options.maxPathBytes)
@@ -80,6 +81,7 @@ export async function createWorkspaceReadTextProviderWithIO(options: WorkspaceRe
     throw new ToolError('TOOL_WORKSPACE_INVALID', 'workspace configuration is invalid, inaccessible, or overlaps a protected root')
   }
   const pool = new ToolExecutionPool(1)
+  let runtime: { readonly io: WorkspaceFileIO; readonly root: Root; readonly access: WorkspaceAccess | undefined } | undefined = { io, root, access }
   return Object.freeze({ descriptor,
     prepare: (selected: ToolDefinition, input: JsonValue, suppliedLimits: ToolInvocationLimits): PreparedToolCall => {
       pool.assertAccepting()
@@ -90,16 +92,16 @@ export async function createWorkspaceReadTextProviderWithIO(options: WorkspaceRe
       }
       const args = object(input); exact(args, ['path'])
       const path = workspaceRelativePath(args.path, maxPathBytes)
-      options.access?.assert(path, 'read')
+      runtime!.access?.assert(path, 'read')
       // Worst-case JSON escaping is six bytes per source byte; reserve all metadata too.
       const overhead = jsonBytes({ kind: 'success', value: { path, text: '', byteLength: Number.MAX_SAFE_INTEGER, sha256: '0'.repeat(64) } })
       const maxBytes = Math.min(maxReadBytes, Math.floor((limits.maxResultBytes - overhead) / 6))
       if (maxBytes < 1) throw new ToolError('TOOL_RECORD_BUDGET', 'result ceiling cannot hold a complete read_text result')
       const plan = createPreparedToolPlan({ definition, provider: descriptor, input: { path }, limits,
         target: { kind: 'workspace-file', rootId: descriptor.resourceId, path, maxBytes } })
-      return pool.prepare(plan, (committed, signal) => readExecution(io, root, committed, signal, options.access))
+      return pool.prepare(plan, (committed, signal) => readExecution(runtime!.io, runtime!.root, committed, signal, runtime!.access))
     },
-    dispose: () => pool.dispose(),
+    dispose: () => pool.dispose(() => { runtime = undefined }),
   })
 }
 

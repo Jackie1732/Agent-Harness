@@ -17,43 +17,41 @@ export interface ScriptedToolProviderOptions {
 export class ScriptedToolProvider implements ToolProvider {
   readonly descriptor: ToolProviderDescriptor
   readonly #pool: ToolExecutionPool
-  readonly #acquire: ScriptedToolProviderOptions['acquire']
-  readonly #onPrepare: ScriptedToolProviderOptions['onPrepare']
+  #runtime: Pick<ScriptedToolProviderOptions, 'acquire' | 'onPrepare'> | undefined
   constructor(options: ScriptedToolProviderOptions) {
     this.descriptor = readDescriptor(options.descriptor)
-    if (typeof options.acquire !== 'function') throw new TypeError('scripted acquire must be a function')
     this.#pool = new ToolExecutionPool(this.descriptor.maxConcurrentExecutions)
-    this.#acquire = options.acquire
-    this.#onPrepare = options.onPrepare
+    this.#runtime = { acquire: options.acquire, ...(options.onPrepare === undefined ? {} : { onPrepare: options.onPrepare }) }
   }
   prepare(definition: ToolDefinition, input: JsonValue, limits: ToolInvocationLimits): PreparedToolCall {
     this.#pool.assertAccepting()
     const plan = createPreparedToolPlan({ definition, provider: this.descriptor, input, limits,
       target: { kind: 'logical', resourceId: this.descriptor.resourceId } })
-    this.#onPrepare?.(plan)
-    return this.#pool.prepare(plan, this.#acquire)
+    this.#runtime!.onPrepare?.(plan)
+    return this.#pool.prepare(plan, (committed, signal) => this.#runtime!.acquire(committed, signal))
   }
-  dispose(): Promise<void> { return this.#pool.dispose() }
+  dispose(): Promise<void> { return this.#pool.dispose(() => { this.#runtime = undefined }) }
 }
 
 /** Convenient one-shot scripted execution, with observable start and cleanup callbacks. */
 export function createScriptedToolExecution(
   start: () => Awaitable<ToolExecutionResult>, close: () => Awaitable<void>,
 ): ToolExecution {
+  let runtime: { readonly start: typeof start; readonly close: typeof close } | undefined = { start, close }
   let startTask: Promise<ToolExecutionResult> | undefined
   let closeTask: Promise<void> | undefined
   return Object.freeze({
     start: () => {
       if (startTask !== undefined || closeTask !== undefined) throw new TypeError('scripted execution is single-use')
-      startTask = Promise.resolve().then(start)
+      startTask = Promise.resolve().then(() => runtime!.start())
       void startTask.catch(() => undefined)
       return startTask
     },
     close: () => {
       closeTask ??= Promise.resolve().then(async () => {
         if (startTask !== undefined) await startTask.catch(() => undefined)
-        await close()
-      })
+        await runtime!.close()
+      }).finally(() => { runtime = undefined; startTask = undefined })
       void closeTask.catch(() => undefined)
       return closeTask
     },

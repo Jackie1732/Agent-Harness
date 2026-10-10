@@ -6,7 +6,7 @@ import type { SessionHandle } from '../session/session-handle.js'
 import type { CommittedSessionEvent } from '../session/types.js'
 import { assertMinimalSettlementCapacity, assertRecordCapacity, assertSettlementCapacity } from './budget.js'
 import type {
-  ToolAuthorizationPayload, ToolExecution, ToolExecutionResult, ToolInvocationLimits,
+  ToolAuthorizationPayload, ToolExecutionResult, ToolInvocationLimits,
   ToolPhase, ToolPolicy, ToolPolicyIdentity, ToolRequestedPayload, ToolSettlement,
 } from './contract.js'
 import { ToolError } from './errors.js'
@@ -77,9 +77,7 @@ export async function runToolInvocation(context: ToolInvocationContext): Promise
   const progress: { current: ToolPhase } = { current: 'selection' }
   const phase = (next: ToolPhase): void => { progress.current = next; context.phase(next) }
   let accepted = false
-  let execution: ToolExecution | undefined
   let closeExecution: (() => Promise<void>) | undefined
-  let startExecution: (() => ReturnType<ToolExecution['start']>) | undefined
   let cleanupAttempts = 0
   let cleanupFailures = 0
   let unattributedCleanupFailure = false
@@ -141,9 +139,6 @@ export async function runToolInvocation(context: ToolInvocationContext): Promise
       phase('preparing')
       assertSettlementCapacity(session, request.invocationId, limits, borrow.definition.operationClass)
       const prepared = borrow.provider.prepare(borrow.definition, input, limits)
-      if (prepared === null || typeof prepared !== 'object' || typeof prepared.acquire !== 'function') {
-        throw new ToolError('TOOL_PROVIDER_INVALID', 'provider prepare did not return an execution binding')
-      }
       let plan
       try { plan = decodePlan(prepared.plan, limits) }
       catch { throw new ToolError('TOOL_BINDING_MISMATCH', 'provider plan does not satisfy the bounded execution contract') }
@@ -174,22 +169,18 @@ export async function runToolInvocation(context: ToolInvocationContext): Promise
       if (cancelled() || !borrow.active()) return
 
       phase('acquiring')
-      await owner.run('tool-invocation', async effect => {
-        execution = await effect.apply('tool-execution',
+      const execution = await owner.run('tool-invocation', async effect => {
+        const value = await effect.apply('tool-execution',
           () => acquire(authorization.payload.plan, signal),
           async value => {
             cleanupAttempts++
             try {
-              const close = closeExecution ?? (typeof value?.close === 'function' ? value.close.bind(value) : undefined)
-              if (close === undefined) throw new ToolError('TOOL_PROVIDER_INVALID', 'execution supplied no close operation')
+              const close = closeExecution ?? value.close.bind(value)
               await close()
             } catch { cleanupFailures++; throw new ToolError('TOOL_CLEANUP_FAILED', 'execution close failed') }
           })
-        if (execution === null || typeof execution !== 'object' || typeof execution.start !== 'function' || typeof execution.close !== 'function') {
-          throw new ToolError('TOOL_PROVIDER_INVALID', 'acquired execution has an invalid runtime contract')
-        }
-        closeExecution = execution.close.bind(execution)
-        startExecution = execution.start.bind(execution)
+        closeExecution = value.close.bind(value)
+        return value.start.bind(value)
       })
       if (cancelled() || !borrow.active()) return
       phase('starting')
@@ -197,11 +188,10 @@ export async function runToolInvocation(context: ToolInvocationContext): Promise
         invocationId: request.invocationId, authorizationEventId: authorization.stored.eventId,
       })
       if (cancelled() || !borrow.active()) return
-      if (startExecution === undefined) throw new ToolError('TOOL_PROVIDER_INVALID', 'execution was not acquired')
       phase('executing')
       settlement = { ...settlement, execution: 'may-have-executed',
         emission: borrow.definition.operationClass === 'external' ? 'may-have-occurred' : 'none' }
-      const raw = await startExecution()
+      const raw = await execution.value()
       settlement = { ...settlement, execution: 'execution-observed' }
       const result = executionResult(raw, limits, borrow)
       // Validation completes before this synchronous result/cancel arbitration point.

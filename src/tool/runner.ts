@@ -9,6 +9,7 @@ import { ownsToolTask, withToolTask } from './execution-context.js'
 import { parseToolInvocationId, systemToolIdentitySource } from './ids.js'
 import type { ToolIdentitySource } from './ids.js'
 import { runToolInvocation } from './invocation.js'
+import type { ToolInvocationContext } from './invocation.js'
 import { projectToolSession } from './projection.js'
 import type { ToolSessionSnapshot } from './projection.js'
 import { borrowTool, ToolRegistry } from './registry.js'
@@ -17,6 +18,7 @@ import { readIntentReference, readModelIntent, sourceKey } from './source.js'
 import { exact, integer, object, readLimits, safeCode, toolName } from './validation.js'
 
 export interface SessionToolRunnerOptions {
+  /** Keep the borrowed Handle open until Runner disposal settles. */
   readonly session: SessionHandle
   readonly registry: ToolRegistry
   readonly scope: Scope
@@ -27,17 +29,21 @@ export interface SessionToolRunnerOptions {
 export type ToolRunnerStatus = 'accepting' | 'disposing' | 'faulted' | 'disposed'
 interface Task { readonly token: symbol; readonly promise: Promise<CommittedSessionEvent<ToolSettlement>>; readonly controller: AbortController }
 
-/** A borrowed Session entry point. dispose never ends the Session or releases its Writer. */
+interface ToolRunnerRuntime {
+  readonly session: SessionHandle
+  readonly registry: ToolRegistry
+  readonly scope: Scope
+  readonly identity: ToolIdentitySource
+  readonly policy: Pick<ToolPolicy, 'decide'>
+  readonly policySignal: AbortSignal
+  readonly policyIdentity: ToolPolicyIdentity
+  readonly controller: AbortController
+}
+
+/** Session-local admission and tasks; the borrowed Session, Registry and Policy remain external. */
 export class SessionToolRunner {
-  readonly #session: SessionHandle
-  readonly #registry: ToolRegistry
-  readonly #scope: Scope
   readonly #limits: ToolInvocationLimits
-  readonly #identity: ToolIdentitySource
-  readonly #policy: Pick<ToolPolicy, 'decide'>
-  readonly #policySignal: AbortSignal
-  readonly #policyIdentity: ToolPolicyIdentity
-  readonly #controller = new AbortController()
+  #runtime: ToolRunnerRuntime | undefined
   #status: ToolRunnerStatus = 'accepting'
   #phase: ToolPhase = 'selection'
   #active: Task | undefined
@@ -46,29 +52,29 @@ export class SessionToolRunner {
   #cleanupFailure: ToolError | undefined
 
   constructor(options: SessionToolRunnerOptions) {
-    this.#session = options.session
-    this.#registry = options.registry
-    this.#scope = options.scope
     this.#limits = readLimits(options.limits)
-    this.#identity = options.identity ?? systemToolIdentitySource
     const policy = options.policy
-    if (policy === null || typeof policy !== 'object' || typeof policy.decide !== 'function'
-      || !(policy.signal instanceof AbortSignal)) throw new ToolError('TOOL_POLICY_INVALID', 'an explicit lifecycle-bound policy is required')
-    try { this.#policyIdentity = Object.freeze({ policyId: safeCode(policy.policyId), version: integer(policy.version) }) }
+    let policyIdentity: ToolPolicyIdentity
+    try { policyIdentity = Object.freeze({ policyId: safeCode(policy.policyId), version: integer(policy.version) }) }
     catch { throw new ToolError('TOOL_POLICY_INVALID', 'policy identity is invalid') }
-    this.#policy = Object.freeze({ decide: policy.decide.bind(policy) })
-    this.#policySignal = policy.signal
-    if (!toolSessionEventDefinitions.every(definition => this.#session.supportsEventDefinition(definition))) {
+    if (!toolSessionEventDefinitions.every(definition => options.session.supportsEventDefinition(definition))) {
       throw new ToolError('TOOL_SESSION_CATALOG_INCOMPATIBLE', 'Session must own all four exact tool event definitions')
     }
-    projectToolSession(this.#session.snapshot())
+    projectToolSession(options.session.snapshot())
+    this.#runtime = {
+      session: options.session, registry: options.registry, scope: options.scope,
+      identity: options.identity ?? systemToolIdentitySource,
+      policy: Object.freeze({ decide: policy.decide.bind(policy) }), policySignal: policy.signal,
+      policyIdentity, controller: new AbortController(),
+    }
   }
 
   get status(): ToolRunnerStatus { return this.#status }
   get phase(): ToolPhase { return this.#phase }
   /** Safe retained infrastructure failure, including after dispose. */
   get failure(): ToolError | undefined { return this.#failure }
-  snapshot(): ToolSessionSnapshot { return projectToolSession(this.#session.snapshot()) }
+  /** Read committed facts while the runtime is owned; retain immutable snapshots for later replay. */
+  snapshot(): ToolSessionSnapshot { return projectToolSession(this.#requireRuntime().session.snapshot()) }
 
   /** Start one explicit direct request. Input is copied before the first asynchronous yield. */
   invoke(request: DirectToolRequest, options: { readonly signal?: AbortSignal } = {}): Promise<CommittedSessionEvent<ToolSettlement>> {
@@ -94,23 +100,24 @@ export class SessionToolRunner {
     if (prior !== undefined) throw new ToolError('TOOL_SESSION_BUSY', 'model intent already has pending tool work')
     this.#assertAccepting(options.signal)
     return this.#launch(options.signal, () => {
-      const source = readModelIntent(this.#session.snapshot(), checked)
+      const source = readModelIntent(this.#requireRuntime().session.snapshot(), checked)
       return { name: source.block.name, source: source.source, arguments: { kind: 'text', text: source.block.argumentsText } }
     })
   }
 
-  /** Stop admission synchronously, request cancellation, and await the same full task on repeated calls. */
+  /** Stop admission, join accepted work, and retire borrowed resources without ending the Session. */
   dispose(): Promise<void> {
     if (this.#disposeTask === undefined) {
       this.#status = 'disposing'
       const task = this.#active?.promise
       this.#disposeTask = Promise.resolve().then(async () => {
         if (task !== undefined) await task.catch(() => undefined)
+        this.#runtime = undefined
         this.#status = 'disposed'
         if (this.#cleanupFailure !== undefined) throw this.#cleanupFailure
       })
       void this.#disposeTask.catch(() => undefined)
-      this.#controller.abort()
+      this.#runtime?.controller.abort()
       this.#active?.controller.abort()
     }
     if (this.#active !== undefined && ownsToolTask(this.#active.token)) {
@@ -120,9 +127,9 @@ export class SessionToolRunner {
   }
 
   #assertAccepting(signal: AbortSignal | undefined): void {
-    if (signal !== undefined && !(signal instanceof AbortSignal)) throw new ToolError('TOOL_REQUEST_INVALID', 'cancellation must be an AbortSignal')
-    if (this.#status !== 'accepting' || this.#session.status !== 'open' || this.#scope.status !== 'accepting'
-      || this.#scope.signal.aborted || this.#policySignal.aborted || this.#session.snapshot().lifecycle !== 'active') {
+    const runtime = this.#requireRuntime()
+    if (this.#status !== 'accepting' || runtime.session.status !== 'open' || runtime.scope.status !== 'accepting'
+      || runtime.scope.signal.aborted || runtime.policySignal.aborted || runtime.session.snapshot().lifecycle !== 'active') {
       throw new ToolError('TOOL_RUNNER_INACTIVE', 'tool runner or a borrowed lifecycle is not accepting')
     }
     if (signal?.aborted) throw new ToolError('TOOL_CANCELLED', 'tool request was cancelled before acceptance')
@@ -130,6 +137,7 @@ export class SessionToolRunner {
   }
 
   #launch(signal: AbortSignal | undefined, capture: () => Pick<ToolRequestedPayload, 'name' | 'source' | 'arguments'>): Promise<CommittedSessionEvent<ToolSettlement>> {
+    const runtime = this.#requireRuntime()
     let resolve!: (result: CommittedSessionEvent<ToolSettlement>) => void
     let reject!: (reason: unknown) => void
     const promise = new Promise<CommittedSessionEvent<ToolSettlement>>((yes, no) => { resolve = yes; reject = no })
@@ -138,21 +146,20 @@ export class SessionToolRunner {
     const task: Task = { token, controller, promise }
     this.#active = task
     // Publish the managed task before calling an identity source, provider, or policy.
-    void promise.then(() => this.#finished(task), reason => this.#finished(task, reason))
+    void promise.then(this.#finished.bind(this, task), this.#finished.bind(this, task))
     try {
-      withToolTask(token, () => {
+      const context = withToolTask(token, () => {
         const captured = capture()
-        const invocationId = parseToolInvocationId(this.#identity.nextInvocationId())
-        const borrow = borrowTool(this.#registry, captured.name, token, promise, () => controller.abort())
-        const combined = AbortSignal.any([this.#controller.signal, controller.signal, this.#scope.signal,
-          this.#policySignal, ...(signal === undefined ? [] : [signal]), ...(borrow === undefined ? [] : [borrow.signal])])
+        const invocationId = parseToolInvocationId(runtime.identity.nextInvocationId())
+        const borrow = borrowTool(runtime.registry, captured.name, token, promise, () => controller.abort())
+        const combined = AbortSignal.any([runtime.controller.signal, controller.signal, runtime.scope.signal,
+          runtime.policySignal, ...(signal === undefined ? [] : [signal]), ...(borrow === undefined ? [] : [borrow.signal])])
         const request = decodeRequested({ ...captured, invocationId, limits: this.#limits,
           selection: borrow === undefined ? { kind: 'missing' } : { kind: 'resolved', definition: borrow.definition, provider: borrow.descriptor } })
-        void Promise.resolve().then(() => withToolTask(token, () => runToolInvocation({
-          session: this.#session, request, borrow, policy: this.#policy, policyIdentity: this.#policyIdentity,
-          signal: combined, stop: () => controller.abort(), phase: value => { this.#phase = value },
-        }))).then(resolve, reject)
+        return { session: runtime.session, request, borrow, policy: runtime.policy, policyIdentity: runtime.policyIdentity,
+          signal: combined, stop: controller.abort.bind(controller), phase: this.#setPhase.bind(this) }
       })
+      void withToolTask(token, this.#execute.bind(this, context)).then(resolve, reject)
     } catch (reason) { reject(reason instanceof ToolError ? reason : new ToolError('TOOL_REQUEST_INVALID', 'tool request is not valid bounded JSON')) }
     return promise
   }
@@ -168,7 +175,20 @@ export class SessionToolRunner {
         this.#cleanupFailure = new ToolError('TOOL_CLEANUP_FAILED', 'tool runner retains incomplete cleanup', reason.details)
       }
       if (this.#status === 'accepting') this.#status = 'faulted'
-      this.#controller.abort()
+      this.#requireRuntime().controller.abort()
     }
+  }
+
+  async #execute(context: ToolInvocationContext): Promise<CommittedSessionEvent<ToolSettlement>> {
+    // Resume after publication without retaining the synchronous capture callback's runtime.
+    await Promise.resolve()
+    return await runToolInvocation(context)
+  }
+
+  #setPhase(phase: ToolPhase): void { this.#phase = phase }
+
+  #requireRuntime(): ToolRunnerRuntime {
+    if (this.#runtime === undefined) throw new ToolError('TOOL_RUNNER_INACTIVE', 'tool runner runtime has been released')
+    return this.#runtime
   }
 }

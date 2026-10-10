@@ -23,14 +23,15 @@ export interface ToolRegistrationSnapshot {
 }
 interface Flight { readonly task: Promise<unknown>; readonly cancel: () => void }
 interface Registration {
-  readonly scope: Scope
-  readonly compiled: CompiledToolDefinition
+  readonly definition: ToolDefinition
+  scope: Scope | undefined
+  compiled: CompiledToolDefinition | undefined
   readonly descriptor: ToolProviderDescriptor
   provider: Pick<ToolProvider, 'prepare'> | undefined
   readonly controller: AbortController
   readonly flights: Map<symbol, Flight>
-  readonly remove: () => void
-  readonly stopListening: () => void
+  remove: (() => void) | undefined
+  stopListening: (() => void) | undefined
   retiring: boolean
   disposed: boolean
   closeTask?: Promise<void>
@@ -49,11 +50,11 @@ function state(registry: ToolRegistry): RegistryState {
   return result
 }
 function active(record: Registration): boolean {
-  return !record.retiring && !record.disposed && record.scope.status === 'accepting' && !record.scope.signal.aborted
+  return !record.retiring && !record.disposed && record.scope!.status === 'accepting' && !record.scope!.signal.aborted
 }
 function status(record: Registration): ToolRegistrationStatus {
   if (record.disposed) return 'disposed'
-  if (record.retiring || record.scope.signal.aborted) return 'retiring'
+  if (record.retiring || record.scope!.signal.aborted) return 'retiring'
   return active(record) ? 'active' : 'staging'
 }
 function reentrant(record: Registration): boolean { return [...record.flights.keys()].some(ownsToolTask) }
@@ -62,17 +63,32 @@ function retire(record: Registration): Promise<void> {
   record.retiring = true
   record.closeTask = Promise.resolve().then(async () => {
     await Promise.allSettled([...record.flights.values()].map(flight => flight.task))
-    record.stopListening()
+    record.stopListening!()
+    record.stopListening = undefined
+    record.scope = undefined
+    record.compiled = undefined
     record.provider = undefined
     record.disposed = true
     // Incomplete recovery keeps the name reserved. Replacing it would hide a resource leak.
+    const remove = record.remove!
+    record.remove = undefined
     if (record.unsafe !== undefined) throw record.unsafe
-    record.remove()
+    remove()
   })
   void record.closeTask.catch(() => undefined)
   record.controller.abort()
   for (const flight of record.flights.values()) flight.cancel()
   return record.closeTask
+}
+
+function registrationHandle(record: Registration): ToolRegistration {
+  return Object.freeze({ definition: record.definition,
+    get status() { return status(record) },
+    dispose: () => {
+      const task = retire(record)
+      return reentrant(record) ? Promise.reject(new ToolError('TOOL_REENTRANT_WAIT', 'tool task cannot wait for its own registration')) : task
+    },
+  })
 }
 
 /** An explicit consumer-local namespace. Scope ancestry never grants visibility in another registry. */
@@ -93,8 +109,7 @@ export class ToolRegistry {
     registry.slots.set(checked.name, reservation)
     try {
       const descriptor = readDescriptor(provider.descriptor)
-      if (typeof provider.prepare !== 'function' || typeof provider.dispose !== 'function'
-        || !descriptor.tools.some(tool => tool.name === checked.name && tool.version === checked.version)) {
+      if (!descriptor.tools.some(tool => tool.name === checked.name && tool.version === checked.version)) {
         throw new ToolError('TOOL_BINDING_MISMATCH', 'provider does not implement the selected tool version')
       }
       // Capture the method with the activation instance; never resolve it again after CP0.
@@ -104,7 +119,7 @@ export class ToolRegistry {
         throw new ToolError('TOOL_REGISTRATION_INACTIVE', 'registration lifecycle closed during validation')
       }
       const abort = (): void => { void retire(record) }
-      const record: Registration = { scope, compiled, descriptor, provider: binding,
+      const record: Registration = { scope, definition: compiled.definition, compiled, descriptor, provider: binding,
         controller: new AbortController(), flights: new Map(), retiring: false, disposed: false,
         remove: () => { if (registry.slots.get(checked.name) === record) registry.slots.delete(checked.name) },
         stopListening: () => scope.signal.removeEventListener('abort', abort),
@@ -112,13 +127,7 @@ export class ToolRegistry {
       registry.slots.set(checked.name, record)
       scope.signal.addEventListener('abort', abort, { once: true })
       if (scope.signal.aborted) void retire(record)
-      return Object.freeze({ definition: compiled.definition,
-        get status() { return status(record) },
-        dispose: () => {
-          const task = retire(record)
-          return reentrant(record) ? Promise.reject(new ToolError('TOOL_REENTRANT_WAIT', 'tool task cannot wait for its own registration')) : task
-        },
-      })
+      return registrationHandle(record)
     } catch (reason) {
       if (registry.slots.get(checked.name) === reservation) registry.slots.delete(checked.name)
       throw reason
@@ -128,11 +137,11 @@ export class ToolRegistry {
   /** Return declarative visible tools only; no fallback to parent, sibling, or global namespaces. */
   definitions(): readonly ToolDefinition[] {
     const registry = state(this)
-    return Object.freeze([...registry.slots.values()].flatMap(item => typeof item !== 'symbol' && active(item) ? [item.compiled.definition] : []))
+    return Object.freeze([...registry.slots.values()].flatMap(item => typeof item !== 'symbol' && active(item) ? [item.definition] : []))
   }
   snapshot(): readonly ToolRegistrationSnapshot[] {
     return Object.freeze([...state(this).slots.values()].flatMap(item => typeof item === 'symbol' ? [] : [Object.freeze({
-      definition: item.compiled.definition, provider: item.descriptor, status: status(item), inFlight: item.flights.size,
+      definition: item.definition, provider: item.descriptor, status: status(item), inFlight: item.flights.size,
     })]))
   }
   /** Retire this namespace without disposing borrowed provider clients. */
@@ -170,8 +179,8 @@ export function borrowTool(registry: ToolRegistry, name: string, token: symbol, 
   record.flights.set(token, { task, cancel })
   const remove = (): void => { record.flights.delete(token) }
   void task.then(remove, remove)
-  return Object.freeze({ definition: record.compiled.definition, descriptor: record.descriptor, provider: record.provider!,
-    compiled: record.compiled, signal: record.controller.signal,
+  return Object.freeze({ definition: record.definition, descriptor: record.descriptor, provider: record.provider!,
+    compiled: record.compiled!, signal: record.controller.signal,
     active: () => active(record),
     markUnsafe: (error: ToolError) => { record.unsafe = error; void retire(record) },
   })

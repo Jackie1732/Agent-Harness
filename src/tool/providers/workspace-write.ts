@@ -60,6 +60,7 @@ export async function createWorkspaceWriteTextProviderWithIO(options: WorkspaceW
     if (contains(root.path, protectedRoot.path) || contains(protectedRoot.path, root.path)) throw new ToolError('TOOL_WORKSPACE_INVALID', 'workspace overlaps a protected root')
   }
   const pool = new ToolExecutionPool(1)
+  let runtime: { readonly io: WorkspaceWriteIO; readonly root: Root; readonly access: WorkspaceAccess } | undefined = { io, root, access }
   return Object.freeze({ descriptor, prepare(selected: ToolDefinition, input: JsonValue, supplied: ToolInvocationLimits): PreparedToolCall {
     pool.assertAccepting()
     if (!equalJson(selected, definition)) throw new ToolError('TOOL_BINDING_MISMATCH', 'write_text definition mismatch')
@@ -69,12 +70,12 @@ export async function createWorkspaceWriteTextProviderWithIO(options: WorkspaceW
     const path = workspaceRelativePath(args.path, maxPathBytes)
     if (typeof args.text !== 'string' || Buffer.from(args.text, 'utf8').toString('utf8') !== args.text) throw new ToolError('TOOL_REQUEST_INVALID', 'write_text requires lossless UTF-8 text')
     if (Buffer.byteLength(args.text) > maxWriteBytes) throw new ToolError('TOOL_REQUEST_INVALID', 'write_text byte limit')
-    access.assert(path, 'write')
+    runtime!.access.assert(path, 'write')
     if (jsonBytes({ kind: 'success', value: { path, byteLength: Number.MAX_SAFE_INTEGER, sha256: '0'.repeat(64) } }) > limits.maxResultBytes) throw new ToolError('TOOL_RECORD_BUDGET', 'write result does not fit')
     const plan = createPreparedToolPlan({ definition, provider: descriptor, input: { path, text: args.text }, limits,
       target: { kind: 'workspace-file', rootId, path, maxBytes: maxWriteBytes } })
-    return pool.prepare(plan, (committed, signal) => writeExecution(io, root, access, committed, signal))
-  }, dispose: () => pool.dispose() })
+    return pool.prepare(plan, (committed, signal) => writeExecution(runtime!.io, runtime!.root, runtime!.access, committed, signal))
+  }, dispose: () => pool.dispose(() => { runtime = undefined }) })
 }
 
 function writeExecution(io: WorkspaceWriteIO, root: Root, access: WorkspaceAccess, plan: PreparedToolPlan, signal: AbortSignal): ToolExecution {

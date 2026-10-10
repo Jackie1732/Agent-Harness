@@ -71,7 +71,7 @@ export type ToolExecutionResult =
   | { readonly kind: 'success'; readonly value: JsonValue; readonly receipt?: string }
   | { readonly kind: 'error'; readonly code: string; readonly receipt?: string }
 
-/** One operation. close waits for all started work and returns one shared task. */
+/** One operation. close joins started work, retires runtime resources and shares its settlement. */
 export interface ToolExecution {
   start(): Awaitable<ToolExecutionResult>
   close(): Promise<void>
@@ -82,7 +82,7 @@ export interface ToolProvider {
   readonly descriptor: ToolProviderDescriptor
   /** Pure synchronous compilation. It must not open files or perform protected work. */
   prepare(definition: ToolDefinition, input: JsonValue, limits: ToolInvocationLimits): PreparedToolCall
-  /** Stops new acquisitions, requests cancellation, and waits for borrowers to close. */
+  /** Stops acquisition, cancels admitted work, waits for borrowers, then retires owned runtime resources. */
   dispose(): Promise<void>
 }
 

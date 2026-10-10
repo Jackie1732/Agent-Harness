@@ -5,6 +5,7 @@ import { ownsToolTask, withToolTask } from '../execution-context.js'
 import { equalJson } from '../validation.js'
 
 interface Slot { readonly token: symbol; callbacks: number; readonly controller: AbortController; readonly closed: Promise<void>; readonly release: () => void }
+interface ExecutionRuntime { readonly inner: ToolExecution; readonly signal: AbortSignal }
 
 async function inSlot<T>(slot: Slot, operation: () => Awaitable<T>): Promise<T> {
   slot.callbacks++
@@ -51,46 +52,57 @@ export class ToolExecutionPool {
       let inner: ToolExecution
       try { inner = await inSlot(slot, () => acquire(committed, combined)) }
       catch (reason) { this.#slots.delete(slot); release(); throw reason }
-      let startTask: Promise<ToolExecutionResult> | undefined
-      let closeTask: Promise<void> | undefined
-      return Object.freeze({
-        start: (): Promise<ToolExecutionResult> => {
-          if (startTask !== undefined || closeTask !== undefined || combined.aborted) throw new ToolError('TOOL_PROVIDER_INACTIVE', 'execution cannot start again or after cancellation')
-          this.assertAccepting()
-          // Publish the task before calling possibly reentrant implementation code.
-          startTask = Promise.resolve().then(() => {
-            this.assertAccepting()
-            if (combined.aborted) throw new ToolError('TOOL_CANCELLED', 'execution was cancelled before its body started')
-            return inSlot(slot, () => inner.start())
-          })
-          void startTask.catch(() => undefined)
-          return startTask
-        },
-        close: (): Promise<void> => {
-          if (closeTask === undefined) {
-            closeTask = Promise.resolve().then(async () => {
-              if (startTask !== undefined) await startTask.catch(() => undefined)
-              await inSlot(slot, () => inner.close())
-            }).catch(() => {
-              this.#markCleanupFailed()
-              throw new ToolError('TOOL_CLEANUP_FAILED', 'tool execution did not close completely')
-            }).finally(() => { this.#slots.delete(slot); release() })
-            void closeTask.catch(() => undefined)
-            controller.abort()
-          }
-          if (slot.callbacks > 0 && ownsToolTask(slot.token)) return Promise.reject(new ToolError('TOOL_REENTRANT_WAIT', 'execution cannot wait for its own close'))
-          return closeTask
-        },
-      })
+      return this.#execution(inner, slot, combined)
     } })
   }
 
-  dispose(): Promise<void> {
+  #execution(inner: ToolExecution, slot: Slot, signal: AbortSignal): ToolExecution {
+    let runtime: ExecutionRuntime | undefined = { inner, signal }
+    let startTask: Promise<ToolExecutionResult> | undefined
+    let closeTask: Promise<void> | undefined
+    return Object.freeze({
+      start: (): Promise<ToolExecutionResult> => {
+        if (startTask !== undefined || closeTask !== undefined || runtime!.signal.aborted) throw new ToolError('TOOL_PROVIDER_INACTIVE', 'execution cannot start again or after cancellation')
+        this.assertAccepting()
+        // Publish the task before calling possibly reentrant implementation code.
+        startTask = Promise.resolve().then(() => {
+          this.assertAccepting()
+          if (runtime!.signal.aborted) throw new ToolError('TOOL_CANCELLED', 'execution was cancelled before its body started')
+          return inSlot(slot, () => runtime!.inner.start())
+        })
+        void startTask.catch(() => undefined)
+        return startTask
+      },
+      close: (): Promise<void> => {
+        if (closeTask === undefined) {
+          closeTask = Promise.resolve().then(async () => {
+            if (startTask !== undefined) await startTask.catch(() => undefined)
+            await inSlot(slot, () => runtime!.inner.close())
+          }).catch(() => {
+            this.#markCleanupFailed()
+            throw new ToolError('TOOL_CLEANUP_FAILED', 'tool execution did not close completely')
+          }).finally(() => {
+            runtime = undefined
+            startTask = undefined
+            this.#slots.delete(slot)
+            slot.release()
+          })
+          void closeTask.catch(() => undefined)
+          slot.controller.abort()
+        }
+        if (slot.callbacks > 0 && ownsToolTask(slot.token)) return Promise.reject(new ToolError('TOOL_REENTRANT_WAIT', 'execution cannot wait for its own close'))
+        return closeTask
+      },
+    })
+  }
+
+  dispose(retire: () => void): Promise<void> {
     if (this.#closeTask === undefined) {
       this.#retiring = true
       const pending = [...this.#slots].map(slot => slot.closed)
       this.#closeTask = Promise.resolve().then(async () => {
         await Promise.all(pending)
+        retire()
         if (this.#cleanupFailed) throw new ToolError('TOOL_CLEANUP_FAILED', 'provider retains an incomplete execution cleanup')
       })
       void this.#closeTask.catch(() => undefined)

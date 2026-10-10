@@ -9,8 +9,11 @@ export function contains(parent: string, child: string): boolean {
   const offset = relative(parent, child)
   return offset === '' || !isAbsolute(offset) && offset !== '..' && !offset.startsWith(`..${sep}`)
 }
+/** Compare paths and handles within one verified link-free workspace volume. */
 export function sameIdentity(first: BigIntStats, second: BigIntStats): boolean {
-  return first.dev === second.dev && first.ino === second.ino
+  // Windows path lstat can omit the volume serial that FileHandle.stat reports.
+  const sameDevice = first.dev === second.dev || process.platform === 'win32' && (first.dev === 0n || second.dev === 0n)
+  return sameDevice && first.ino === second.ino
 }
 export function sameContentMetadata(first: BigIntStats, second: BigIntStats): boolean {
   return sameIdentity(first, second) && first.size === second.size && first.mtimeNs === second.mtimeNs && first.ctimeNs === second.ctimeNs
