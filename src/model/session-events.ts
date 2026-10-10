@@ -63,7 +63,10 @@ function decodeSettled(value: JsonValue): ModelSettlement {
     throw new ModelError('MODEL_STATE_INVALID', 'cleanup count contradicts its observation status')
   }
   if (cleanupStatus === 'unknown-after-process-loss' && outcome !== 'interrupted') throw new ModelError('MODEL_STATE_INVALID', 'unknown process cleanup requires interrupted outcome')
-  if (outcome === 'completed' && (!result.protocolComplete || result.stopReason === 'length' || cleanupStatus !== 'complete')) throw new ModelError('MODEL_STATE_INVALID', 'completed outcome lacks complete generation')
+  if (outcome === 'completed' && (!result.protocolComplete || result.stopReason === 'length'
+    || cleanupStatus !== 'complete' || input.failure !== undefined)) {
+    throw new ModelError('MODEL_STATE_INVALID', 'completed outcome requires complete generation and cleanup without failure')
+  }
   if (outcome === 'interrupted' && result.protocolComplete) throw new ModelError('MODEL_STATE_INVALID', 'recovery cannot invent complete generation')
   if (external !== 'response-observed' && result.responseId !== undefined
     || external === 'response-observed' && result.responseId === undefined) throw new ModelError('MODEL_STATE_INVALID', 'external observation contradicts response evidence')
