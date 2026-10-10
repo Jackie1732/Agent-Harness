@@ -15,7 +15,7 @@ export function validationData(value: JsonValue): JsonValue {
   if (Array.isArray(value)) return value.map(validationData)
   return Object.fromEntries(Object.entries(value).map(([key, child]) => [validationKey(key), validationData(child)]))
 }
-/** Only Schema properties/required and enum data are renamed; keywords are unchanged. */
+/** Rename data keys in every supported Schema branch; keywords remain unchanged. */
 export function validationSchema(schema: JsonObject): JsonObject {
   return Object.fromEntries(Object.entries(schema).map(([key, value]) => {
     if (key === 'properties') {
@@ -23,6 +23,7 @@ export function validationSchema(schema: JsonObject): JsonObject {
     }
     if (key === 'required') return [key, (value as readonly string[]).map(validationKey)]
     if (key === 'enum') return [key, (value as readonly JsonValue[]).map(validationData)]
+    if (key === 'oneOf') return [key, (value as readonly JsonObject[]).map(validationSchema)]
     if (key === 'items') return [key, validationSchema(value as JsonObject)]
     return [key, value]
   }))
