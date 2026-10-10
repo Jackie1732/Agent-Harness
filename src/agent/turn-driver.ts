@@ -96,16 +96,17 @@ export async function driveAgentTurn(runtime: AgentRuntime, turnId: SessionEvent
         reassemblies: Math.min(reassemblies, spec.payload.limits.maxReassemblies), observedAt }
     })
     const admitted = decision.payload.admitted
-    let waiting = false; let failedAction = false; let uncertain = false; let questionLimit = false
+    let waiting = false; let failedAction = false; let uncertain = false; let questionLimit = false; let toolFaulted = false
     for (const [index, intent] of classification.actions.entries()) {
       const action = { eventId: decision.stored.eventId, index }
-      const result: AgentActionResult = admitted && !uncertain ? await executeAgentAction(runtime, turnId, action, intent, signal)
-        : { kind: 'not-started' as const, reason: uncertain ? 'prior-result-uncertain' : 'batch-not-admitted' }
+      const result: AgentActionResult = admitted && !uncertain && !toolFaulted ? await executeAgentAction(runtime, turnId, action, intent, signal)
+        : { kind: 'not-started' as const, reason: uncertain ? 'prior-result-uncertain' : toolFaulted ? 'prior-tool-runner-faulted' : 'batch-not-admitted' }
       await runtime.journal.append(runtime.events.actionSettled, () => ({ action, result }))
       waiting ||= result.kind === 'wait'
       questionLimit ||= result.kind === 'not-started' && intent.route === 'ask-parent' && result.reason === 'question-limit'
       failedAction ||= result.kind === 'not-started' || result.kind === 'communication-not-accepted'
       if (result.kind === 'tool') {
+        toolFaulted ||= runtime.tools?.status === 'faulted'
         const tool: import('../tool/projection.js').ToolInvocationSnapshot | undefined = projectToolSession(runtime.session.snapshot()).invocations.find(item => item.state === 'settled' && item.settled.stored.eventId === result.settled)
         if (tool?.state === 'settled') {
           uncertain ||= tool.settled.payload.cleanup.status !== 'complete' || tool.settled.payload.execution === 'may-have-executed'
@@ -118,6 +119,7 @@ export async function driveAgentTurn(runtime: AgentRuntime, turnId: SessionEvent
     uncertain ||= modelCleanupFailed
     if (waiting) { await finish('waiting', 'wait-created', null); return }
     if (uncertain) { await finish('result-unknown', modelCleanupFailed ? 'model-cleanup' : 'tool-result-uncertain', 'result-unknown'); return }
+    if (toolFaulted) { await finish('failed', 'tool-runner-faulted', 'failed'); return }
     root = rootView()
     if (root.stopControl !== null || signal.aborted) continue
     if (agentRootUsageUnknown(runtime.session.snapshot(), view(), root.id)) { await finish('failed', 'model-usage-unknown', 'failed'); return }

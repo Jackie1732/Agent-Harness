@@ -386,6 +386,10 @@ export class SessionAgent {
       finally { this.#turn = undefined }
       try { assertAgentExecutionQuiescent(runtime.session.snapshot()) }
       catch (error) { this.#fault(error); stoppedBy = 'faulted'; break }
+      if (runtime.tools?.status === 'faulted') {
+        this.#fault(new AgentError('AGENT_RECOVERY_REQUIRED', 'tool-runner-faulted'))
+        stoppedBy = 'faulted'; break
+      }
       stoppedBy = 'run-budget'
     }
     await settleAgentStops(runtime)
