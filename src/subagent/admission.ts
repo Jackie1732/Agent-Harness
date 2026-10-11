@@ -49,6 +49,16 @@ export class SubagentAdmission {
   get accepted(): readonly AcceptedDelegation[] { return [...this.#accepted.values()] }
   closeAdmission(): void { this.#accepting = false }
 
+  /** Snapshot request JSON with the accepted template's ceilings for a scoped repeat, or current ceilings for new work. */
+  captureRequest(parentKey: string, parent: SessionHandle, rootId: SessionEventId, source: DelegationSource, raw: unknown) {
+    const state = projectAgentSession(parent.snapshot())
+    if (!this.config.parents.some(item => item.agentKey === parentKey) || state.spec === null
+      || state.spec.payload.protocolVersion === 1 || state.spec.payload.subagents.role !== 'parent') forbidden('parent-not-authorized')
+    if (!state.roots.some(item => item.id === rootId)) throw new SubagentError('SUBAGENT_STATE_INVALID', 'parent-root-stopped')
+    const prior = state.subagents.delegations.find(item => item.payload.parentRoot === rootId && equal(item.payload.source, source))
+    return decodeDelegationRequest(raw, prior?.payload.effectivePlan.template.limits ?? this.config.limits)
+  }
+
   async restore(parentKey: string, parent: SessionHandle, event: CommittedSessionEvent<DelegationRequested>): Promise<AcceptedDelegation> {
     const lease = await this.communication.delegationChannels.restore(parent, event)
     const accepted = { parentKey, parent, event, lease, journal: new AgentJournal(parent, this.config.limits.maxProtocolConflicts, this.clock) }
@@ -83,7 +93,7 @@ export class SubagentAdmission {
   }
 
   spawn(parentKey: string, parent: SessionHandle, rootId: SessionEventId, source: DelegationSource, raw: unknown): Promise<DelegationReceipt> {
-    const request = decodeDelegationRequest(raw, this.config.limits)
+    const request = this.captureRequest(parentKey, parent, rootId, source, raw)
     return this.#gate.run(async () => {
       const state = projectAgentSession(parent.snapshot())
       const current = this.config.parents.find(item => item.agentKey === parentKey)

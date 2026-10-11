@@ -51,7 +51,11 @@ export class SessionSubagentActions implements SubagentActionExecutor {
     const observedAt = clockTimestamp(this.clock)
     const common = { root: root.id, observedAt, protectedTurns: state.turns.filter(item => item.root === root.id).map(item => item.started.stored.eventId),
       deadline: intent.route === 'progress' ? request.deadline : new Date(Math.min(Date.parse(observedAt) + integer(args.timeoutMs, 1, spec.limits.maxWaitMs), Date.parse(root.deadline), Date.parse(request.deadline))).toISOString() }
-    if (intent.route === 'await-subagent') return { kind: 'wait', descriptor: { ...common, kind: 'delegation', delegation } }
+    if (intent.route === 'await-subagent') {
+      if (state.inputs.some(input => input.protocol?.delegation === delegation
+        && ['result', 'failure'].includes(input.protocol.kind) && input.claimedBy !== null)) invalid('delegation-result-adopted')
+      return { kind: 'wait', descriptor: { ...common, kind: 'delegation', delegation } }
+    }
     if (observedAt >= request.deadline) invalid('delegation-expired')
     const kind: 'question' | 'answer' | 'progress' = intent.route === 'ask-parent' ? 'question' : intent.route === 'answer-subagent' ? 'answer' : 'progress'
     if (kind === 'answer' && (state.subagents.classifications.some(item => item.payload.delegation === delegation && item.payload.kind === 'result' && item.payload.classification === 'eligible')

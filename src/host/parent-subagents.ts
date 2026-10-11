@@ -4,7 +4,6 @@ import type { HostSubagents } from './subagents.js'
 import type { HostSlot } from './runtime-types.js'
 import type { HostTimer } from './timer.js'
 import { HostError } from './errors.js'
-import { decodeDelegationRequest } from '../subagent/request.js'
 import { text } from '../agent/validation.js'
 import type { DelegationObservation, WaitResult } from '../protocol/results.js'
 import { observeFinite } from './finite-observer.js'
@@ -54,10 +53,11 @@ export function bindParentSubagents(options: ParentSubagentOptions) {
     spawn(requestKey: string, request: DelegationRequest) {
       options.assertReady()
       text(requestKey, 128)
-      const captured = decodeDelegationRequest(request, domain.options.config.limits)
+      const source = { kind: 'programmatic' as const, requestKey }
+      const captured = domain.admission.captureRequest(parent.member.agentKey, parent.session, root, source, request)
       return options.track(async () => {
         options.assertControlReady()
-        const result = await domain.admission.spawn(parent.member.agentKey, parent.session, root, { kind: 'programmatic', requestKey }, captured)
+        const result = await domain.admission.spawn(parent.member.agentKey, parent.session, root, source, captured)
         options.wake(); return result
       })
     },

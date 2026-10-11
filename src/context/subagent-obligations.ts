@@ -11,7 +11,8 @@ export function subagentObligationUnits(state: AgentSessionSnapshot, root: Sessi
     const observed = state.subagents.observations.filter(item => item.payload.delegation === id).at(-1)
     const inputs = state.inputs.filter(input => input.protocol?.delegation === id)
     return { reference: { eventId: id, selector: 'diagnostic' as const },
-      sourceEventIds: [id, ...inputs.map(input => input.reference.eventId), ...(observed === undefined ? [] : [observed.stored.eventId])],
+      sourceEventIds: [id, ...inputs.map(input => input.reference.eventId), ...(observed === undefined
+        || inputs.some(input => input.reference.eventId === observed.stored.eventId) ? [] : [observed.stored.eventId])],
       messages: [agentDataMessage('subagent-obligation', id, { delegationId: id, childAddress: item.payload.childAddress,
         grant: item.payload.grant, deadline: item.payload.deadline, parentProtocolReserve: item.payload.parentProtocolReserve,
         business: observed?.payload.business ?? { kind: 'pending' }, resources: observed?.payload.resources ?? [],

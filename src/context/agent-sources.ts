@@ -27,7 +27,7 @@ export function agentTurnUnits(snapshot: SessionSnapshot, state: AgentSessionSna
     const input = state.inputs.find(item => inputKey(item.reference) === inputKey(turn.started.payload.input))
     if (input === undefined) invalidSource('agent-claim-source')
     const reference: ContextUnitReference = { eventId: input.reference.eventId, selector: input.reference.kind === 'user' ? 'user-input' : 'peer-message' }
-    units.push({ reference, sourceEventIds: [input.reference.eventId, turn.started.stored.eventId, ...(input.protocol === undefined ? [] : [input.protocol.inbox]), ...(input.workMessage === undefined ? [] : [input.workMessage.inbox])], messages: [agentDataMessage(
+    units.push({ reference, sourceEventIds: [input.reference.eventId, turn.started.stored.eventId, ...(input.protocol === undefined || input.protocol.inbox === input.reference.eventId ? [] : [input.protocol.inbox]), ...(input.workMessage === undefined ? [] : [input.workMessage.inbox])], messages: [agentDataMessage(
       input.work !== undefined ? 'workflow-task' : input.workGroupResult !== undefined ? 'workflow-group-result' : input.workMessage !== undefined ? `workflow-${input.workMessage.kind}` : input.protocol === undefined ? input.message === null ? 'agent-user-input' : 'agent-peer-input' : `subagent-${input.protocol.kind}`,
       input.reference, input.work === undefined ? input.input ?? input.message ?? snapshot.history.at(-1)!.events.find(item => item.stored.eventId === input.reference.eventId)!.stored.payload : {
         task: input.input!.text, assignment: input.work.assignment, inputs: input.work.value.inputs,
