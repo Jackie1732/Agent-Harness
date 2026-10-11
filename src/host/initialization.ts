@@ -152,7 +152,8 @@ async function initializeMember(
 ): Promise<HostInitializationResult> {
   let session: SessionHandle
   let created = false
-  try {
+  if (adoptEmptyHeader !== undefined) session = await repository.open(parseSessionId(member.sessionId))
+  else try {
     session = await repository.create({ sessionId: parseSessionId(member.sessionId) })
     created = true
   }
@@ -161,6 +162,10 @@ async function initializeMember(
     session = await repository.open(parseSessionId(member.sessionId))
   }
   try {
+    if (adoptEmptyHeader !== undefined && (session.snapshot().localPosition !== 0
+      || !same(session.header, adoptEmptyHeader))) {
+      throw new HostError('HOST_BOOTSTRAP_AMBIGUOUS', 'empty-header-mismatch')
+    }
     const expectedRecipe = recipe(member); const fingerprint = fingerprintHostRecipe(expectedRecipe)
     let binding = projectHostSession(session.snapshot())
     if (binding.ready !== null) {
@@ -171,8 +176,7 @@ async function initializeMember(
       return Object.freeze({ agentKey: member.agentKey, sessionId: member.sessionId, mode: 'existing', readyEventId: binding.ready.stored.eventId })
     }
     if (binding.planned === null) {
-      if (!created && (adoptEmptyHeader === undefined || session.snapshot().localPosition !== 0
-        || !same(session.snapshot().header, adoptEmptyHeader))) {
+      if (!created && adoptEmptyHeader === undefined) {
         throw new HostError('HOST_BOOTSTRAP_AMBIGUOUS', session.snapshot().localPosition === 0 ? 'header-only-session' : 'unbound-nonempty-session')
       }
       const plannedPayload = { hostKey, agentKey: member.agentKey, recipe: expectedRecipe, fingerprint }
