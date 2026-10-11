@@ -102,6 +102,14 @@ export async function configReadiness(profilePath: string, kind: ConfigKind, cre
   } else {
     const definition = decodeExperimentDefinition(value, document.path)
     for (const item of definition.dataset.cases) for (const material of item.materials) if (material.source.kind === 'file') await file(`experiment.${item.caseKey}.${material.logicalPath}`, material.source.path)
+    if (definition.runPolicy.mode === 'live') for (const variant of definition.variants) {
+      const models = [...variant.recipe.members.flatMap(member => member.kind === 'local' ? [member.model] : []),
+        ...(variant.recipe.schemaVersion !== 1 && variant.recipe.subagents.kind === 'enabled' ? variant.recipe.subagents.templates.map(template => template.model) : [])]
+      for (const model of models) if (model.kind !== 'scripted-fixed') {
+        const available = Boolean(credentials[model.credentialRef]?.trim())
+        evidence.push({ subject: `experiment.${variant.variantKey}.model.${model.providerId}`, status: available ? 'available' : 'missing', reason: available ? null : 'credential-missing' })
+      }
+    }
   }
   return { kind, status: evidence.some(item => item.status === 'missing' || item.status === 'incompatible') ? 'not-ready'
     : kind === 'host' || kind === 'operator' && (value as { connection?: { kind?: string } }).connection?.kind === 'local' ? 'admission-check-required' : 'ready', evidence }

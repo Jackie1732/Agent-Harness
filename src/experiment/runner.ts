@@ -9,6 +9,7 @@ import type { ExperimentFileRef } from './definition-types.js'
 import { runExperimentUnit } from './runner-unit.js'
 import type { ExperimentRunResult, RunExperimentInput, RunExperimentOptions } from './runner-types.js'
 import { ExperimentError } from './errors.js'
+import { preflightHostInitialization } from '../host/initialization.js'
 
 /** Execute a frozen matrix serially; continuation admits only units never previously started. */
 export async function runExperiment(input: RunExperimentInput, options: RunExperimentOptions = {}): Promise<ExperimentRunResult> {
@@ -82,4 +83,5 @@ function preflightRuntime(plan: ExperimentPlan, options: RunExperimentOptions, u
       for (const model of models) if (model.kind !== 'scripted-fixed' && !options.credentials?.[model.credentialRef]?.trim()) throw new ExperimentError('EXPERIMENT_INPUT_INVALID', 'credential-reference-unavailable')
     }
   }
+  for (const unit of units) preflightHostInitialization(unit.recipe)
 }

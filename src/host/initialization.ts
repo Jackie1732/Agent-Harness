@@ -102,11 +102,11 @@ function profileEvent(session: SessionHandle, eventId: SessionEventId): Committe
   return event as CommittedSessionEvent<ContextProfile>
 }
 
-/** Initialize or explicitly adopt every local member, then release all Writers. */
-export async function initializeHost(
-  spec: ResolvedHostSpec,
-  options: { readonly clock?: Clock; readonly resume?: boolean } = {},
-): Promise<readonly (HostInitializationResult | HostWorkflowInitializationResult)[]> {
+/**
+ * Check new member and Workflow initialization without a Writer, lock, or directory.
+ * @param spec - Resolved Host input whose planned records and review capacity must fit.
+ */
+export function preflightHostInitialization(spec: ResolvedHostSpec): void {
   for (const member of spec.members.filter(isLocalHostMember)) {
     if (member.mode === 'create') preflightInitialization(spec.hostKey, member, spec.storage.maxRecordBytes, spec.schemaVersion)
   }
@@ -115,6 +115,14 @@ export async function initializeHost(
       preflightWorkflowInitialization(spec.hostKey, entry.definition, spec.storage.maxRecordBytes)
     }
   }
+}
+
+/** Initialize or explicitly adopt every local member, then release all Writers. */
+export async function initializeHost(
+  spec: ResolvedHostSpec,
+  options: { readonly clock?: Clock; readonly resume?: boolean } = {},
+): Promise<readonly (HostInitializationResult | HostWorkflowInitializationResult)[]> {
+  preflightHostInitialization(spec)
   const storageLock = await acquireHostStorageLock(spec.storage.root, spec.hostKey)
   const backend = new FileSessionBackend({ root: storageLock.root, maxRecordBytes: spec.storage.maxRecordBytes })
   const repository = new SessionRepository({ backend, catalog: hostRuntimeEventCatalog,

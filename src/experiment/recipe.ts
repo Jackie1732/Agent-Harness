@@ -7,6 +7,7 @@ import { parseChannelId } from '../communication/ids.js'
 import type { SessionId } from '../session/ids.js'
 import { resolveHostConfig } from '../host/config.js'
 import { exportHostConfig } from '../host/config-export.js'
+import { preflightHostInitialization } from '../host/initialization.js'
 import type { ExperimentDefinition, ExperimentLimits, ExperimentUnit, ExperimentVariant, FrozenExperimentCase } from './definition-types.js'
 import { canonicalExperimentPath, experimentPathsOverlap } from './materials.js'
 import { experimentJsonDigest, invalidExperiment } from './parsing.js'
@@ -23,6 +24,7 @@ export async function planExperimentUnit(item: FrozenExperimentCase, variant: Ex
     nextSessionId: () => parseSessionId(randomUUID()), nextChannelId: () => parseChannelId(randomUUID()),
   })
   const recipe = resolveHostConfig(config)
+  preflightHostInitialization(recipe)
   const resources = recipe.schemaVersion === 3 ? recipe.workspaceResources
     : recipe.schemaVersion === 2 && recipe.subagents.kind === 'enabled' ? recipe.subagents.workspaceResources : []
   const actualRoots = [...recipe.members.flatMap(member => member.kind !== 'local' || member.tools.kind === 'none' ? [] : [{ root: member.tools.rootPath, protected: member.tools.protectedRoots }]),
