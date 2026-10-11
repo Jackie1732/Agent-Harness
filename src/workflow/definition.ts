@@ -148,7 +148,7 @@ function guard(value: JsonValue): WorkflowGuard {
   if (input.kind !== 'equals') invalidDefinition('guard-kind')
   fields(input, ['kind', 'nodeKey', 'path', 'value'])
   const compared = input.value!
-  if (typeof compared === 'object') invalidDefinition('guard-scalar')
+  if (compared !== null && typeof compared === 'object') invalidDefinition('guard-scalar')
   return { kind: 'equals', nodeKey: key(input.nodeKey, 'guard.nodeKey'), path: path(input.path, 'guard.path'), value: compared }
 }
 function output(value: JsonValue, limitsValue: WorkflowLimits): WorkflowOutput {

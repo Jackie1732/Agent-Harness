@@ -17,7 +17,7 @@ import type { SessionSnapshot, StoredSessionEvent } from '../session/types.js'
 import { emptyAgentBudget } from '../agent/budget.js'
 import type { AgentBudget } from '../agent/contract.js'
 import { invalidHistory } from './errors.js'
-import { resolveWorkflowNode } from './graph.js'
+import { resolveWorkflowNode, resolveWorkflowNodeV1 } from './graph.js'
 import { workflowAssignmentCommittedEvent, workflowDefinitionRecordedEvent, workflowNodeResolvedEvent } from './session-events.js'
 import type { WorkflowAssignment, WorkflowDefinition } from './types.js'
 import type { WorkflowNodeResolved } from './session-events.js'
@@ -111,12 +111,12 @@ export function projectWorkflowSession(snapshot: SessionSnapshot): WorkflowSnaps
       if (value.coordinator !== snapshot.header.address) invalidHistory('coordinator-address')
       definition = { ...record, payload: value }
     } else if (record.stored.type === workflowNodeResolvedEvent.type) {
-      if (record.stored.payloadVersion !== 1 || definition === null) invalidHistory('resolution-before-definition')
+      if (![1, 2].includes(record.stored.payloadVersion) || definition === null) invalidHistory('resolution-before-definition')
       const payload = workflowNodeResolvedEvent.decode(record.payload)
       if (payload.definition !== definition.stored.eventId || resolved.has(payload.nodeKey)
         || !definition.payload.nodes.some(node => node.nodeKey === payload.nodeKey)) invalidHistory('resolution-conflict')
       const node = definition.payload.nodes.find(item => item.nodeKey === payload.nodeKey)!
-      const result = resolveWorkflowNode(node, upstream, definition.payload)
+      const result = (record.stored.payloadVersion === 1 ? resolveWorkflowNodeV1 : resolveWorkflowNode)(node, upstream, definition.payload)
       if (result.kind !== payload.outcome || result.reason !== payload.reason) invalidHistory('resolution-not-derived')
       if (assignments.some(item => item.payload.nodeKey === payload.nodeKey)) invalidHistory('resolution-after-assignment')
       resolved.set(payload.nodeKey, payload)

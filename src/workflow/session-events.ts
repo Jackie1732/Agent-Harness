@@ -7,15 +7,15 @@ import { workGroupEventDefinitions } from './group-events.js'
 import { workInputUnadoptedEvent } from './input-disposition.js'
 import { workInteractionEventDefinitions, workflowInteractionAdmittedEvent, workflowInteractionSettledEvent } from './interaction-events.js'
 import { workAssignmentSettledEvent } from './settlement-events.js'
-import { workflowDefinitionRecordedEvent, workflowNodeResolvedEvent, workflowAssignmentCommittedEvent } from './definition-events.js'
+import { workflowDefinitionRecordedEvent, workflowNodeResolvedEvent, workflowNodeResolvedEventV2, workflowAssignmentCommittedEvent } from './definition-events.js'
 import { workAssignmentAcceptedEvent } from './work-binding.js'
 import { workResultEventDefinitions } from './result-events.js'
 import { workflowCoordinatorEventDefinitions } from './coordinator-events.js'
 import { workflowProtocolRecordedEvent, workProtocolRecordedEvent } from './protocol.js'
-export { workflowDefinitionRecordedEvent, workflowNodeResolvedEvent, workflowAssignmentCommittedEvent } from './definition-events.js'
+export { workflowDefinitionRecordedEvent, workflowNodeResolvedEvent, workflowNodeResolvedEventV2, workflowAssignmentCommittedEvent } from './definition-events.js'
 export type { WorkflowDefinitionRecorded, WorkflowNodeResolved } from './definition-events.js'
 
-export const workflowSessionEventDefinitions = Object.freeze([workflowDefinitionRecordedEvent, workflowNodeResolvedEvent,
+export const workflowSessionEventDefinitions = Object.freeze([workflowDefinitionRecordedEvent, workflowNodeResolvedEvent, workflowNodeResolvedEventV2,
   workflowAssignmentCommittedEvent, workAssignmentAcceptedEvent, ...workResultEventDefinitions, ...workflowCoordinatorEventDefinitions,
   workflowProtocolRecordedEvent, workProtocolRecordedEvent, ...workflowControlEventDefinitions, ...workflowStopEventDefinitions, workflowRetryExpiredEvent, workAssignmentSettledEvent,
   ...workInteractionEventDefinitions, ...workGroupEventDefinitions, ...workflowRecoveryEventDefinitions, workInputUnadoptedEvent, workStoppedMessageEvent, workflowInteractionAdmittedEvent, workflowInteractionSettledEvent])

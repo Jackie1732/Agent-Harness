@@ -22,7 +22,7 @@ import { workflowAssignmentClosed } from '../workflow/closure.js'
 import { sameWorkflowValue, workflowReference } from '../workflow/work-binding.js'
 import { workExecutionReleasedEvent } from '../workflow/result-events.js'
 import { workflowDecisionCommittedEvent } from '../workflow/coordinator-events.js'
-import { workflowNodeResolvedEvent } from '../workflow/definition-events.js'
+import { workflowNodeResolvedEventV2 } from '../workflow/definition-events.js'
 import { resolveWorkflowNode } from '../workflow/graph.js'
 import { nextWorkPublication } from '../workflow/publication.js'
 import { nextWorkflowSend } from '../workflow/transport-maintenance.js'
@@ -250,7 +250,7 @@ export class HostWorkflows {
       const number = nextWorkflowAttempt(state, node.nodeKey)
       if (number === undefined || state.resolved.some(item => item.nodeKey === node.nodeKey)) continue
       const resolution = resolveWorkflowNode(node, new Map(state.upstream.map(item => [item.nodeKey, item.state])),  definition.payload)
-      if (resolution.kind === 'skipped' || resolution.kind === 'failed') return () => entry.journal.append(workflowNodeResolvedEvent,
+      if (resolution.kind === 'skipped' || resolution.kind === 'failed') return () => entry.journal.append(workflowNodeResolvedEventV2,
         () => ({ definition: definition.stored.eventId, nodeKey: node.nodeKey, outcome: resolution.kind as 'skipped' | 'failed', reason: resolution.reason }))
       if (resolution.kind !== 'ready') continue
       const member = this.slots.find(slot => slot.member.agentKey === node.executor)

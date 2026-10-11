@@ -50,6 +50,11 @@ export const workflowNodeResolvedEvent = createDurableEventDefinition<WorkflowNo
   type: 'workflow/node-resolved', payloadVersion: 1, ignorable: false, decode: decodeNodeResolved,
 })
 
+/** Node decisions wait for all direct dependencies and prefer failure over required skips. */
+export const workflowNodeResolvedEventV2 = createDurableEventDefinition<WorkflowNodeResolved>({
+  type: 'workflow/node-resolved', payloadVersion: 2, ignorable: false, decode: decodeNodeResolved,
+})
+
 export const workflowAssignmentCommittedEvent = createDurableEventDefinition<WorkflowAssignment & JsonObject>({
   type: 'workflow/assignment-committed', payloadVersion: 1, ignorable: false, decode: decodeWorkflowAssignment,
 })

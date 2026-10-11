@@ -86,12 +86,33 @@ function fieldPath(value: JsonValue, path: readonly string[]): JsonValue | undef
 /** Determine one node's next data decision from accepted direct predecessors. */
 export function resolveWorkflowNode(node: WorkflowNode, upstream: ReadonlyMap<string, WorkflowUpstreamState>,
   definition: WorkflowDefinition): WorkflowResolution {
+  let pending = false, failed = false, skipped = false
+  for (const edge of node.dependencies) {
+    const source = upstream.get(edge.nodeKey)
+    if (source === undefined || source.kind === 'retry-awaiting-decision') pending = true
+    else if (source.kind !== 'accepted' && source.kind !== 'skipped') failed = true
+    else if (source.kind === 'skipped' && edge.mode === 'required') skipped = true
+  }
+  if (pending) return { kind: 'blocked', reason: 'dependency-pending' }
+  if (failed) return { kind: 'failed', reason: 'dependency-failed' }
+  if (skipped) return { kind: 'skipped', reason: 'required-dependency-skipped' }
+  return resolveWorkflowData(node, upstream, definition)
+}
+
+/** Preserve the dependency order used by committed node-resolved@1 records. */
+export function resolveWorkflowNodeV1(node: WorkflowNode, upstream: ReadonlyMap<string, WorkflowUpstreamState>,
+  definition: WorkflowDefinition): WorkflowResolution {
   for (const edge of node.dependencies) {
     const source = upstream.get(edge.nodeKey)
     if (source === undefined || source.kind === 'retry-awaiting-decision') return { kind: 'blocked', reason: 'dependency-pending' }
     if (source.kind === 'skipped' && edge.mode === 'required') return { kind: 'skipped', reason: 'required-dependency-skipped' }
     if (source.kind !== 'accepted' && source.kind !== 'skipped') return { kind: 'failed', reason: 'dependency-failed' }
   }
+  return resolveWorkflowData(node, upstream, definition)
+}
+
+function resolveWorkflowData(node: WorkflowNode, upstream: ReadonlyMap<string, WorkflowUpstreamState>,
+  definition: WorkflowDefinition): WorkflowResolution {
   if (node.guard.kind === 'equals') {
     const source = upstream.get(node.guard.nodeKey)
     if (source?.kind !== 'accepted') return { kind: 'failed', reason: 'guard-source' }
