@@ -28,9 +28,9 @@ import { subagentContextProfileRecordedEvent, subagentContextAssemblyCommittedEv
 
 const driverTask = new AsyncLocalStorage<ReadonlySet<symbol>>()
 
-/** Local lifecycle owner; cross-instance ownership is exclusively the durable open Run. */
+/** Local lifecycle owner; cross-instance ownership is exclusively the durable open Run. Disposed instances retain diagnostics and shared settlement, while historical reads use independent Session projections. */
 export class SessionAgent {
-  #runtime: AgentRuntime
+  #runtime: AgentRuntime | undefined
   #ownsMailbox = false
   #token: symbol | undefined
   #status: 'accepting' | 'disposing' | 'disposed' | 'faulted' = 'accepting'
@@ -64,18 +64,22 @@ export class SessionAgent {
       .some(definition => !options.session.supportsEventDefinition(definition))) throw new AgentError('AGENT_CATALOG_INCOMPATIBLE', 'workflow-events-required')
     this.#runtime = { ...options, events: executionEvents, journal: new AgentJournal(options.session, state.spec.payload.limits.maxJournalConflicts, options.clock) }
   }
+  get #resources(): AgentRuntime {
+    if (this.#runtime === undefined) throw new AgentError('AGENT_INACTIVE', 'agent-runtime-released')
+    return this.#runtime
+  }
   get status() { return this.#status }
   get failure() { return this.#failure }
-  snapshot() { return projectAgentSession(this.#runtime.session.snapshot()) }
-  report(): AgentRunReport { return projectAgentReport(this.#runtime.session.snapshot()) }
-  readiness(observedAt = clockTimestamp(this.#runtime.clock), selection: AgentRunSelection = { kind: 'ordinary' }) {
-    return inspectAgentReadiness(this.#runtime.session.snapshot(), this.#runtime.messageCatalog, observedAt, selection)
+  snapshot() { return projectAgentSession(this.#resources.session.snapshot()) }
+  report(): AgentRunReport { return projectAgentReport(this.#resources.session.snapshot()) }
+  readiness(observedAt = clockTimestamp(this.#resources.clock), selection: AgentRunSelection = { kind: 'ordinary' }) {
+    return inspectAgentReadiness(this.#resources.session.snapshot(), this.#resources.messageCatalog, observedAt, selection)
   }
 
   /** Acceptance persists a copied input; it does not start or interrupt a Turn. */
   submitInput(value: AgentInput) {
     this.#accepting()
-    return this.#track(this.#runtime.journal.acceptInput(value))
+    return this.#track(this.#resources.journal.acceptInput(value))
   }
 
   /** Drive bounded work. Concurrent calls on this instance join its current drive, with no new cancellation authority. */
@@ -92,7 +96,7 @@ export class SessionAgent {
     if (options.signal?.aborted === true) throw new AgentError('AGENT_CANCELLED', 'run-cancelled-before-admission')
     this.#desired = 'continue'
     this.#driveController = new AbortController()
-    const signals = [this.#driveController.signal, options.signal, this.#runtime.signal, this.#runtime.scope?.signal].filter((value): value is AbortSignal => value !== undefined)
+    const signals = [this.#driveController.signal, options.signal, this.#resources.signal, this.#resources.scope?.signal].filter((value): value is AbortSignal => value !== undefined)
     this.#selection = selection
     return this.#launch('drive', () => this.#drive(AbortSignal.any(signals), selection))
   }
@@ -114,15 +118,15 @@ export class SessionAgent {
     if (options.signal?.aborted === true) throw new AgentError('AGENT_CANCELLED', 'maintenance-cancelled-before-admission')
     if (!this.readiness().canMaintain) return Promise.resolve(this.report())
     this.#driveController = new AbortController()
-    const signal = AbortSignal.any([this.#driveController.signal, options.signal, this.#runtime.signal, this.#runtime.scope?.signal]
+    const signal = AbortSignal.any([this.#driveController.signal, options.signal, this.#resources.signal, this.#resources.scope?.signal]
       .filter((value): value is AbortSignal => value !== undefined))
     return this.#launch('maintenance', async () => {
-      assertAgentExecutionQuiescent(this.#runtime.session.snapshot())
-      const run = await this.#runtime.journal.append(events.agentMaintenanceRunStartedEvent, state => ({
+      assertAgentExecutionQuiescent(this.#resources.session.snapshot())
+      const run = await this.#resources.journal.append(events.agentMaintenanceRunStartedEvent, state => ({
         spec: state.spec!.stored.eventId, kind: 'maintenance' as const,
       }))
       this.#ownedRun = run.stored.eventId
-      const runtime: AgentRuntime = { ...this.#runtime, signal,
+      const runtime: AgentRuntime = { ...this.#resources, signal,
         management: { remaining: this.snapshot().spec!.payload.limits.maxManagementPerRun } }
       let stoppedBy: 'idle' | 'run-budget' | 'cancelled' = 'idle'
       if (signal.aborted) stoppedBy = 'cancelled'
@@ -145,9 +149,9 @@ export class SessionAgent {
       const root = this.snapshot().roots.find(item => item.id === rootTurnId)
       if (root === undefined) throw new AgentError('AGENT_SOURCE_INVALID', 'unknown-root')
       if (root.outcome !== null || root.stopControl !== null) return this.report()
-      if (root.deadline > clockTimestamp(this.#runtime.clock)) return this.report()
+      if (root.deadline > clockTimestamp(this.#resources.clock)) return this.report()
       if (this.#turn?.root === rootTurnId) this.#turn.controller.abort()
-      await expireAgentRoot(this.#runtime, rootTurnId)
+      await expireAgentRoot(this.#resources, rootTurnId)
       return this.report()
     })())
   }
@@ -164,13 +168,13 @@ export class SessionAgent {
       if (root.outcome !== null) return this.report()
       if (this.#turn?.root === rootTurnId) this.#turn.controller.abort()
       if (root.stopControl === null) {
-        try { await this.#runtime.journal.append(events.agentControlRequestedEvent, () => ({ kind: 'cancel-work' as const, root: rootTurnId, reason })) }
+        try { await this.#resources.journal.append(events.agentControlRequestedEvent, () => ({ kind: 'cancel-work' as const, root: rootTurnId, reason })) }
         catch (error) {
           const current = this.snapshot().roots.find(item => item.id === rootTurnId)!
-          if (this.#runtime.journal.faulted || current.outcome === null && current.stopControl === null) throw error
+          if (this.#resources.journal.faulted || current.outcome === null && current.stopControl === null) throw error
         }
       }
-      if (this.snapshot().openRun === null) await settleAgentStops(this.#runtime)
+      if (this.snapshot().openRun === null) await settleAgentStops(this.#resources)
       return this.report()
     })())
   }
@@ -180,10 +184,10 @@ export class SessionAgent {
     this.#accepting()
     const copied = inputReference(input, this.snapshot().spec!.payload.protocolVersion)
     return this.#track((async () => {
-      const control = await this.#runtime.journal.append(this.#runtime.events.abandonRequested, () => ({ kind: 'abandon-input' as const, input: copied, reason }))
-      await this.#runtime.journal.append(events.agentControlSettledEvent, () => ({ control: control.stored.eventId, outcome: 'completed' as const,
+      const control = await this.#resources.journal.append(this.#resources.events.abandonRequested, () => ({ kind: 'abandon-input' as const, input: copied, reason }))
+      await this.#resources.journal.append(events.agentControlSettledEvent, () => ({ control: control.stored.eventId, outcome: 'completed' as const,
         reason, rootOutcome: null, responseDisposition: null }))
-      await synchronizeAgentReceipts(this.#runtime)
+      await synchronizeAgentReceipts(this.#resources)
       return this.report()
     })())
   }
@@ -194,7 +198,7 @@ export class SessionAgent {
     const command = decodeAgentCommand(value)
     if (this.#task !== undefined) throw new AgentError('AGENT_BUSY', 'driver-active')
     return this.#launch('command', async () => {
-      let runtime = this.#runtime
+      let runtime = this.#resources
       assertAgentExecutionQuiescent(runtime.session.snapshot())
       const run = await runtime.journal.append(events.agentBusinessEvents(this.snapshot().spec!.payload.protocolVersion).started, state => {
         if (state.openRun !== null) throw new AgentError('AGENT_BUSY', 'driver-active')
@@ -202,7 +206,7 @@ export class SessionAgent {
       })
       this.#ownedRun = run.stored.eventId
       await this.#attachCommunication(run.stored.eventId)
-      runtime = this.#runtime
+      runtime = this.#resources
       const state = this.snapshot()
       if (state.commands.length >= state.spec!.payload.maxDirectSendCommandsPerSession) {
         await runtime.journal.append(events.agentBusinessEvents(this.snapshot().spec!.payload.protocolVersion).settled, () => ({ run: run.stored.eventId, stoppedBy: 'command-budget' as const, reason: 'direct-send-budget' }))
@@ -223,7 +227,7 @@ export class SessionAgent {
   }
 
   #commandReport(command: AgentCommandReceipt): AgentCommandReport {
-    const snapshot = this.#runtime.session.snapshot()
+    const snapshot = this.#resources.session.snapshot()
     return Object.freeze({ ...projectAgentReport(snapshot), command, cuts: snapshot.history.map(segment => ({ sessionId: segment.header.sessionId, through: segment.through })) })
   }
 
@@ -234,22 +238,22 @@ export class SessionAgent {
     this.#accepting()
     if (this.#taskKind === 'command') throw new AgentError('AGENT_BUSY', 'command-active')
     const task = (async () => {
-      const control = await this.#runtime.journal.append(events.agentControlRequestedEvent, () => ({ kind: 'close-session' as const, reason }))
+      const control = await this.#resources.journal.append(events.agentControlRequestedEvent, () => ({ kind: 'close-session' as const, reason }))
       try {
         if (this.#task !== undefined) await this.#task
-        assertAgentExecutionQuiescent(this.#runtime.session.snapshot())
+        assertAgentExecutionQuiescent(this.#resources.session.snapshot())
         const state = this.snapshot()
         if (state.openRun !== null || state.openRecovery !== null || state.roots.some(root => root.outcome === null)
           || state.controls.some(item => item.requested.stored.eventId !== control.stored.eventId && item.settled === null && item.supersededBy === null)
           || state.inputs.some(input => !['handled', 'abandoned', 'not-adopted'].includes(input.status))) throw new AgentError('AGENT_BUSY', 'session-has-work')
-        await synchronizeAgentReceipts(this.#runtime)
-        const mailbox = projectCommunicationFacts(this.#runtime.session.snapshot())
+        await synchronizeAgentReceipts(this.#resources)
+        const mailbox = projectCommunicationFacts(this.#resources.session.snapshot())
         if (mailbox.inbox.some(item => item.status === 'pending') || mailbox.outbox.some(item => item.status === 'pending')) throw new AgentError('AGENT_BUSY', 'communication-has-work')
-        return this.#runtime.mailbox === undefined ? await this.#runtime.session.end(reason) : await this.#runtime.mailbox.endSession(reason)
+        return this.#resources.mailbox === undefined ? await this.#resources.session.end(reason) : await this.#resources.mailbox.endSession(reason)
       } catch (error) {
-        if (this.#runtime.session.status === 'open' && this.#runtime.session.snapshot().lifecycle === 'active'
+        if (this.#resources.session.status === 'open' && this.#resources.session.snapshot().lifecycle === 'active'
           && this.snapshot().openRun === null && this.snapshot().openRecovery === null) {
-          await this.#runtime.journal.append(events.agentControlSettledEvent, () => ({ control: control.stored.eventId, outcome: 'rejected' as const,
+          await this.#resources.journal.append(events.agentControlSettledEvent, () => ({ control: control.stored.eventId, outcome: 'rejected' as const,
             reason: 'session-end-not-accepted', rootOutcome: null, responseDisposition: null }))
         }
         throw error
@@ -269,12 +273,20 @@ export class SessionAgent {
     this.#status = 'disposing'; this.#desired = 'pause'
     this.#disposeTask = Promise.resolve().then(async () => {
       await Promise.allSettled([...this.#operations, ...(this.#task === undefined ? [] : [this.#task])])
-      const results = await Promise.allSettled([this.#runtime.context.dispose(), this.#runtime.model.dispose(), ...(this.#runtime.tools === undefined ? [] : [this.#runtime.tools.dispose()]),
-        ...(this.#ownsMailbox ? [this.#runtime.mailbox!.dispose()] : [])])
-      this.#status = 'disposed'
-      if (results.some(result => result.status === 'rejected')) {
-        this.#failure ??= new AgentError('AGENT_CLEANUP_FAILED', 'owned-runner-release-failed')
-        throw this.#failure
+      try {
+        const runtime = this.#resources
+        const results = await Promise.allSettled([runtime.context.dispose(), runtime.model.dispose(), ...(runtime.tools === undefined ? [] : [runtime.tools.dispose()]),
+          ...(this.#ownsMailbox ? [runtime.mailbox!.dispose()] : [])])
+        if (results.some(result => result.status === 'rejected')) {
+          this.#failure ??= new AgentError('AGENT_CLEANUP_FAILED', 'owned-runner-release-failed')
+          throw this.#failure
+        }
+      } finally {
+        this.#resources.journal.retire()
+        this.#runtime = undefined
+        this.#selection = undefined
+        this.#ownedRun = null
+        this.#status = 'disposed'
       }
     })
     void this.#disposeTask.catch(() => { /* The shared task retains cleanup failure for external joiners. */ })
@@ -291,13 +303,13 @@ export class SessionAgent {
     this.#failure ??= error instanceof AgentError ? error : new AgentError('AGENT_RECOVERY_REQUIRED', 'driver-transition-incomplete')
   }
   #accepting() {
-    if (this.#runtime.scope !== undefined && this.#runtime.scope.status !== 'accepting' || this.#endTask !== undefined || this.snapshot().closing !== null || this.#status !== 'accepting' || this.#runtime.signal?.aborted === true || this.#runtime.session.snapshot().lifecycle !== 'active') throw new AgentError('AGENT_INACTIVE', 'agent-not-accepting')
+    if (this.#resources.scope !== undefined && this.#resources.scope.status !== 'accepting' || this.#endTask !== undefined || this.snapshot().closing !== null || this.#status !== 'accepting' || this.#resources.signal?.aborted === true || this.#resources.session.snapshot().lifecycle !== 'active') throw new AgentError('AGENT_INACTIVE', 'agent-not-accepting')
   }
   #track<T>(task: Promise<T>): Promise<T> {
     this.#operations.add(task)
     void task.then(() => this.#operations.delete(task), error => {
       this.#operations.delete(task)
-      if (this.#status === 'accepting' && this.#runtime.journal.faulted) {
+      if (this.#status === 'accepting' && this.#resources.journal.faulted) {
         this.#fault(error)
       }
     })
@@ -314,27 +326,27 @@ export class SessionAgent {
       this.#task = undefined
       this.#taskKind = undefined
       this.#driveController = undefined
-      if (this.#runtime.journal.faulted || this.#ownedRun !== null && this.snapshot().openRun === this.#ownedRun) {
+      if (this.#resources.journal.faulted || this.#ownedRun !== null && this.snapshot().openRun === this.#ownedRun) {
         this.#fault(error)
       }
     })
     return task
   }
   async #attachCommunication(run: SessionEventId): Promise<void> {
-    const communication = this.#runtime.communication
-    if (communication === undefined || this.#runtime.mailbox !== undefined) return
+    const communication = this.#resources.communication
+    if (communication === undefined || this.#resources.mailbox !== undefined) return
     try {
-      const mailbox = await communication.service.attach(this.#runtime.session, { catalog: this.#runtime.messageCatalog, policy: communication.policy })
+      const mailbox = await communication.service.attach(this.#resources.session, { catalog: this.#resources.messageCatalog, policy: communication.policy })
       this.#ownsMailbox = true
-      this.#runtime = { ...this.#runtime, mailbox }
-      this.#runtime = { ...this.#runtime, dispatcher: communication.service.createDispatcher(mailbox) }
+      this.#runtime = { ...this.#resources, mailbox }
+      this.#runtime = { ...this.#resources, dispatcher: communication.service.createDispatcher(mailbox) }
     } catch {
-      await this.#runtime.journal.append(events.agentBusinessEvents(this.snapshot().spec!.payload.protocolVersion).settled, () => ({ run, stoppedBy: 'faulted' as const, reason: 'mailbox-attach-failed' }))
+      await this.#resources.journal.append(events.agentBusinessEvents(this.snapshot().spec!.payload.protocolVersion).settled, () => ({ run, stoppedBy: 'faulted' as const, reason: 'mailbox-attach-failed' }))
       throw new AgentError('AGENT_COMMUNICATION_UNAVAILABLE', 'mailbox-attach-failed')
     }
   }
   async #drive(signal: AbortSignal, selection: AgentRunSelection): Promise<AgentRunReport> {
-    let runtime: AgentRuntime = { ...this.#runtime, signal, management: { remaining: this.snapshot().spec!.payload.limits.maxManagementPerRun } }
+    let runtime: AgentRuntime = { ...this.#resources, signal, management: { remaining: this.snapshot().spec!.payload.limits.maxManagementPerRun } }
     assertAgentExecutionQuiescent(runtime.session.snapshot())
     if (this.snapshot().openRun === null && this.snapshot().openRecovery === null) await settleAgentStops(runtime)
     if (runtime.management!.remaining === 0) return this.report()
@@ -344,7 +356,7 @@ export class SessionAgent {
     })
     this.#ownedRun = run.stored.eventId
     if (!signal.aborted) await this.#attachCommunication(run.stored.eventId)
-    runtime = { ...this.#runtime, signal, management: runtime.management! }
+    runtime = { ...this.#resources, signal, management: runtime.management! }
     const spec = this.snapshot().spec!.payload
     let dispatches = 0
     let stoppedBy: import('./contract.js').AgentRunStop = 'idle'

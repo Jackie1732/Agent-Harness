@@ -1,5 +1,5 @@
 import { expect, it } from 'vitest'
-import { foldAgentSession } from '../../src/agent/projection.js'
+import { foldAgentSession, projectAgentSession } from '../../src/agent/projection.js'
 import { AgentJournal } from '../../src/agent/journal.js'
 import { WorkflowJournal } from '../../src/workflow/journal.js'
 import { nextWorkPublication } from '../../src/workflow/publication.js'
@@ -99,7 +99,7 @@ it('keeps an accepted JSON value and declared text artifacts exact, without repa
     await nextWorkPublication(invalid.session, clock)!()
     const failure = [...foldAgentSession(invalid.session.snapshot()).sources.values()].find(item => item.stored.type === workProposalRecordedEvent.type)!
     expect(failure.payload).toMatchObject({ outcome: 'failed', reason: 'output-json', value: null, artifacts: [] })
-    expect(invalid.agent.snapshot().roots[0]?.outcome).toBe('completed')
+    expect(projectAgentSession(invalid.session.snapshot()).roots[0]?.outcome).toBe('completed')
     expect([...foldAgentSession(invalid.session.snapshot()).sources.values()].some(item => item.stored.type === artifactPublishedEvent.type)).toBe(false)
   } finally { await invalid.close() }
 })

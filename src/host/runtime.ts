@@ -225,7 +225,7 @@ class HostRuntime {
       } else if (slot !== undefined) {
         await observers
         await this.#assembly.subagents?.releaseParent(agentKey)
-        if (mode === 'drain') await slot.agent.wait()
+        if (mode === 'drain' && slot.agent.status !== 'disposed') await slot.agent.wait()
         await this.#assembly.release(agentKey)
       }
     })

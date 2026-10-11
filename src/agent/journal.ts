@@ -23,13 +23,24 @@ import { equal } from './validation.js'
 /** Conditional local writes only; callbacks cannot invoke providers or policy. */
 export class AgentJournal {
   #faulted = false
-  constructor(readonly session: SessionHandle, readonly conflicts: number, readonly clock: Clock) {
+  #runtime: { readonly session: SessionHandle; readonly clock: Clock } | undefined
+  constructor(session: SessionHandle, readonly conflicts: number, clock: Clock) {
     if (legacyAgentSessionEventDefinitions.some(definition => !session.supportsEventDefinition(definition))) {
       throw new AgentError('AGENT_CATALOG_INCOMPATIBLE', 'agent-events-required')
     }
     if (!Number.isSafeInteger(conflicts) || conflicts < 0) throw new AgentError('AGENT_INPUT_INVALID', 'conflict-budget')
+    this.#runtime = { session, clock }
   }
+  get #resources() {
+    if (this.#runtime === undefined) throw new AgentError('AGENT_INACTIVE', 'journal-runtime-released')
+    return this.#runtime
+  }
+  get session() { return this.#resources.session }
+  get clock() { return this.#resources.clock }
   get faulted(): boolean { return this.#faulted || this.session.status !== 'open' }
+
+  /** Release borrowed references after the owner has joined every accepted append. */
+  retire(): void { this.#runtime = undefined }
 
   /** Input acceptance survives replacement of Model and Tool execution resources. */
   acceptInput(value: AgentInput) {

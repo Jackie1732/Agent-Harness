@@ -115,13 +115,13 @@ export async function runHostScheduler(input: HostSchedulerInput): Promise<HostR
       state.cursor = (state.cursor + count) % slots.length
       let admitted = false
       business.retainExclusive(key => slots.some(slot => slot.member.agentKey === key && !input.paused.has(key) && !input.offline.has(key)
-        && !state.faults.has(key) && slot.agent.status === 'accepting' && state.observations.read(slot, input.clock.now()).readiness.canRun
+        && !state.faults.has(key) && slot.agent.status === 'accepting' && state.observations.read(slot, input.clock.now(), input.assembly.catalog).readiness.canRun
         && (input.assembly.workflows?.businessAllowed(slot) ?? true)))
       for (const slot of selected) {
         if (input.offline.has(slot.member.agentKey)) continue
         // Expiry continues while an accepted run drains, even after its admission budget is exhausted.
         if (!input.signal.aborted && slot.agent.status === 'accepting') {
-          for (const root of state.observations.read(slot, input.clock.now()).roots) {
+          for (const root of state.observations.read(slot, input.clock.now(), input.assembly.catalog).roots) {
             if (root.outcome !== null || root.stopControl !== null || Date.parse(root.deadline) > input.clock.now() || expirations.has(root.id)) continue
             input.assembly.subagents?.notifyParentStop(slot.member.agentKey, root.id)
             const task = accepted.run(() => slot.agent.expire(root.id).then(() => undefined, () => failed(slot)).finally(() => expirations.delete(root.id)))
@@ -178,7 +178,7 @@ export async function runHostScheduler(input: HostSchedulerInput): Promise<HostR
             if (busy.has(execution) || execution.agent.status !== 'accepting') continue
             const stalled = state.stalled.get(slot.member.agentKey)
             if (stalled !== undefined && stalled.position === domainPosition(execution) && stalled.count >= scheduling.maxNoProgressBatches) continue
-            const readiness = state.observations.read(execution, input.clock.now()).readiness
+            const readiness = state.observations.read(execution, input.clock.now(), input.assembly.catalog).readiness
             if (lane === 'maintenance') {
               if (!readiness.canMaintain) continue
               batches++; maintenanceRuns++; admitted = true

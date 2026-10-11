@@ -152,8 +152,8 @@ export class HostSubagents {
   #notifyStop(accepted: AcceptedDelegation): void {
     this.options.communication.delegationChannels.revoke(accepted.lease)
     const child = this.#children.get(accepted.event.stored.eventId)
-    const childRoot = child?.slot?.agent.snapshot().roots[0]
-    if (childRoot !== undefined) child?.slot?.agent.notifyStop(childRoot.id)
+    const childRoot = child?.session === undefined ? undefined : projectAgentSession(child.session.snapshot()).roots[0]
+    if (childRoot !== undefined && child?.slot?.agent.status === 'accepting') child.slot.agent.notifyStop(childRoot.id)
   }
 
   /** Cancel only the children of one owning work root after closing new Host admissions. */

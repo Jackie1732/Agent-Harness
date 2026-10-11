@@ -21,7 +21,7 @@ export function observeHostMembers(slots: readonly HostSlot[], paused: ReadonlyS
     const slot = slots.find(slot => slot.member.agentKey === member.agentKey)
     const { readiness, agent } = slot === undefined ? {
       readiness: inspectAgentReadiness(snapshot, assembly.catalog, observedAt), agent: projectAgentReport(snapshot),
-    } : observations.read(slot, Date.parse(observedAt))
+    } : observations.read(slot, Date.parse(observedAt), assembly.catalog)
     const mailbox = assembly.directory.status(session.header.address).kind
     const online = mailbox === 'online'
     counts.pendingInputs += agent.counts.pendingInputs
