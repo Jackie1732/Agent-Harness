@@ -29,12 +29,12 @@ export class ExperimentJournal {
   recordReport(payload: ExperimentEventPayloads['report-recorded']) { return this.append('report-recorded', payload) }
   finalize(payload: ExperimentEventPayloads['finalized']) { return this.append('finalized', payload) }
 
-  /** Commit one validated transition, or return its exact already committed fact. */
-  append<K extends ExperimentEventKind>(kind: K, payload: ExperimentEventPayloads[K]): Promise<CommittedSessionEvent<ExperimentEventPayloads[K]>> {
+  /** Capture command JSON before queuing; commit against current state or return its exact existing fact. */
+  async append<K extends ExperimentEventKind>(kind: K, payload: ExperimentEventPayloads[K]): Promise<CommittedSessionEvent<ExperimentEventPayloads[K]>> {
+    const definition = experimentEvents[kind] as DurableEventDefinition<ExperimentEventPayloads[K]>
+    const decoded = definition.decode(payload as JsonValue) as ExperimentEventPayloads[K]
     return this.#gate.run(async () => {
       if (!this.accepting) throw new ExperimentError('EXPERIMENT_INACTIVE', 'journal-no-longer-accepting')
-      const definition = experimentEvents[kind] as DurableEventDefinition<ExperimentEventPayloads[K]>
-      const decoded = definition.decode(payload as JsonValue) as ExperimentEventPayloads[K]
       const snapshot = this.#handle.snapshot()
       const key = experimentEventKey(kind, decoded)
       const existing = snapshot.history[0]!.events.find(event => event.kind === 'known' && event.stored.type === definition.type
