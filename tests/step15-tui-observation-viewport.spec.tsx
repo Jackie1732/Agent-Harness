@@ -83,6 +83,7 @@ it.each([40, 80, 120])('keeps actual desk observation pages while Tab gives the 
     await sendTui(io.stdin, instance, '\r')
     await expect.poll(() => frame(io.stdout.frames)).toContain('精确 Root · completed')
     await expect.poll(() => frame(io.stdout.frames)).toContain('Tab 回执')
+    await instance.waitUntilRenderFlush()
     let current = page(io.stdout.frames, '任务详情'), body = current.body
     while (current.end < current.total) {
       await sendTui(io.stdin, instance, '\u001b[6~'); const next = page(io.stdout.frames, '任务详情')
