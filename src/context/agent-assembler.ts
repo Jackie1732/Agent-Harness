@@ -25,7 +25,7 @@ import { knownEvent, requireSourceIndex } from './sources.js'
 
 export type AgentContextBuild = { readonly kind: 'ready'; readonly assembly: AgentContextAssembly; readonly request: ModelRequest } | ContextBuildFailure
 
-/** Pure v2 compiler. Only a committed claim and its root's closed exchanges can supply required task data. */
+/** Pure Agent compiler. Only a committed claim and its root's closed exchanges can supply required task data. */
 export function assembleAgentContext(snapshot: SessionSnapshot, consumerInput: AgentContextConsumer, capturedInput: ContextCapturedFacts, sessionMaxRecordBytes: number): AgentContextBuild {
   const consumer = decodeAgentContextConsumer(consumerInput)
   const state = projectAgentSession(snapshot)
@@ -87,7 +87,8 @@ export function assembleAgentContext(snapshot: SessionSnapshot, consumerInput: A
       root: turn.root, budgetUsed: state.roots.find(item => item.id === turn.root)!.budget, budgetLimits: root.limit, pendingWaits, pendingOutbox,
     })] })
   const selectedInputs = new Set(chain.map(item => inputKey(item.started.payload.input)))
-  for (const input of state.inputs.filter(item => selectedInputs.has(inputKey(item.reference)) && item.message !== null)) {
+  for (const input of state.inputs.filter(item => selectedInputs.has(inputKey(item.reference)) && item.message !== null
+    && (item.status === 'claimed' || comm.inbox.some(message => message.messageId === item.message!.messageId && message.status === 'pending')))) {
     if (!captured.messageSupport.some(item => item.type === input.message!.type && item.payloadVersion === input.message!.payloadVersion && item.supported)) {
       return { kind: 'blocked', reason: 'unsupported-message', references: [{ eventId: input.reference.eventId, selector: 'peer-message' }] }
     }
@@ -116,7 +117,6 @@ export function assembleAgentContext(snapshot: SessionSnapshot, consumerInput: A
   const failure = requestBudgetFailure(measured, profile, required.map(unit => unit.reference))
   if (failure !== undefined) return failure
   const memoryTokens = (items: readonly AgentContextUnit[]) => Math.ceil(Buffer.byteLength(JSON.stringify(items.flatMap(unit => unit.messages))) / profile.tokenAccounting.bytesPerEstimatedToken)
-  if (memoryTokens(memory) > profile.budget.maxMemoryEstimatedTokens && memory.length > 0) return { kind: 'budget-exceeded', limit: 'input-tokens', required: memoryTokens(memory), available: profile.budget.maxMemoryEstimatedTokens, references: memory.map(unit => unit.reference) }
   const omitted: AgentContextAssembly['omitted'][number][] = []
   for (const units of [...optional].reverse()) {
     const trial = render([...units, ...history], memory)
