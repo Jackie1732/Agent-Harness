@@ -9,6 +9,7 @@ import type { HostObservations } from './observation.js'
 import type { HostAssembly } from './assembly.js'
 import { HostSchedulerTasks } from './scheduler-tasks.js'
 import { projectCommunicationFacts } from '../communication/projection.js'
+import { outboxChannelKey, pendingOutboxHeads } from '../communication/outbox-selection.js'
 import { isModelAdmissionPending } from './model-admission.js'
 import { HostBusinessLane } from './business-lane.js'
 import type { HostBusinessCursor } from './business-lane.js'
@@ -97,14 +98,16 @@ export async function runHostScheduler(input: HostSchedulerInput): Promise<HostR
   }
   const pending = (slot: HostProtocolSlot) => {
     if (input.routingPaused.has(slot.member.agentKey) || isModelAdmissionPending(slot.session.snapshot())) return []
-    return projectCommunicationFacts(slot.session.snapshot()).outbox.filter(item => {
+    const outbox = projectCommunicationFacts(slot.session.snapshot()).outbox
+    const channels = new Set([...pendingOutboxHeads(outbox)].filter(item => {
       const receiver = slots.find(candidate => candidate.session.header.address === item.envelope.recipient && candidate.mailbox.status === 'open')
-      return item.status === 'pending' && !attempted.has(item.messageId) && input.canAttempt(item) && retryReady(input, slot, item)
+      return !attempted.has(item.messageId) && input.canAttempt(item) && retryReady(input, slot, item)
         && (receiver === undefined || !isModelAdmissionPending(receiver.session.snapshot()))
-    })
+    }).map(outboxChannelKey))
+    return outbox.filter(item => item.status === 'pending' && channels.has(outboxChannelKey(item)))
   }
   try {
-    while (slots.length > 0) {
+    while (slots.length + input.assembly.protocolSlots.length > 0) {
       const notified = input.scanWake()
       const stopping = accepted.signal.aborted || input.isStopping()
       const atBudget = batches >= scheduling.maxBatchesPerRun
@@ -112,7 +115,7 @@ export async function runHostScheduler(input: HostSchedulerInput): Promise<HostR
       else if (atBudget) stoppedBy = 'batch-budget'
       const count = Math.min(scheduling.maxSlotsPerScan, slots.length)
       const selected = Array.from({ length: count }, (_, offset) => slots[(state.cursor + offset) % slots.length]!)
-      state.cursor = (state.cursor + count) % slots.length
+      if (slots.length > 0) state.cursor = (state.cursor + count) % slots.length
       let admitted = false
       business.retainExclusive(key => slots.some(slot => slot.member.agentKey === key && !input.paused.has(key) && !input.offline.has(key)
         && !state.faults.has(key) && slot.agent.status === 'accepting' && state.observations.read(slot, input.clock.now(), input.assembly.catalog).readiness.canRun
@@ -149,6 +152,7 @@ export async function runHostScheduler(input: HostSchedulerInput): Promise<HostR
         const deliverySlots: readonly HostProtocolSlot[] = [...slots, ...input.assembly.protocolSlots.filter(item => !slots.some(slot => slot.session === item.session))]
         const start = state.memberCursors[lane]
         const page = lane === 'delivery' ? deliverySlots : slots
+        if (page.length === 0) continue
         const candidates = Array.from({ length: Math.min(scheduling.maxSlotsPerScan, page.length) }, (_, offset) => page[(start + offset) % page.length]!)
         state.memberCursors[lane] = (start + candidates.length) % page.length
         const eligible = candidates.filter(slot => !input.offline.has(slot.member.agentKey) && (lane === 'delivery' ? slot.mailbox.status === 'open' : !state.faults.has(slot.member.agentKey)))
@@ -202,7 +206,7 @@ export async function runHostScheduler(input: HostSchedulerInput): Promise<HostR
       const tasks = accepted.pending
       if (tasks.length === 0) {
         if (stopping || batches >= scheduling.maxBatchesPerRun) break
-        scannedWithoutWork = admitted ? 0 : scannedWithoutWork + count
+        scannedWithoutWork = admitted ? 0 : scannedWithoutWork + Math.min(scheduling.maxSlotsPerScan, slots.length + input.assembly.protocolSlots.length)
         if (scannedWithoutWork >= slots.length + input.assembly.protocolSlots.length && (input.assembly.subagents?.nextAction() === undefined) && input.assembly.workflows?.nextAction(busy) === undefined) break
         continue
       }

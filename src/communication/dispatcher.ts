@@ -2,6 +2,7 @@ import { assertNever } from '../foundation/never.js'
 import { CommunicationError } from './errors.js'
 import { SessionMailboxImpl } from './mailbox.js'
 import type { MessageDeliveryOutcome, OutboxDispatchReport, OutboxMessageSnapshot } from './types.js'
+import { outboxChannelKey, pendingOutboxHeads } from './outbox-selection.js'
 
 /** Explicit, bounded driver for one Session Outbox. */
 export interface OutboxDispatcher {
@@ -14,25 +15,6 @@ export interface OutboxDispatchOptions {
   readonly signal?: AbortSignal
   readonly onlyMessageIds?: ReadonlySet<OutboxMessageSnapshot['messageId']>
   readonly maxAttempts?: number
-}
-
-function channelKey(message: OutboxMessageSnapshot): string {
-  return `${message.envelope.recipient}\u0000${message.envelope.channelId}`
-}
-
-function nextChannelHead(
-  messages: readonly OutboxMessageSnapshot[],
-  blockedChannels: ReadonlySet<string>,
-): OutboxMessageSnapshot | undefined {
-  const seen = new Set<string>()
-  for (const message of messages) {
-    if (message.status !== 'pending') continue
-    const key = channelKey(message)
-    if (seen.has(key)) continue
-    seen.add(key)
-    if (!blockedChannels.has(key)) return message
-  }
-  return undefined
 }
 
 /** Create the single-run coordinator for one Service-owned Mailbox. */
@@ -64,19 +46,24 @@ export function createOutboxDispatcher(
         stoppedBy = 'mailbox-inactive'
         break
       }
-      const candidate = nextChannelHead(mailbox.currentSnapshot().outbox, blockedChannels)
+      let candidate: OutboxMessageSnapshot | undefined
+      for (const head of pendingOutboxHeads(mailbox.currentSnapshot().outbox)) {
+        if (blockedChannels.has(outboxChannelKey(head))) continue
+        candidate = head
+        break
+      }
       if (candidate === undefined) break
       if (startedAttempts >= maximum) {
         stoppedBy = 'run-budget'
         break
       }
       if (allowed !== undefined && !allowed.has(candidate.messageId)) {
-        blockedChannels.add(channelKey(candidate))
+        blockedChannels.add(outboxChannelKey(candidate))
         continue
       }
       const prepared = await mailbox.prepareAttempt(candidate.messageId, signal)
       if (prepared.kind === 'ineligible') {
-        blockedChannels.add(channelKey(candidate))
+        blockedChannels.add(outboxChannelKey(candidate))
         continue
       }
       if (prepared.kind === 'exhausted') {
@@ -96,7 +83,7 @@ export function createOutboxDispatcher(
       switch (result) {
         case 'delivered': delivered += 1; break
         case 'rejected': rejected += 1; break
-        case 'retryable': retryable += 1; blockedChannels.add(channelKey(candidate)); break
+        case 'retryable': retryable += 1; blockedChannels.add(outboxChannelKey(candidate)); break
         case 'abandoned': abandoned += 1; break
         default: assertNever(result, 'delivery completion')
       }

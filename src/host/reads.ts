@@ -63,8 +63,9 @@ export class HostReads {
   agent(agentKey: string): AgentObservation {
     const { snapshot, flags, recoveryRequired } = this.#member(agentKey)
     const mailbox = this.#options.assembly.directory.status(snapshot.header.address).kind
+    const selection = this.#options.assembly.slots.find(slot => slot.session.header.sessionId === snapshot.header.sessionId)?.selection
     return { agentKey, sessionId: snapshot.header.sessionId, ...flags, mailbox: mailbox === 'unknown' ? 'known-offline' : mailbox,
-      readiness: inspectAgentReadiness(snapshot, this.#options.assembly.catalog, new Date(this.#options.clock.now()).toISOString()),
+      readiness: inspectAgentReadiness(snapshot, this.#options.assembly.catalog, new Date(this.#options.clock.now()).toISOString(), selection),
       report: projectAgentReport(snapshot), ...this.#evidence(snapshot, recoveryRequired) }
   }
   input(agentKey: string, query: { readonly inputEventId: SessionEventId } | { readonly namespace: string; readonly key: string }): InputObservation {
