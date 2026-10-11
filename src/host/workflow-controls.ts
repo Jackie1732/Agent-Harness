@@ -16,7 +16,7 @@ import { workflowAssignmentClosed } from '../workflow/closure.js'
 import { assignmentMember } from './workflow-authority.js'
 import { notifyWorkflowStop } from './workflow-stop.js'
 import type { NotifyWorkStop } from './workflow-stop.js'
-import type { HostSlot, HostProtocolSlot } from './runtime-types.js'
+import type { HostSlot, HostProtocolSlot, HostSessionMember } from './runtime-types.js'
 import { HostError } from './errors.js'
 
 interface WorkflowEntry { readonly slot: HostProtocolSlot; readonly journal: WorkflowJournal }
@@ -28,6 +28,7 @@ export interface WorkflowChildren {
 interface WorkflowControlOptions {
   readonly entries: ReadonlyMap<string, WorkflowEntry>
   readonly slots: HostSlot[]
+  members(): readonly HostSessionMember[]
   readonly gate: SerialGate
   readonly clock: Clock
   readonly owner: string
@@ -69,7 +70,7 @@ export class HostWorkflowControls {
     const latest = projectWorkflowSession(entry.slot.session.snapshot()).controls.at(-1)
     if (latest?.requested.stored.eventId === requested.stored.eventId && kind === 'resume' && settled.payload.outcome === 'applied') {
       for (const work of state.assignments) {
-        const member = assignmentMember(this.options.slots, work.payload)
+        const member = assignmentMember(this.options.members(), work.payload)
         const root = projectAgentSession(member.session.snapshot()).roots.find(root => root.source.kind === 'workflow' && root.source.assignment.eventId === work.stored.eventId)
         if (root !== undefined) this.options.children.resume(member.member.agentKey, root.id)
       }
@@ -91,7 +92,7 @@ export class HostWorkflowControls {
         const control = state.terminal === null && (state.assignments.length > 0 || this.#active.has(key))
           ? this.#applyControl(key, entry, 'cancel', { requestKey: 'host-shutdown:' + this.options.owner, reason: 'host-cancelled' }) : Promise.resolve()
         const roots = state.assignments.map(async work => {
-          const member = assignmentMember(this.options.slots, work.payload)
+          const member = assignmentMember(this.options.members(), work.payload)
           const root = projectAgentSession(member.session.snapshot()).roots.find(root => root.source.kind === 'workflow' && root.source.assignment.eventId === work.stored.eventId)
           if (root === undefined) return
           const stopped = await Promise.allSettled([this.options.children.cancel(member.member.agentKey, root.id),
@@ -108,8 +109,9 @@ export class HostWorkflowControls {
     })
   }
 
-  async #cancelRoot(member: HostSlot, root: ReturnType<typeof projectAgentSession>['roots'][number]): Promise<void> {
-    if (member.agent.status === 'accepting') { await member.agent.cancel(root.id, 'host-cancelled-workflow'); return }
+  async #cancelRoot(member: HostSessionMember, root: ReturnType<typeof projectAgentSession>['roots'][number]): Promise<void> {
+    const execution = this.options.slots.find(slot => slot.session === member.session)
+    if (execution?.agent.status === 'accepting') { await execution.agent.cancel(root.id, 'host-cancelled-workflow'); return }
     const journal = new AgentJournal(member.session, member.member.spec.limits.maxJournalConflicts, this.options.clock)
     if (root.stopControl === null) await journal.append(agentControlRequestedEvent,
       () => ({ kind: 'cancel-work' as const, root: root.id, reason: 'host-cancelled-workflow' }))
@@ -130,7 +132,7 @@ export class HostWorkflowControls {
         const previous = state.assignments.filter(item => item.stored.eventId === input.failedAssignment.eventId
           || item.payload.kind === 'review' && item.payload.reviewOf.assignment.eventId === input.failedAssignment.eventId)
         if (previous.some(item => !this.options.retired.has(item.stored.eventId) || !workflowAssignmentClosed(entry.slot.session.snapshot(),
-          assignmentMember(this.options.slots, item.payload).session.snapshot(), item.stored.eventId, this.options.slots.map(slot => slot.session.snapshot())))) throw new HostError('HOST_NOT_READY', 'workflow-retry-still-closing', { reasonCode: 'operation-rejected' })
+          assignmentMember(this.options.members(), item.payload).session.snapshot(), item.stored.eventId, this.options.members().map(slot => slot.session.snapshot())))) throw new HostError('HOST_NOT_READY', 'workflow-retry-still-closing', { reasonCode: 'operation-rejected' })
       }
       const requested = prior?.requested ?? await entry.journal.append(workflowControlRequestedEvent, () => payload)
       const settled = prior?.settled ?? await entry.journal.append(workflowControlSettledEvent, () => ({ request: requested.stored.eventId,

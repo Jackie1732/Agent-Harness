@@ -141,7 +141,7 @@ export async function assembleHost(spec: ResolvedHostSpec, clock: Clock,
       if (subagents !== undefined) await subagents.restore(discovered, local)
       for (const { member } of local) if (member.enabled) slots.push(await slotOwners.get(member.agentKey)!.open())
       const workflowDomain = workflows.length === 0 ? undefined : await effect.apply('workflows',
-        () => new HostWorkflows(slots, protocolSlots.filter(slot => slot.member.agentKey.startsWith('workflow:')), service, clock, lock.record.instanceId, workspaces!, {
+        () => new HostWorkflows(slots, local, protocolSlots.filter(slot => slot.member.agentKey.startsWith('workflow:')), service, clock, lock.record.instanceId, workspaces!, {
           notify: (memberKey, root) => subagents?.notifyParentStop(memberKey, root),
           cancel: async (memberKey, root) => { await subagents?.cancelParentWork(memberKey, root) },
           resume: (memberKey, root) => {

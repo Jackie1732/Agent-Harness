@@ -1,4 +1,4 @@
-import type { HostSlot, HostProtocolSlot } from './runtime-types.js'
+import type { HostSlot, HostProtocolSlot, HostSessionMember } from './runtime-types.js'
 import type { Clock } from '../foundation/clock.js'
 import { clockTimestamp } from '../foundation/clock.js'
 import { projectWorkflowSession } from '../workflow/projection.js'
@@ -29,7 +29,7 @@ export function notifyWorkflowStop(coordinator: HostProtocolSlot, members: reado
 }
 
 /** Record run stop, assignment stop, or final closure one transition at a time. */
-export function nextWorkflowStop(coordinator: HostProtocolSlot, members: readonly HostSlot[], clock: Clock, notifyChildren: NotifyWorkStop,
+export function nextWorkflowStop(coordinator: HostProtocolSlot, members: readonly HostSessionMember[], clock: Clock, notifyStop: () => void,
   retired: ReadonlySet<string>, state: WorkflowSnapshot): (() => Promise<unknown>) | undefined {
   const definition = state.definition!
   const journal = new WorkflowJournal(coordinator.session, clock), observedAt = clockTimestamp(clock)
@@ -63,7 +63,7 @@ export function nextWorkflowStop(coordinator: HostProtocolSlot, members: readonl
     const failure = finalWorkflowFailure(state, coordinator.session.snapshot().history.at(-1)!.events.filter(item => item.kind === 'known'))
     const reason = cancel !== undefined ? 'cancelled' : observedAt >= definition.payload.deadline ? 'deadline-exceeded' : failure !== undefined ? 'node-failed' : undefined
     if (reason !== undefined) return async () => {
-      notifyWorkflowStop(coordinator, members, notifyChildren)
+      notifyStop()
       return journal.append(workflowStoppedEvent, () => ({ definition: definition.stored.eventId, reason,
         source: cancel?.requested.stored.eventId ?? (reason === 'node-failed' ? failure!.stored.eventId : null), observedAt }))
     }

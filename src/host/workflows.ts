@@ -27,7 +27,7 @@ import { resolveWorkflowNode } from '../workflow/graph.js'
 import { nextWorkPublication } from '../workflow/publication.js'
 import { nextWorkflowSend } from '../workflow/transport-maintenance.js'
 import { HostError } from './errors.js'
-import type { HostSlot, HostProtocolSlot } from './runtime-types.js'
+import type { HostSlot, HostProtocolSlot, HostSessionMember } from './runtime-types.js'
 import { nextWorkflowInbox } from './workflow-inbox.js'
 import { assignmentMember, assertWorkflowMember, assertWorkflowParticipant, workflowMemberIdle } from './workflow-authority.js'
 import { resolveWorkflowReviews } from '../workflow/review.js'
@@ -35,7 +35,7 @@ import { workflowReport, workflowReportSummary } from './workflow-report.js'
 import type { WorkflowReport, WorkflowReportSummary } from './workflow-report.js'
 import { prepareWorkWorkspace, workExecutionTools } from './workflow-workspace.js'
 import type { WorkspaceAuthority, WorkspaceLease } from '../subagent/workspace.js'
-import { nextWorkflowStop, nextWorkStop } from './workflow-stop.js'
+import { nextWorkflowStop, nextWorkStop, notifyWorkflowStop } from './workflow-stop.js'
 import { workStopReceivedEvent, workStopSettledEvent } from '../workflow/stop-events.js'
 import { workAssignmentSettledEvent } from '../workflow/settlement-events.js'
 import { nextWorkflowAttempt } from '../workflow/retry.js'
@@ -54,7 +54,7 @@ export class HostWorkflows {
   readonly #retired = new Set<string>()
   readonly #workspaces = new Map<string, WorkspaceLease>()
   #cursor = 0
-  constructor(readonly slots: HostSlot[], coordinators: readonly HostProtocolSlot[], readonly communication: CommunicationService,
+  constructor(readonly slots: HostSlot[], readonly localMembers: readonly HostSessionMember[], coordinators: readonly HostProtocolSlot[], readonly communication: CommunicationService,
     readonly clock: Clock, readonly owner: string, readonly workspaceAuthority: WorkspaceAuthority, readonly children: WorkflowChildren,
     readonly scheduling: { readonly maxBusinessConcurrency: 1 | 2; readonly customModelProvider: boolean } = { maxBusinessConcurrency: 1, customModelProvider: false }) {
     for (const slot of coordinators) {
@@ -62,13 +62,17 @@ export class HostWorkflows {
       this.#entries.set(definition.payload.workflowKey, { slot, journal: new WorkflowJournal(slot.session, clock), protocolCursor: 0,
         admission: new WorkflowAdmission(slot.session, communication.protocolCapacity, clock) })
     }
-    this.controls = new HostWorkflowControls({ entries: this.#entries, slots, gate: this.#gate, clock, owner, retired: this.#retired, children })
+    this.controls = new HostWorkflowControls({ entries: this.#entries, slots, members: () => this.#members(), gate: this.#gate, clock, owner, retired: this.#retired, children })
+  }
+
+  #members(): readonly HostSessionMember[] {
+    return [...new Map([...this.localMembers, ...this.slots].map(member => [member.session.header.address, member])).values()]
   }
 
   async restore(): Promise<void> {
     for (const entry of this.#entries.values()) for (const assignment of projectWorkflowSession(entry.slot.session.snapshot()).assignments) {
-      const member = assignmentMember(this.slots, assignment.payload)
-      if (workflowAssignmentClosed(entry.slot.session.snapshot(), member.session.snapshot(), assignment.stored.eventId, this.slots.map(slot => slot.session.snapshot()))) { this.#retired.add(assignment.stored.eventId); continue }
+      const members = this.#members(), member = assignmentMember(members, assignment.payload)
+      if (workflowAssignmentClosed(entry.slot.session.snapshot(), member.session.snapshot(), assignment.stored.eventId, members.map(slot => slot.session.snapshot()))) { this.#retired.add(assignment.stored.eventId); continue }
       await entry.admission.restore({ kind: 'known', stored: assignment.stored, payload: assignment.payload as typeof assignment.payload & import('../foundation/json.js').JsonObject }, member.session)
       this.communication.workflowChannels.bind(entry.slot.session, assignment.stored.eventId, member.session)
       const root = projectAgentSession(member.session.snapshot()).roots.find(root => root.source.kind === 'workflow' && root.source.assignment.eventId === assignment.stored.eventId)
@@ -79,11 +83,11 @@ export class HostWorkflows {
   /** Capture coordinator and participant prefixes before constructing any report. */
   capture(key: string) {
     const entry = this.#entry(key)
-    const session = entry.slot.session.snapshot(), peers = this.slots.map(slot => slot.session.snapshot())
+    const members = this.#members(), session = entry.slot.session.snapshot(), peers = members.map(slot => slot.session.snapshot())
     const participants = new Set(projectWorkflowSession(session).assignments.map(item => item.payload.memberAddress))
     return { session, peers, participants, coordinatorKey: entry.slot.member.agentKey, resumed: this.controls.active(key),
-      faulted: entry.slot.session.status === 'faulted' || this.slots.some(slot => participants.has(slot.session.header.address)
-        && (slot.agent.status === 'faulted' || slot.session.status === 'faulted')) }
+      faulted: entry.slot.session.status === 'faulted' || members.some(member => participants.has(member.session.header.address) && member.session.status === 'faulted')
+        || this.slots.some(slot => participants.has(slot.session.header.address) && slot.agent.status === 'faulted') }
   }
 
   report(key: string): WorkflowReport {
@@ -148,15 +152,15 @@ export class HostWorkflows {
     if (protocol !== undefined) return protocol
     for (const work of state.assignments) {
       if (this.#retired.has(work.stored.eventId)) continue
-      const member = assignmentMember(this.slots, work.payload)
-      if (member.mailbox.status !== 'open' || busy.has(member) || isModelAdmissionPending(member.session.snapshot())) continue
+      const member = this.slots.find(slot => slot.session.header.address === work.payload.memberAddress)
+      if (member === undefined || member.mailbox.status !== 'open' || busy.has(member) || isModelAdmissionPending(member.session.snapshot())) continue
       const settled = member.session.snapshot().history.at(-1)!.events.some(item => item.kind === 'known' && [workAssignmentSettledEvent, workStopSettledEvent].some(definition =>
         item.stored.type === definition.type && definition.decode(item.payload).assignment.eventId === work.stored.eventId))
-      if (settled && workflowAssignmentClosed(coordinator.session.snapshot(), member.session.snapshot(), work.stored.eventId, this.slots.map(slot => slot.session.snapshot()))) return async () => {
+      if (settled && workflowAssignmentClosed(coordinator.session.snapshot(), member.session.snapshot(), work.stored.eventId, this.#members().map(slot => slot.session.snapshot()))) return async () => {
         await this.#workspaces.get(work.stored.eventId)?.dispose()
         this.#workspaces.delete(work.stored.eventId)
         this.slots[this.slots.indexOf(member)] = await member.executions!.replace({ kind: 'ordinary' }, {})
-        entry.admission.retire(work.stored.eventId, member.session, this.slots.map(slot => slot.session))
+        entry.admission.retire(work.stored.eventId, member.session, this.#members().map(slot => slot.session))
         this.#retired.add(work.stored.eventId)
       }
       const agent = projectAgentSession(member.session.snapshot())
@@ -172,10 +176,10 @@ export class HostWorkflows {
             ...workExecutionTools(member.member, work.payload, lease), workActions: new SessionWorkActions(member.session, this.clock, {
               admitGroup: request => this.#gate.run(async () => this.controls.closed || this.controls.stopping(definition.payload.workflowKey) || projectWorkflowSession(coordinator.session.snapshot()).desired !== 'running'
                 ? { outcome: 'blocked' as const, reason: 'workflow-admission-paused' }
-                : admitWorkGroup(coordinator.session, this.slots, this.clock, request)),
+                : admitWorkGroup(coordinator.session, this.#members(), this.clock, request)),
               admit: request => this.#gate.run(async () => this.controls.closed || this.controls.stopping(definition.payload.workflowKey) || projectWorkflowSession(coordinator.session.snapshot()).desired !== 'running'
                 ? { outcome: 'blocked' as const, reason: 'workflow-admission-paused', cycle: [] }
-                : admitWorkQuestion(coordinator.session, this.slots, this.clock, request)),
+                : admitWorkQuestion(coordinator.session, this.#members(), this.clock, request)),
             }),
           })
           this.#workspaces.delete(work.stored.eventId)
@@ -279,8 +283,9 @@ export class HostWorkflows {
   #nextProtocol(entry: WorkflowEntry): (() => Promise<unknown>) | undefined {
     const coordinator = entry.slot, state = projectWorkflowSession(coordinator.session.snapshot())
     const members = this.slots.filter(member => state.definition!.payload.roster.some(peer => peer.address === member.session.header.address))
+    const facts = this.#members()
     const candidates = [() => members.some(member => isModelAdmissionPending(member.session.snapshot())) ? undefined
-      : nextWorkflowStop(coordinator, this.slots, this.clock, this.children.notify, this.#retired, state)
+      : nextWorkflowStop(coordinator, facts, this.clock, () => notifyWorkflowStop(coordinator, this.slots, this.children.notify), this.#retired, state)
         ?? nextWorkflowInbox(coordinator.session, coordinator.mailbox, this.clock, 'coordinator')
         ?? nextWorkflowSend(coordinator.session, coordinator.mailbox, this.clock, 'coordinator')
         ?? nextWorkInteractionSettlement(coordinator.session, this.slots, this.clock),

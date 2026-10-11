@@ -5,7 +5,7 @@ import { projectAgentSession } from '../agent/projection.js'
 import { reserveAgentBudget, emptyAgentBudget } from '../agent/budget.js'
 import type { WorkflowAssignment, WorkflowDefinition } from '../workflow/types.js'
 import type { ResolvedHostLocalMember } from './config.js'
-import type { HostSlot } from './runtime-types.js'
+import type { HostSlot, HostSessionMember } from './runtime-types.js'
 import { HostError } from './errors.js'
 import { assertWorkTools } from './workflow-workspace.js'
 
@@ -44,7 +44,7 @@ export function workflowMemberIdle(slot: HostSlot): boolean {
     && !state.inputs.some(input => input.work !== undefined && input.status === 'queued')
 }
 
-export function assignmentMember(slots: readonly HostSlot[], assignment: WorkflowAssignment): HostSlot {
+export function assignmentMember<T extends HostSessionMember>(slots: readonly T[], assignment: WorkflowAssignment): T {
   const slot = slots.find(slot => slot.session.header.address === assignment.memberAddress)
   if (slot === undefined) throw new HostError('HOST_NOT_READY', 'workflow-member-offline')
   return slot

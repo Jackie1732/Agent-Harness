@@ -30,4 +30,7 @@ export interface HostSlot {
   dispose(): Promise<void>
 }
 
+/** Held Session facts remain available independently of an online execution generation. */
+export type HostSessionMember = Pick<HostSlot, 'member' | 'session'>
+
 export type { HostMemberReport, HostRunReport } from './report-data.js'

@@ -3,7 +3,7 @@ import type { CommittedSessionEvent } from '../session/types.js'
 import { formatSessionEventId, sessionSequence } from '../session/ids.js'
 import type { Clock } from '../foundation/clock.js'
 import { clockTimestamp } from '../foundation/clock.js'
-import type { HostSlot } from './runtime-types.js'
+import type { HostSessionMember } from './runtime-types.js'
 import { foldAgentSession, projectAgentSession } from '../agent/projection.js'
 import { workAcceptanceForRoot } from '../workflow/work-projection.js'
 import { projectWorkflowSession } from '../workflow/projection.js'
@@ -18,7 +18,7 @@ import { sameWorkflowValue } from '../workflow/work-binding.js'
 import { invalidHistory } from '../workflow/errors.js'
 
 /** HostWorkflows serializes this admission with questions and all other group admissions. */
-export async function admitWorkGroup(coordinator: SessionHandle, slots: readonly HostSlot[], clock: Clock,
+export async function admitWorkGroup(coordinator: SessionHandle, slots: readonly HostSessionMember[], clock: Clock,
   request: CommittedSessionEvent<ReturnType<typeof workGroupRequestedEvent.decode>>): ReturnType<WorkGroupAuthority['admitGroup']> {
   const state = projectWorkflowSession(coordinator.snapshot()), chosen = selectGroupAdmission(state, request, clockTimestamp(clock))
   if ('outcome' in chosen) return { outcome: 'blocked', reason: chosen.reason }

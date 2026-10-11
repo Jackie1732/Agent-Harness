@@ -3,7 +3,7 @@ import type { Clock } from '../foundation/clock.js'
 import { clockTimestamp } from '../foundation/clock.js'
 import { formatSessionEventId, sessionSequence } from '../session/ids.js'
 import type { CommittedSessionEvent } from '../session/types.js'
-import type { HostSlot } from './runtime-types.js'
+import type { HostSlot, HostSessionMember } from './runtime-types.js'
 import { foldAgentSession, projectAgentSession } from '../agent/projection.js'
 import { WorkflowJournal } from '../workflow/journal.js'
 import { projectWorkflowSession } from '../workflow/projection.js'
@@ -17,7 +17,7 @@ import { CommunicationError } from '../communication/errors.js'
 import { workInteractionSettlement } from '../workflow/interaction-settlement.js'
 
 /** Called under HostWorkflows' admission gate; coordinator records receive identities and quotas, not peer text. */
-export async function admitWorkQuestion(coordinator: SessionHandle, slots: readonly HostSlot[], clock: Clock,
+export async function admitWorkQuestion(coordinator: SessionHandle, slots: readonly HostSessionMember[], clock: Clock,
   request: CommittedSessionEvent<ReturnType<typeof workQuestionRequestedEvent.decode>>): ReturnType<WorkInteractionAuthority['admit']> {
   const state = projectWorkflowSession(coordinator.snapshot())
   const chosen = selectQuestionAdmission(state, request, clockTimestamp(clock))
@@ -50,8 +50,8 @@ export function nextWorkInteractionSettlement(coordinator: SessionHandle, slots:
   for (const interaction of state.interactions) {
     if (interaction.settled !== null) continue
     const request = interaction.admitted.payload.request
-    const sender = slots.find(slot => slot.session.header.address === request.address)!
-    if (sender.mailbox.status !== 'open') continue
+    const sender = slots.find(slot => slot.session.header.address === request.address)
+    if (sender === undefined || sender.mailbox.status !== 'open') continue
     const source = foldAgentSession(sender.session.snapshot())
     const settlement = workInteractionSettlement(source, interaction)
     if (settlement === undefined) continue
