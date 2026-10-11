@@ -33,8 +33,9 @@ export function inspectAgentReadiness(
   const support = [...(state.spec?.payload.messages ?? []), ...(state.spec?.payload.protocolVersion !== 1 ? subagentMessageDefinitions : []),
     ...(state.spec?.payload.protocolVersion === 3 ? [workflowQuestionMessage, workflowAnswerMessage, workflowGroupMessage] : [])]
     .filter(item => catalog.resolve(item.type, item.payloadVersion) !== undefined)
-  const pendingControls = state.controls.filter(item => item.settled === null && item.supersededBy === null
-    && ['cancel-work', 'expire-work'].includes(item.requested.payload.kind)).length
+  const openControls = state.controls.filter(item => item.settled === null && item.supersededBy === null)
+  const pendingControls = openControls.filter(item => ['cancel-work', 'expire-work'].includes(item.requested.payload.kind)).length
+  const maintenanceBlocked = openControls.some(item => !['cancel-work', 'expire-work'].includes(item.requested.payload.kind))
   const pendingReceipts = state.inputs.filter(input => input.message !== null && ['handled', 'abandoned'].includes(input.status)
     && communication.inbox.some(item => item.messageId === input.message!.messageId && item.status === 'pending')).length
   const actionableWaits = state.waits.filter(wait => {
@@ -50,9 +51,9 @@ export function inspectAgentReadiness(
   }).length
   const dueRoots = state.roots.filter(root => root.outcome === null && root.stopControl === null && root.deadline <= observedAt).length
   const pendingMaintenance = pendingControls + pendingReceipts + actionableWaits + dueRoots
-  let runnableInputs = 0
+  const runnableInputs = runnableAgentInputs(state, catalog, selection).length
   let capacityBlocked = false
-  try { selectAgentInput(state, catalog, selection); runnableInputs = runnableAgentInputs(state, catalog, selection).length } catch (error) {
+  try { selectAgentInput(state, catalog, selection) } catch (error) {
     if (!(error instanceof AgentError) || error.code !== 'AGENT_LIMIT_EXCEEDED') throw error
     capacityBlocked = true
   }
@@ -68,12 +69,13 @@ export function inspectAgentReadiness(
   else if (state.openRecovery !== null) blockedBy = 'recovery-required'
   else if (state.closing !== null) blockedBy = 'closing'
   else if (state.openRun !== null) blockedBy = 'driver-active'
+  else if (maintenanceBlocked) blockedBy = 'recovery-required'
   else if (capacityBlocked) blockedBy = 'capacity'
   else if (runnableInputs === 0 && pendingMaintenance === 0 && reviewRequiredInputs > 0) blockedBy = 'review-required'
   else if (runnableInputs === 0 && pendingMaintenance === 0 && unsupportedInputs > 0) blockedBy = 'unsupported-input'
   else if (runnableInputs === 0 && pendingMaintenance === 0 && nextWakeAt !== null) blockedBy = 'waiting'
   else if (runnableInputs === 0 && pendingMaintenance === 0) blockedBy = 'idle'
-  let available = snapshot.lifecycle === 'active' && state.openRun === null && state.openRecovery === null && state.closing === null && !capacityBlocked
+  let available = snapshot.lifecycle === 'active' && state.openRun === null && state.openRecovery === null && state.closing === null && !maintenanceBlocked
   if (available) {
     try { assertAgentExecutionQuiescent(snapshot) }
     catch (cause) {
@@ -82,7 +84,7 @@ export function inspectAgentReadiness(
       available = false
     }
   }
-  return Object.freeze({ sourcePosition: snapshot.localPosition, canRun: available && runnableInputs > 0,
+  return Object.freeze({ sourcePosition: snapshot.localPosition, canRun: available && !capacityBlocked && openControls.length === 0 && runnableInputs > 0,
     canMaintain: available && pendingMaintenance > 0, nextWakeAt, blockedBy,
     counts: Object.freeze({ runnableInputs, pendingMaintenance, unsupportedInputs, reviewRequiredInputs }) })
 }

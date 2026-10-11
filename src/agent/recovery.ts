@@ -106,7 +106,8 @@ export async function recoverAgentSession(session: SessionHandle, options: Agent
           && (item.settled.payload.cleanup.status !== 'complete' || item.settled.payload.execution === 'may-have-executed'))
       const stop = state.controls.find(item => item.requested.stored.eventId === root.stopControl)
       const final = state.steps.filter(step => step.opened.payload.turn === turn.started.stored.eventId).at(-1)
-      const complete = wait === undefined && !uncertain && root.stopControl === null && final?.decided?.payload.classification === 'final'
+      const expired = clockTimestamp(options.clock) >= root.deadline
+      const complete = wait === undefined && !uncertain && !expired && root.stopControl === null && final?.decided?.payload.classification === 'final'
         && !hasUnfulfilledAgentReply(root.id, state, projectCommunicationFacts(snapshot))
         && !agentRootUsageUnknown(snapshot, state, root.id)
         && state.subagents.delegations.filter(item => item.payload.parentRoot === root.id).every(item => {
@@ -114,10 +115,10 @@ export async function recoverAgentSession(session: SessionHandle, options: Agent
           return closure.businessResolved && closure.executionReleased && closure.adopted
         })
       await journal.append(executionEvents.turnSettled, () => ({ turn: turn.started.stored.eventId,
-        outcome: wait !== undefined ? 'waiting' as const : complete ? 'completed' as const : uncertain ? 'result-unknown' as const : 'interrupted' as const,
+        outcome: wait !== undefined ? 'waiting' as const : complete ? 'completed' as const : uncertain ? 'result-unknown' as const : expired && root.stopControl === null ? 'cancelled' as const : 'interrupted' as const,
         rootOutcome: wait !== undefined ? null : complete ? 'completed' as const : uncertain ? 'result-unknown' as const : stop?.requested.payload.kind === 'cancel-work' ? 'cancelled' as const
-          : stop?.requested.payload.kind === 'expire-work' ? 'timed-out' as const : 'failed' as const,
-        reason: complete ? 'recovered-final-result' : 'driver-interrupted', disposition: wait !== undefined || complete ? 'handled' as const : 'review-required' as const,
+          : stop?.requested.payload.kind === 'expire-work' || expired ? 'timed-out' as const : 'failed' as const,
+        reason: complete ? 'recovered-final-result' : wait === undefined && !uncertain && expired && root.stopControl === null ? 'root-deadline' : 'driver-interrupted', disposition: wait !== undefined || complete ? 'handled' as const : 'review-required' as const,
         finalStep: complete ? final!.opened.stored.eventId : null, budget: root.budget })); writes++; continue
     }
     if (state.openRun !== null) {
