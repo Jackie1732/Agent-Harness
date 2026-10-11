@@ -147,6 +147,7 @@ export class HostWorkflows {
     const coordinator = entry.slot
     const state = projectWorkflowSession(coordinator.session.snapshot())
     const definition = state.definition!
+    const active = state.assignments.filter(work => !this.#retired.has(work.stored.eventId))
     const enabled = this.controls.active(definition.payload.workflowKey) && !this.controls.stopping(definition.payload.workflowKey) && state.desired === 'running' && state.stop === null && state.terminal === null
     const protocol = this.#nextProtocol(entry)
     if (protocol !== undefined) return protocol
@@ -218,7 +219,7 @@ export class HostWorkflows {
         artifacts: proposal.payload.message.value.artifacts, reviews: proposal.payload.message.value.outcome === 'completed' ? evaluated!.reviews : [],
       }))
       if (proposal !== undefined && decisionMissing && enabled && work.payload.kind === 'production' && work.payload.acceptance.kind === 'reviewed-all'
-        && state.assignments.filter(item => !state.decisions.some(decision => decision.payload.assignment.eventId === item.stored.eventId)).length < definition.payload.limits.maxActiveAssignments) {
+        && active.length < definition.payload.limits.maxActiveAssignments) {
         for (const reviewer of work.payload.acceptance.reviewers) {
           if (state.assignments.some(item => item.payload.kind === 'review' && item.payload.reviewOf.assignment.eventId === work.stored.eventId && item.payload.memberKey === reviewer)) continue
           const peer = this.slots.find(slot => slot.member.agentKey === reviewer)
@@ -242,7 +243,10 @@ export class HostWorkflows {
         }
       }
     }
-    if (!enabled || state.assignments.filter(work => !this.#retired.has(work.stored.eventId)).length >= definition.payload.limits.maxActiveAssignments) return undefined
+    if (!enabled || active.length >= definition.payload.limits.maxActiveAssignments) return undefined
+    const reservedReviewers = new Set([...this.#entries.values()].flatMap(entry => projectWorkflowSession(entry.slot.session.snapshot()).assignments
+      .filter(work => !this.#retired.has(work.stored.eventId) && work.payload.kind === 'production' && work.payload.acceptance.kind === 'reviewed-all')
+      .flatMap(work => work.payload.reviewerReservations.map(reviewer => reviewer.memberKey))))
     const retryNodes = new Set(state.retries.filter(item => item.request !== null && item.consumed === null && item.expired === null)
       .map(item => state.assignments.find(work => work.stored.eventId === item.assignment.eventId)!.payload.nodeKey))
     const nodes = [...definition.payload.nodes.filter(node => retryNodes.has(node.nodeKey)), ...definition.payload.nodes.filter(node => !retryNodes.has(node.nodeKey))]
@@ -253,6 +257,8 @@ export class HostWorkflows {
       if (resolution.kind === 'skipped' || resolution.kind === 'failed') return () => entry.journal.append(workflowNodeResolvedEventV2,
         () => ({ definition: definition.stored.eventId, nodeKey: node.nodeKey, outcome: resolution.kind as 'skipped' | 'failed', reason: resolution.reason }))
       if (resolution.kind !== 'ready') continue
+      const needsReviewer = node.acceptance.kind === 'reviewed-all' || active.some(work => work.payload.kind === 'production' && work.payload.acceptance.kind === 'reviewed-all')
+      if (reservedReviewers.has(node.executor) || needsReviewer && active.length + 1 >= definition.payload.limits.maxActiveAssignments) continue
       const member = this.slots.find(slot => slot.member.agentKey === node.executor)
       if (member === undefined || member.mailbox.status !== 'open' || busy.has(member) || !workflowMemberIdle(member) || !this.businessAllowed(member)) continue
       const workspace = node.attempts[number - 1]!.workspace

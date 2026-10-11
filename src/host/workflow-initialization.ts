@@ -26,8 +26,11 @@ function same(a: JsonObject, b: JsonObject): boolean {
   return Buffer.compare(canonicalJsonBytes(a), canonicalJsonBytes(b)) === 0
 }
 
-/** Check all three initialization records before creating a coordinator Header. */
+/** Check review capacity and all three initialization records before creating a coordinator Header. */
 export function preflightWorkflowInitialization(hostKey: string, definition: WorkflowDefinition, maximum: number): void {
+  if (definition.limits.maxActiveAssignments < 2 && definition.nodes.some(node => node.acceptance.kind === 'reviewed-all')) {
+    throw new HostError('HOST_CONFIG_INVALID', 'workflow-review-capacity-insufficient')
+  }
   const sessionId = parseSessionAddress(definition.coordinator)
   const recipe = { definition: definition as unknown as JsonObject }
   const fingerprint = fingerprintHostRecipe(recipe)
