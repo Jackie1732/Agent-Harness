@@ -137,19 +137,25 @@ class HostRuntime {
         this.#assertReady()
         if ([...hostTasks.getStore() ?? []].some(token => this.#tokens.has(token))) throw new HostError('HOST_REENTRANT_WAIT', 'workflow-cannot-wait-on-own-driver')
       }, () => this.read().workflow(workflowKey))
-    const control = (kind: 'pause' | 'resume' | 'cancel', input: { readonly requestKey: string; readonly reason?: string }) => this.#track(async () => {
-      this.#assertReady()
-      const result = await domain.controls.request(workflowKey, kind, input)
-      this.#assembly.wakeup.notify()
-      return result
-    })
-    return Object.freeze({ report: () => domain.report(workflowKey), readArtifact: (reference: unknown) => domain.readArtifact(workflowKey, reference), wait,
-      retry: (input: WorkflowRetryRequest) => this.#track(async () => {
+    const control = (kind: 'pause' | 'resume' | 'cancel', input: { readonly requestKey: string; readonly reason?: string }) => {
+      const captured = { ...input }
+      return this.#track(async () => {
         this.#assertReady()
-        const result = await domain.controls.retry(workflowKey, input)
+        const result = await domain.controls.request(workflowKey, kind, captured)
         this.#assembly.wakeup.notify()
         return result
-      }),
+      })
+    }
+    return Object.freeze({ report: () => domain.report(workflowKey), readArtifact: (reference: unknown) => domain.readArtifact(workflowKey, reference), wait,
+      retry: (input: WorkflowRetryRequest) => {
+        const captured = { requestKey: input.requestKey, nodeKey: input.nodeKey, failedAssignment: { ...input.failedAssignment } }
+        return this.#track(async () => {
+          this.#assertReady()
+          const result = await domain.controls.retry(workflowKey, captured)
+          this.#assembly.wakeup.notify()
+          return result
+        })
+      },
       pause: (input: { readonly requestKey: string; readonly reason?: string }) => control('pause', input),
       cancel: (input: { readonly requestKey: string; readonly reason?: string }) => control('cancel', input),
       resume: (input: { readonly requestKey: string; readonly reason?: string }) => control('resume', input) })

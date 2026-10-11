@@ -18,7 +18,8 @@ export function workflowObserver(timer: HostTimer, scanIntervalMs: number,
     if (!['settled', 'closed'].includes(query.until) || !Number.isSafeInteger(query.timeoutMs) || query.timeoutMs < 1 || query.timeoutMs > 2_147_483_647) {
       throw new HostError('HOST_PROTOCOL_INVALID', 'workflow-wait-query')
     }
-    return observeFinite(owner, timer, observe, report => query.until === 'closed' ? report.closed : report.settled,
+    const until = query.until
+    return observeFinite(owner, timer, observe, report => until === 'closed' ? report.closed : report.settled,
       { timeoutMs: query.timeoutMs, scanIntervalMs, ...(query.signal === undefined ? {} : { signal: query.signal }) }).then(result => {
       const { instanceId: _instanceId, cuts: _cuts, recoveryRequired: _recoveryRequired, ...report } = result.observation
       return { ...result, report }

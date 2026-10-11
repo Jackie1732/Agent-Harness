@@ -9,6 +9,8 @@ import { agentStopAction } from '../agent/stop-maintenance.js'
 import { projectWorkflowSession } from '../workflow/projection.js'
 import { workflowControlRequestedEvent, workflowControlSettledEvent } from '../workflow/control-events.js'
 import type { WorkflowRetryRequest } from '../workflow/control-events.js'
+import type { WorkflowControlRequested } from '../workflow/control-events.js'
+import type { JsonObject } from '../foundation/json.js'
 import type { WorkflowJournal } from '../workflow/journal.js'
 import { retryRequestFailure } from '../workflow/retry.js'
 import { sameWorkflowValue } from '../workflow/work-binding.js'
@@ -48,17 +50,19 @@ export class HostWorkflowControls {
   closeAdmission(): void { this.#closed = true }
 
   request(key: string, kind: 'pause' | 'resume' | 'cancel', input: { readonly requestKey: string; readonly reason?: string }) {
+    const entry = this.#entry(key)
+    const definition = projectWorkflowSession(entry.slot.session.snapshot()).definition!.stored.eventId
+    const payload = workflowControlRequestedEvent.decode({ definition, kind, requestKey: input.requestKey, reason: input.reason ?? '' })
     return this.options.gate.run(() => {
       if (this.#closed) throw new HostError('HOST_INACTIVE', 'workflow-host-closed')
-      return this.#applyControl(key, this.#entry(key), kind, input)
+      return this.#applyControl(key, entry, payload)
     })
   }
 
-  async #applyControl(key: string, entry: WorkflowEntry, kind: 'pause' | 'resume' | 'cancel', input: { readonly requestKey: string; readonly reason?: string }) {
+  async #applyControl(key: string, entry: WorkflowEntry, payload: WorkflowControlRequested & JsonObject) {
     const state = projectWorkflowSession(entry.slot.session.snapshot())
-    const payload = workflowControlRequestedEvent.decode({ definition: state.definition!.stored.eventId, kind,
-      requestKey: input.requestKey, reason: input.reason ?? '' })
-    const prior = state.controls.find(item => item.requested.payload.requestKey === input.requestKey)
+    const kind = payload.kind
+    const prior = state.controls.find(item => item.requested.payload.requestKey === payload.requestKey)
     if (prior !== undefined && !sameWorkflowValue(prior.requested.payload, payload)) throw new HostError('HOST_BINDING_CONFLICT', 'workflow-request-key-conflict')
     if (kind === 'cancel' && state.terminal === null) {
       this.#stopping.add(key)
@@ -90,7 +94,8 @@ export class HostWorkflowControls {
       const results = await Promise.allSettled([...this.options.entries].map(async ([key, entry]) => {
         const state = projectWorkflowSession(entry.slot.session.snapshot())
         const control = state.terminal === null && (state.assignments.length > 0 || this.#active.has(key))
-          ? this.#applyControl(key, entry, 'cancel', { requestKey: 'host-shutdown:' + this.options.owner, reason: 'host-cancelled' }) : Promise.resolve()
+          ? this.#applyControl(key, entry, workflowControlRequestedEvent.decode({ definition: state.definition!.stored.eventId,
+            kind: 'cancel', requestKey: 'host-shutdown:' + this.options.owner, reason: 'host-cancelled' })) : Promise.resolve()
         const roots = state.assignments.map(async work => {
           const member = assignmentMember(this.options.members(), work.payload)
           const root = projectAgentSession(member.session.snapshot()).roots.find(root => root.source.kind === 'workflow' && root.source.assignment.eventId === work.stored.eventId)
@@ -120,17 +125,20 @@ export class HostWorkflowControls {
   }
 
   retry(key: string, input: WorkflowRetryRequest) {
+    const entry = this.#entry(key)
+    const definition = projectWorkflowSession(entry.slot.session.snapshot()).definition!.stored.eventId
+    const payload = workflowControlRequestedEvent.decode({ definition, kind: 'retry', ...input }) as Extract<WorkflowControlRequested, { kind: 'retry' }> & JsonObject
     return this.options.gate.run(async () => {
       if (this.#closed) throw new HostError('HOST_INACTIVE', 'workflow-host-closed')
-      const entry = this.#entry(key), state = projectWorkflowSession(entry.slot.session.snapshot())
-      const payload = workflowControlRequestedEvent.decode({ definition: state.definition!.stored.eventId, kind: 'retry', ...input })
-      const prior = state.controls.find(item => item.requested.payload.requestKey === input.requestKey)
+      const state = projectWorkflowSession(entry.slot.session.snapshot())
+      const prior = state.controls.find(item => item.requested.payload.requestKey === payload.requestKey)
       if (prior !== undefined && !sameWorkflowValue(prior.requested.payload, payload)) throw new HostError('HOST_BINDING_CONFLICT', 'workflow-request-key-conflict')
       if (prior === undefined) {
-        const reason = retryRequestFailure(state, input, clockTimestamp(this.options.clock))
+        const reason = retryRequestFailure(state, payload, clockTimestamp(this.options.clock))
         if (this.#stopping.has(key) || reason !== undefined) throw new HostError('HOST_NOT_READY', reason ?? 'workflow-stopping', { reasonCode: 'operation-rejected' })
-        const previous = state.assignments.filter(item => item.stored.eventId === input.failedAssignment.eventId
-          || item.payload.kind === 'review' && item.payload.reviewOf.assignment.eventId === input.failedAssignment.eventId)
+        const failedAssignment = payload.failedAssignment
+        const previous = state.assignments.filter(item => item.stored.eventId === failedAssignment.eventId
+          || item.payload.kind === 'review' && item.payload.reviewOf.assignment.eventId === failedAssignment.eventId)
         if (previous.some(item => !this.options.retired.has(item.stored.eventId) || !workflowAssignmentClosed(entry.slot.session.snapshot(),
           assignmentMember(this.options.members(), item.payload).session.snapshot(), item.stored.eventId, this.options.members().map(slot => slot.session.snapshot())))) throw new HostError('HOST_NOT_READY', 'workflow-retry-still-closing', { reasonCode: 'operation-rejected' })
       }
