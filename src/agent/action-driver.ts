@@ -112,6 +112,8 @@ export async function executeAgentAction(runtime: AgentRuntime, turnId: SessionE
       throw error
     }
     if (intent.route.startsWith('work-') && !(error instanceof AgentError) && !(error instanceof SyntaxError)) throw error
+    if (['spawn', 'await-subagent', 'answer-subagent', 'ask-parent', 'progress'].includes(intent.route)
+      && !(error instanceof AgentError) && !(error instanceof SubagentError) && !(error instanceof CommunicationError) && !(error instanceof SyntaxError)) throw error
     if (error instanceof SubagentError && error.code === 'SUBAGENT_COMMIT_UNKNOWN') throw new AgentError('AGENT_COMMIT_UNKNOWN', 'subagent-commit-unknown')
     if (error instanceof AgentError && ['AGENT_COMMIT_UNKNOWN', 'AGENT_WRITE_FAILED'].includes(error.code)) throw error
     return { kind: 'not-started', reason: error instanceof SubagentError ? error.message : 'native-arguments-invalid' }
