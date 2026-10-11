@@ -8,6 +8,7 @@ import { projectHostSession } from '../host/session-projection.js'
 import { projectHostWorkflowSession } from '../host/workflow-binding.js'
 import type { SessionSnapshot } from '../session/types.js'
 import { validateDelegationCausality } from '../subagent/causality.js'
+import { validateWorkflowCausality } from '../workflow/causality.js'
 import { publishExperimentArtifact, readExperimentArtifact } from './artifacts.js'
 import { decodeExperimentEvidence } from './evidence-codec.js'
 import type { ExperimentEvidence } from './evidence-types.js'
@@ -138,6 +139,7 @@ function verifyUnitSource(plan: ExperimentPlan, unit: ExperimentUnit, recipe: Re
     validateDelegationCausality(parent, child, requested)
   }
   if (snapshots.some(snapshot => !staticIds.has(snapshot.header.sessionId) && !childIds.has(snapshot.header.sessionId))) conflict('derived-session-not-unit-owned')
+  if (recipe.schemaVersion === 3 && evidence.coverage.complete) validateWorkflowCausality(snapshots)
   const target = evidence.target, entry = unit.entry
   if (target === null) return
   const item = plan.dataset.cases.find(item => item.caseKey === unit.caseKey)!

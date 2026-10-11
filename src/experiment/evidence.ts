@@ -10,6 +10,7 @@ import { FrameScanner } from '../session/frame.js'
 import { hostRuntimeEventCatalog } from '../host/initialization.js'
 import { projectAgentSession } from '../agent/projection.js'
 import { validateDelegationCausality } from '../subagent/causality.js'
+import { validateWorkflowCausality } from '../workflow/causality.js'
 import { collectExperimentMetrics } from './metrics.js'
 import { verifyExperimentContexts } from './context-verification.js'
 import type { CollectExperimentEvidenceInput, CollectedExperimentEvidence, EvidenceSessionCut } from './evidence-types.js'
@@ -116,6 +117,10 @@ export async function collectExperimentEvidence(input: CollectExperimentEvidence
         validateDelegationCausality(parent, child, requested)
       }
     } catch (cause) { fail(cause) }
+  }
+  if (input.selected === undefined && input.recipe.schemaVersion === 3) {
+    try { validateWorkflowCausality(snapshots) }
+    catch (cause) { fail(cause) }
   }
   reasons.push(...verifyExperimentContexts(snapshots).reasons)
   const selectedIds = [...new Set(selected.map(item => item.sessionId))].sort()
