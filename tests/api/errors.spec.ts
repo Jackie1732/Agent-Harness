@@ -35,3 +35,9 @@ it('keeps invoked cancellation uncertain when its Agent journal becomes inactive
   }
   expect(apiFailure(agent, 'input.submit', true, false)).toMatchObject({ acceptance: 'not-accepted' })
 })
+
+it('distinguishes an unowned delegation rejected before cancellation from a failed observation after its receipt', () => {
+  const missing = new HostError('HOST_TARGET_NOT_FOUND', 'delegation-not-owned')
+  expect(apiFailure(missing, 'delegation.cancel', true, false)).toMatchObject({ code: 'API_TARGET_NOT_FOUND', acceptance: 'not-accepted' })
+  expect(apiFailure(missing, 'delegation.cancel', true, true)).toMatchObject({ code: 'API_TARGET_NOT_FOUND', acceptance: 'unknown' })
+})

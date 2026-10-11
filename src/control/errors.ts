@@ -45,8 +45,9 @@ export function controlFailure(error: unknown, method: ControlMethod | undefined
     }
     else if (domainCode.includes('EVIDENCE_INCOMPLETE') || domainCode.includes('SOURCE_INVALID')) code = 'API_EVIDENCE_INCOMPLETE'
   }
-  // Agent cancellation can reach an inactive journal after its stop request commits.
+  // Agent cancellation can commit before its journal fails; a missing delegation target is rejected before writing.
   if (invoked && method !== undefined && ['root.cancel', 'delegation.cancel', 'workflow.cancel'].includes(method)
-    && code !== 'API_BUSY' && code !== 'API_KEY_CONFLICT' && (code !== 'API_INACTIVE' || domainCode === 'AGENT_INACTIVE')) knownRejection = false
+    && code !== 'API_BUSY' && code !== 'API_KEY_CONFLICT' && (code !== 'API_INACTIVE' || domainCode === 'AGENT_INACTIVE')
+    && !(method === 'delegation.cancel' && domainCode === 'HOST_TARGET_NOT_FOUND')) knownRejection = false
   return { code, message: 'Request failed', acceptance: read ? 'not-applicable' as const : domainReturned ? 'unknown' as const : !invoked || knownRejection ? 'not-accepted' as const : 'unknown' as const, domainCode }
 }

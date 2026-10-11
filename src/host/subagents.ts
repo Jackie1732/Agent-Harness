@@ -130,13 +130,14 @@ export class HostSubagents {
       const id = item.event.stored.eventId
       await this.cancel(parentKey, item.event.payload.parentRoot, id, 'parent-mailbox-offline:' + id)
       const child = this.#children.get(id)
+      const session = child?.session ?? this.#suspended.get(id) ?? this.#restored.get(id) ?? null
       await child?.dispose()
       const state = projectAgentSession(item.parent.snapshot())
       for (const resource of state.subagents.resources.filter(resource => resource.opened.payload.delegation === id && effectiveResourceRelease(resource, state.subagents.recoveries) === null)) {
         await item.journal.append(events.subagentReleaseRecordedEvent, () => ({ delegation: id, parentAddress: item.event.payload.parentAddress, childAddress: item.event.payload.childAddress,
           opened: resource.opened.stored.eventId, component: 'protocol' as const, outcome: 'released' as const, reasonCode: 'parent-mailbox-stopped' }))
       }
-      this.#children.delete(id); this.#suspended.set(id, child?.session ?? null)
+      this.#children.delete(id); this.#suspended.set(id, session)
     }))
     const failures = [...maintenance, ...results].filter(item => item.status === 'rejected').map(item => item.reason)
     if (failures.length > 0) throw new HostError('HOST_CLEANUP_FAILED', 'parent-child-release-incomplete', {}, { cause: new AggregateError(failures) })
@@ -213,7 +214,7 @@ export class HostSubagents {
 
   inspect(parentKey: string, root: SessionEventId, id: SessionEventId) {
     const entry = this.report(Number.MAX_SAFE_INTEGER).delegations.find(item => item.parentKey === parentKey && item.parentRoot === root && item.delegationId === id)
-    if (entry === undefined) throw new HostError('HOST_NOT_READY', 'delegation-not-owned')
+    if (entry === undefined) throw new HostError('HOST_TARGET_NOT_FOUND', 'delegation-not-owned')
     return entry
   }
   /** A ready installed Child is readable after its execution and protocol resources retire. */
