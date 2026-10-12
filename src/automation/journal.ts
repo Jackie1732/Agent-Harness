@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto'
+import { snapshotJson } from '../foundation/json.js'
 import { SerialGate } from '../foundation/serial-gate.js'
 import { EffectOwner } from '../effect/owner.js'
 import { acquireHostStorageLock } from '../host/storage-lock.js'
@@ -104,8 +105,11 @@ export class AutomationJournal {
       return { trigger: this.#triggers.get(triggerKey)!, reused: false }
     })
   }
-  /** Append only a valid transition, then publish it from the committed fact. */
-  append(fact: AutomationFact): Promise<SessionEventId> { return this.#gate.run(() => this.#append(fact)) }
+  /** Capture fact JSON before queuing; validate its phase and publish it at the committed boundary. */
+  async append(fact: AutomationFact): Promise<SessionEventId> {
+    const captured = automationFactEvent.decode(snapshotJson(fact))
+    return this.#gate.run(() => this.#append(captured))
+  }
   async #append(fact: AutomationFact): Promise<SessionEventId> {
     if (this.#session.snapshot().localPosition >= this.#maxEvents) throw new AutomationError('AUTOMATION_LIMIT')
     this.#check(fact)
@@ -153,7 +157,7 @@ export class AutomationJournal {
       : fact.kind === 'submitted' ? { inputEventId: fact.inputEventId }
         : fact.kind === 'run-intent' ? { runIntent: eventId }
           : fact.kind === 'run-returned' ? { runReturned: true }
-            : fact.kind === 'rejected' ? { rejection: { operation: fact.operation, acceptance: fact.acceptance, code: fact.code } }
+            : fact.kind === 'rejected' ? { rejection: Object.freeze({ operation: fact.operation, acceptance: fact.acceptance, code: fact.code }) }
               : fact.kind === 'observed' ? { observation: fact.observation, observationEventId: eventId }
                 : { runUnknownAcknowledged: true }
     this.#triggers.set(fact.triggerKey, Object.freeze({ ...prior, ...update }))
