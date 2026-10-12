@@ -2,8 +2,8 @@ import { randomUUID } from 'node:crypto'
 import type { ClientRequest } from 'node:http'
 import { Agent, request as httpsRequest } from 'node:https'
 import type { TLSSocket } from 'node:tls'
-import { parseBoundedJson, inspectBoundedJson } from '../schema/bounded-json.js'
-import { CONTROL_PATH, CONTROL_PROTOCOL, CONTROL_VERSION, METHOD_CATEGORIES, decodeParams, decodeControlResponse } from '../protocol/index.js'
+import { parseBoundedJson, inspectBoundedJson, JsonBoundaryError } from '../schema/bounded-json.js'
+import { CONTROL_PATH, CONTROL_PROTOCOL, CONTROL_VERSION, METHOD_CATEGORIES, ProtocolError, decodeParams, decodeControlResponse } from '../protocol/index.js'
 import type { ControlMethod, Params, Result, SessionEventPage } from '../protocol/index.js'
 import { ApiError, ClientAbortError, ClientTransportError } from './errors.js'
 import { resolveClientOptions } from './config.js'
@@ -62,7 +62,11 @@ export function createHarnessClient(options: HarnessClientOptions): HarnessClien
     const requestId = randomUUID()
     const limits = { maxBytes: config.limits.maxRequestBytes, maxDepth: config.limits.maxJsonDepth, maxNodes: config.limits.maxJsonNodes }
     const input = { protocol: CONTROL_PROTOCOL, version: CONTROL_VERSION, requestId, method, params: decodeParams(method, params, limits) }
-    inspectBoundedJson(input, limits)
+    try { inspectBoundedJson(input, limits) }
+    catch (error) {
+      if (!(error instanceof JsonBoundaryError)) throw error
+      throw new ProtocolError(error.reason === 'invalid' ? 'API_PROTOCOL_INVALID' : 'API_LIMIT_EXCEEDED')
+    }
     const body = Buffer.from(JSON.stringify(input))
     const signal = call.signal === undefined ? closing.signal : AbortSignal.any([closing.signal, call.signal])
     const task = new Promise<Result<M>>((resolve, reject) => {
