@@ -148,8 +148,10 @@ export class HostReads {
     return { workflowKey, artifactRef, ...selected,
       instanceId: evidence.instanceId, cuts: evidence.cuts }
   }
+  /** Capture target and pagination before the tracked operation reads its immutable Session snapshot. */
   async events(target: SessionTarget, query: EventPageQuery) {
     this.#options.assertReady()
+    target = structuredClone(target); query = structuredClone(query)
     return this.#options.track(async () => {
       let snapshot: SessionSnapshot | undefined
       if (target.kind === 'member') snapshot = this.#member(target.agentKey).snapshot

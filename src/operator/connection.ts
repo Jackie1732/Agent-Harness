@@ -17,7 +17,7 @@ import { readConfigFile } from './config-files.js'
 import type { ResolvedOperatorProfile } from './profile.js'
 import type { Result } from '../protocol/index.js'
 
-/** A connection owns transport or Host resources, not business state or operation receipts. */
+/** A connection captures each request and owns transport or Host resources, not business state or operation receipts. */
 export interface OperatorConnection {
   readonly certificateFingerprint: string | null
   readonly spec: ResolvedHostSpec | null
@@ -64,6 +64,7 @@ function localConnection(host: AtomicHost, spec: ResolvedHostSpec, profile: Reso
     return closing
   }
   const request = <M extends ControlMethod>(method: M, params: Params<M>, signal?: AbortSignal): Promise<ApplicationResult<M>> => {
+    params = structuredClone(params)
     const operation = { method, params } as AnyControlOperation
     let invoked = false
     const progress = { domainReturned: false }

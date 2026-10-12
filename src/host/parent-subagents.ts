@@ -34,8 +34,9 @@ export function bindParentSubagents(options: ParentSubagentOptions) {
   async function wait(delegation: SessionEventId, query: DelegationWaitQuery | FiniteDelegationWaitQuery): Promise<WaitResult<DelegationObservation> | ReturnType<typeof inspect>> {
     options.assertReady()
     options.assertExternalWait()
-    if (query.until !== 'business' && query.until !== 'closed') throw new HostError('HOST_PROTOCOL_INVALID', 'delegation-wait-mode')
-    const condition = (result: Pick<DelegationObservation, 'closed' | 'inputDisposed' | 'adopted' | 'resultAvailable'>) => query.until === 'closed' ? result.closed : result.inputDisposed || result.adopted || result.resultAvailable
+    const until = query.until
+    if (until !== 'business' && until !== 'closed') throw new HostError('HOST_PROTOCOL_INVALID', 'delegation-wait-mode')
+    const condition = (result: Pick<DelegationObservation, 'closed' | 'inputDisposed' | 'adopted' | 'resultAvailable'>) => until === 'closed' ? result.closed : result.inputDisposed || result.adopted || result.resultAvailable
     if ('timeoutMs' in query) return observeFinite(options, options.timer, () => options.observe(delegation), condition,
       { timeoutMs: query.timeoutMs, scanIntervalMs: options.scanIntervalMs, ...(query.signal === undefined ? {} : { signal: query.signal }) })
     const signal = query.signal === undefined ? options.stopSignal : AbortSignal.any([query.signal, options.stopSignal])

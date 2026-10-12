@@ -174,18 +174,20 @@ class HostRuntime {
       return Object.freeze({ agentKey, eventId: accepted.stored.eventId })
     })
   }
-  /** Persist an answer for one exact durable wait. */
+  /** Capture and persist an answer for one exact durable wait. */
   submitAnswer(agentKey: string, wait: AgentActionReference, text: string, originLabel = 'host-user'): Promise<HostInputReceipt> {
     this.#slot(agentKey)
+    const captured = { ...wait }
     return this.#track(async () => {
-      const accepted = await this.#inputs.get(agentKey)!.acceptInput({ kind: 'answer', wait, text, originLabel })
+      const accepted = await this.#inputs.get(agentKey)!.acceptInput({ kind: 'answer', wait: captured, text, originLabel })
       this.#assembly.wakeup.notify()
       return Object.freeze({ agentKey, eventId: accepted.stored.eventId })
     })
   }
-  /** Stable input identity survives transport attempts and preserves the original receipt. */
+  /** Capture input and stable identity before queued admission; repeated submissions preserve the original receipt. */
   submitKeyedInput(agentKey: string, input: AgentInput, submission: AgentInputSubmission) {
     const slot = this.#slot(agentKey)
+    input = structuredClone(input); submission = { ...submission }
     return this.#track(async () => {
       const accepted = await this.#inputs.get(agentKey)!.acceptKeyedInput(input, submission)
       this.#assembly.wakeup.notify()
@@ -246,10 +248,11 @@ class HostRuntime {
     this.#assembly.subagents?.notifyParentStop(agentKey, root)
     return this.#track(() => slot.agent.cancel(root, reason))
   }
-  /** Send commands share the single business lane with Host drivers. */
+  /** Capture send commands before admission to the single business lane shared with Host drivers. */
   sendMessage(agentKey: string, command: AgentSendCommand) {
     const slot = this.#slot(agentKey)
     if (this.#activity !== undefined || this.#command !== undefined) throw new HostError('HOST_BUSY', 'host-business-active')
+    command = { ...command }
     const task = this.#track(() => slot.agent.sendMessage(command))
     this.#command = task
     void task.then(() => { this.#command = undefined }, () => { this.#command = undefined })
