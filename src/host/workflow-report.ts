@@ -1,7 +1,9 @@
 import type { SessionSnapshot } from '../session/types.js'
 import { projectCommunicationFacts } from '../communication/projection.js'
 import { projectWorkflowSession } from '../workflow/projection.js'
-import { workflowAssignmentClosed } from '../workflow/closure.js'
+import { workflowAssignmentClosedFromFacts } from '../workflow/closure.js'
+import type { WorkflowClosureObservations } from '../workflow/closure.js'
+import { projectAgentSession } from '../agent/projection.js'
 import { workExecutionReports } from '../workflow/work-report.js'
 
 import type { WorkflowReport, WorkflowReportSummary } from './workflow-report-data.js'
@@ -10,6 +12,20 @@ export type { WorkflowReport, WorkflowReportSummary } from './workflow-report-da
 /** Count the whole run before truncating the operator's entry vectors. */
 export function workflowReport(session: SessionSnapshot, peers: readonly SessionSnapshot[], resumed: boolean): WorkflowReport {
   const state = projectWorkflowSession(session)
+  const agents = new Map<SessionSnapshot, ReturnType<typeof projectAgentSession>>()
+  const communications = new Map<SessionSnapshot, ReturnType<typeof projectCommunicationFacts>>()
+  const observations: WorkflowClosureObservations = { workflow: () => state,
+    agent: snapshot => {
+      let facts = agents.get(snapshot)
+      if (facts === undefined) { facts = projectAgentSession(snapshot); agents.set(snapshot, facts) }
+      return facts
+    },
+    communication: snapshot => {
+      let facts = communications.get(snapshot)
+      if (facts === undefined) { facts = projectCommunicationFacts(snapshot); communications.set(snapshot, facts) }
+      return facts
+    },
+  }
   const definition = state.definition!.payload
   const maximum = definition.limits.maxReportEntries
   const nodes = definition.nodes.map(node => ({ nodeKey: node.nodeKey,
@@ -17,7 +33,7 @@ export function workflowReport(session: SessionSnapshot, peers: readonly Session
       : state.assignments.some(item => item.payload.nodeKey === node.nodeKey) ? 'assigned' : state.ready.includes(node.nodeKey) ? 'ready' : 'blocked') }))
   const closed = state.assignments.every(assignment => {
     const member = peers.find(peer => peer.header.address === assignment.payload.memberAddress)
-    return member !== undefined && workflowAssignmentClosed(session, member, assignment.stored.eventId, peers)
+    return member !== undefined && workflowAssignmentClosedFromFacts(session, member, assignment.stored.eventId, peers, observations)
   })
   const completed = definition.requiredOutputs.every(key => state.upstream.find(item => item.nodeKey === key)?.state.kind === 'accepted')
     && nodes.every(node => ['accepted', 'skipped'].includes(node.status))
@@ -27,7 +43,7 @@ export function workflowReport(session: SessionSnapshot, peers: readonly Session
   const work = peers.flatMap(peer => workExecutionReports(peer)).filter(item => assignments.has(item.assignment.eventId))
   const inbox = new Set<string>(), outbox = new Set<string>()
   for (const peer of [session, ...peers]) {
-    const facts = projectCommunicationFacts(peer)
+    const facts = observations.communication(peer)
     const related = (envelope: import('../communication/types.js').MessageEnvelope) => envelope.type.startsWith('workflow/')
       && (envelope.payload as { assignment?: { address?: string } }).assignment?.address === session.header.address
     for (const item of facts.inbox) if (item.status === 'pending' && related(item.envelope)) inbox.add(item.messageId)
