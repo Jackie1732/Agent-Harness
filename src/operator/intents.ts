@@ -16,7 +16,7 @@ import { OperatorError } from './errors.js'
 import { operatorFactEvent, operatorCatalog } from './intent-events.js'
 import type { OperatorFact } from './intent-events.js'
 
-/** The append gate owns reservations only; it is never held during a control request. */
+/** The append gate admits intents and reserves outcomes; control requests run outside it. */
 export class OperatorJournal {
   readonly #gate = new SerialGate()
   readonly #intents = new Map<string, OperatorIntent>()
@@ -50,6 +50,11 @@ export class OperatorJournal {
   prepare(input: Omit<OperatorIntent, 'id' | 'outcome' | 'preparedAt' | 'acknowledgementReason'>): Promise<OperatorIntent> {
     input = snapshotJson(input as JsonObject) as typeof input
     return this.#gate.run(async () => {
+      if (input.method === 'host.run') {
+        const unknown = this.intents.filter(item => item.method === 'host.run' && (item.outcome === null || item.outcome.acceptance === 'unknown')).at(-1)
+        if (unknown !== undefined && input.acknowledgedIntent !== unknown.id) throw new OperatorError('OPERATOR_RUN_UNKNOWN_REQUIRED', 10)
+        if (input.acknowledgedIntent !== null && (unknown === undefined || unknown.scope.hostKey !== input.scope.hostKey)) throw new OperatorError('OPERATOR_INTENT_INVALID', 2)
+      }
       if (this.#intents.size >= this.profile.journal.maxIntents) throw new OperatorError('OPERATOR_JOURNAL_FULL', 3)
       if (!this.#sameCertificate) throw new OperatorError('OPERATOR_AUTHENTICATION_CHANGED', 3)
       this.#capacity(2)
@@ -60,6 +65,7 @@ export class OperatorJournal {
     })
   }
   complete(id: string, outcome: NonNullable<OperatorIntent['outcome']>): Promise<void> {
+    outcome = snapshotJson(outcome) as typeof outcome
     return this.#gate.run(async () => {
       const current = this.#intents.get(id)
       if (current === undefined || current.outcome !== null) throw new OperatorError('OPERATOR_INTENT_INVALID', 2)
@@ -78,8 +84,8 @@ export class OperatorJournal {
     if (this.session.snapshot().localPosition + this.#reserved + count > this.profile.journal.maxEvents) throw new OperatorError('OPERATOR_JOURNAL_FULL', 3)
   }
   async #append(fact: OperatorFact): Promise<void> {
-    await this.session.append(operatorFactEvent, fact)
-    this.#apply(fact)
+    const committed = await this.session.append(operatorFactEvent, fact)
+    this.#apply(committed.payload)
   }
   #apply(fact: OperatorFact): void {
     switch (fact.kind) {

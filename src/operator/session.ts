@@ -83,11 +83,6 @@ export async function openOperatorSession(profilePath: string, options: { readon
             if (link.callerNamespace === null && witnessedCaller !== (parent.callerNamespace ?? parent.outcome?.summary.namespace)) throw new OperatorError('OPERATOR_CALLER_UNCONFIRMED', 3)
           }
           if (call.signal?.aborted) throw new OperatorError('OPERATOR_ABORTED', 1)
-          if (method === 'host.run') {
-            const unknown = log.intents.filter(item => item.method === 'host.run' && (item.outcome === null || item.outcome.acceptance === 'unknown')).at(-1)
-            if (unknown !== undefined && call.acknowledgeIntent !== unknown.id) throw new OperatorError('OPERATOR_RUN_UNKNOWN_REQUIRED', 10)
-            if (call.acknowledgeIntent !== undefined && (unknown === undefined || unknown.scope.hostKey !== scope.hostKey)) throw new OperatorError('OPERATOR_INTENT_INVALID', 2)
-          }
           intent = await log.prepare({ method, params: params as JsonObject, scope, parentIntent: call.parentIntent ?? null,
             callerNamespace: link.callerNamespace ?? witnessedCaller, certificateFingerprint: link.certificateFingerprint, configDigest: operatorDigest(profile),
             acknowledgedIntent: call.acknowledgeIntent ?? null })
