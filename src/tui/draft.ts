@@ -23,7 +23,7 @@ export function graphemes(text: string): readonly string[] {
 export function editDraft(draft: TextDraft, edit: DraftEdit): TextDraft {
   const parts = [...graphemes(draft.text)], cursor = Math.min(draft.cursor, parts.length)
   let next = cursor
-  const start = parts.lastIndexOf('\n', cursor - 1) + 1
+  const start = cursor === 0 ? 0 : parts.lastIndexOf('\n', cursor - 1) + 1
   const foundEnd = parts.indexOf('\n', cursor), end = foundEnd < 0 ? parts.length : foundEnd
   switch (edit.kind) {
     case 'insert': {
@@ -40,7 +40,7 @@ export function editDraft(draft: TextDraft, edit: DraftEdit): TextDraft {
     case 'down': {
       if (edit.kind === 'up' && start === 0 || edit.kind === 'down' && end === parts.length) break
       const desired = stringWidth(parts.slice(start, cursor).join(''))
-      const targetStart = edit.kind === 'up' ? parts.lastIndexOf('\n', start - 2) + 1 : end + 1
+      const targetStart = edit.kind === 'up' ? start === 1 ? 0 : parts.lastIndexOf('\n', start - 2) + 1 : end + 1
       const targetEnd = edit.kind === 'up' ? start - 1 : (() => {
         const index = parts.indexOf('\n', targetStart); return index < 0 ? parts.length : index
       })()
