@@ -1,23 +1,19 @@
 /** Hidden local credential prompts supply only this invocation's environment. */
 import { useState } from 'react'
 import { Box, Text, useInput } from 'ink'
-import type { JsonValue } from '../foundation/json.js'
+import type { HostConfig } from '../host/config-types.js'
 import { DraftInput } from './input.js'
 import { plainText } from './text.js'
 
 /**
  * Find credential references in an already decoded local Host candidate.
- * @param value Original configuration containing references, never secret values.
+ * @param config Decoded local Host configuration containing references, never secret values.
  * @returns Unique explicitly named model environment references.
  */
-export function modelCredentialReferences(value: JsonValue): readonly string[] {
-  const references = new Set<string>()
-  const visit = (node: JsonValue) => {
-    if (node === null || typeof node !== 'object') return
-    if (!Array.isArray(node) && 'credentialRef' in node && typeof node.credentialRef === 'string') references.add(node.credentialRef)
-    for (const child of Object.values(node)) visit(child as JsonValue)
-  }
-  visit(value); return [...references]
+export function modelCredentialReferences(config: HostConfig): readonly string[] {
+  const models = [...config.members.flatMap(member => member.kind === 'local' && member.enabled ? [member.model] : []),
+    ...(config.schemaVersion !== 1 && config.subagents.kind === 'enabled' ? config.subagents.templates.map(template => template.model) : [])]
+  return [...new Set(models.flatMap(model => model.kind === 'scripted-fixed' ? [] : [model.credentialRef]))]
 }
 
 /**

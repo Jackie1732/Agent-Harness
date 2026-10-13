@@ -1,5 +1,6 @@
 /** One terminal Effect owner restores Ink before joining the existing operation-session owner. */
 import type { ReactNode } from 'react'
+import { dirname } from 'node:path'
 import { Box, Text, render, useInput, useWindowSize } from 'ink'
 import type { Instance, RenderOptions } from 'ink'
 import { EffectOwner } from '../effect/owner.js'
@@ -7,6 +8,7 @@ import type { EffectLease } from '../effect/types.js'
 import type { HostCliIo } from '../host/cli.js'
 import { readOperatorProfile } from '../operator/profile.js'
 import { readConfigDocument } from '../operator/config-operations.js'
+import { decodeHostConfig } from '../host/config.js'
 import { openOperatorSession } from '../operator/session.js'
 import { operatorFailure } from '../operator/errors.js'
 import type { OperatorSession } from '../operator/types.js'
@@ -82,7 +84,8 @@ export async function runTui(profilePath: string, io: HostCliIo, environment: Re
         return fail
       }, fail => { io.stdout.off('error', fail); io.stdout.off('close', fail); io.stderr.off('error', fail); io.stderr.off('close', fail) })
     })
-    const references = profile.connection.kind === 'local' ? modelCredentialReferences((await readConfigDocument(profilePath, 'host')).value) : []
+    const hostDocument = profile.connection.kind === 'local' ? await readConfigDocument(profilePath, 'host') : null
+    const references = hostDocument === null ? [] : modelCredentialReferences(decodeHostConfig(hostDocument.value, dirname(hostDocument.path)))
     const secrets = references.flatMap(reference => environment[reference] === undefined ? [] : [environment[reference]!])
     const missing = references.filter(reference => environment[reference] === undefined)
     let ready!: (values: Readonly<Record<string, string>> | null) => void
