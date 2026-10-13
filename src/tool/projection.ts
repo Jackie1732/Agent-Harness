@@ -3,13 +3,15 @@ import type { SessionId, SessionLogPosition } from '../session/ids.js'
 import { formatSessionEventId, sessionSequence } from '../session/ids.js'
 import type { CommittedSessionEvent, SessionProjectionCoverage, SessionSnapshot } from '../session/types.js'
 import { boundedJson } from '../schema/bounded-json.js'
-import type { ToolAuthorizationPayload, ToolRequestedPayload, ToolSettlement, ToolStartedPayload } from './contract.js'
+import { canonicalJsonBytes } from '../foundation/canonical-json.js'
+import type { ToolAuthorizationPayload, ToolDefinition, ToolInvocationLimits, ToolRequestedPayload, ToolSettlement, ToolStartedPayload } from './contract.js'
 import { compileDefinition, validateToolSuccessValue } from './schema-validator.js'
+import type { CompiledToolDefinition } from './schema-validator.js'
 import { ToolError } from './errors.js'
 import type { ToolInvocationId } from './ids.js'
 import { assertPlanBinding, schemaLimits } from './plan.js'
 import { toolAuthorizationEvent, toolRequestedEvent, toolSettledEvent, toolStartedEvent } from './session-events.js'
-import { requestedArguments, selectionRejection, sourceKey, validateRequestSource } from './source.js'
+import { createToolSourceReader, requestedArguments, selectionRejection, sourceKey } from './source.js'
 import { effectiveLimits, equalJson, jsonBytes, resultBudget } from './validation.js'
 
 interface InvocationBase { readonly invocationId: ToolInvocationId; readonly requested: CommittedSessionEvent<ToolRequestedPayload> }
@@ -36,6 +38,15 @@ export function projectToolSession(snapshot: SessionSnapshot): ToolSessionSnapsh
     || local.events.length !== local.through) invalid()
   const records = new Map<ToolInvocationId, ToolInvocationSnapshot>()
   const sources = new Set<string>()
+  const reader = createToolSourceReader(snapshot)
+  const definitions = new Map<string, CompiledToolDefinition>()
+  const compiled = (definition: ToolDefinition, limits: ToolInvocationLimits): CompiledToolDefinition => {
+    const budget = schemaLimits(limits)
+    const key = Buffer.from(canonicalJsonBytes({ definition, limits: budget })).toString('utf8')
+    let value = definitions.get(key)
+    if (value === undefined) { value = compileDefinition(definition, budget); definitions.set(key, value) }
+    return value
+  }
   let pending: ToolInvocationId | null = null
   let sequence = 0
   for (const event of local.events) {
@@ -51,7 +62,7 @@ export function projectToolSession(snapshot: SessionSnapshot): ToolSessionSnapsh
         const payload = toolRequestedEvent.decode(event.payload)
         if (pending !== null || records.has(payload.invocationId)) invalid()
         assertDelegatedWriteCapacity(snapshot, payload, sequence)
-        validateRequestSource(payload, snapshot, sequence)
+        reader.validateRequestSource(payload, sequence)
         const key = sourceKey(payload.source)
         if (key !== null) { if (sources.has(key)) invalid(); sources.add(key) }
         records.set(payload.invocationId, Object.freeze({ invocationId: payload.invocationId, state: 'requested', requested: Object.freeze({ ...event, payload }) }))
@@ -64,12 +75,12 @@ export function projectToolSession(snapshot: SessionSnapshot): ToolSessionSnapsh
         if (before?.state !== 'requested' || pending !== payload.invocationId) invalid()
         const request = before.requested.payload
         if (payload.requestedEventId !== before.requested.stored.eventId || request.selection.kind !== 'resolved') invalid()
-        const original = validateRequestSource(request, snapshot, before.requested.stored.sequence)
+        const original = reader.validateRequestSource(request, before.requested.stored.sequence)
         if (selectionRejection(request, original) !== null) invalid()
         const input = requestedArguments(request)
         const limits = effectiveLimits(request.limits, request.selection.provider)
         assertPlanBinding(payload.plan, request.selection.definition, request.selection.provider, input, limits)
-        if (!compileDefinition(request.selection.definition, schemaLimits(limits)).input(input)) invalid()
+        if (!compiled(request.selection.definition, limits).input(input)) invalid()
         records.set(payload.invocationId, Object.freeze({ ...before, state: 'decided', authorization: Object.freeze({ ...event, payload }) }))
         continue
       }
@@ -84,7 +95,7 @@ export function projectToolSession(snapshot: SessionSnapshot): ToolSessionSnapsh
       const payload = toolSettledEvent.decode(event.payload)
       const before = records.get(payload.invocationId)
       if (before === undefined || before.state === 'settled' || pending !== payload.invocationId) invalid()
-      validateSettlement(before, payload)
+      validateSettlement(before, payload, compiled)
       records.set(payload.invocationId, Object.freeze({ ...before, state: 'settled', settled: Object.freeze({ ...event, payload }) }))
       pending = null
     } catch {
@@ -98,7 +109,8 @@ export function projectToolSession(snapshot: SessionSnapshot): ToolSessionSnapsh
   })
 }
 
-function validateSettlement(before: Exclude<ToolInvocationSnapshot, { state: 'settled' }>, settled: ToolSettlement): void {
+function validateSettlement(before: Exclude<ToolInvocationSnapshot, { state: 'settled' }>, settled: ToolSettlement,
+  compiled: (definition: ToolDefinition, limits: ToolInvocationLimits) => CompiledToolDefinition): void {
   const requested = before.requested.payload
   const limits = before.state === 'requested' ? requested.limits : before.authorization.payload.plan.limits
   boundedJson(settled.result, { ...resultBudget(limits), maxDepth: Math.min(128, limits.maxJsonDepth + 2), maxNodes: limits.maxJsonNodes + 8 })
@@ -122,8 +134,7 @@ function validateSettlement(before: Exclude<ToolInvocationSnapshot, { state: 'se
   if (settled.outcome === 'succeeded') {
     if (before.state !== 'started' || requested.selection.kind !== 'resolved' || settled.result.kind !== 'success') invalid()
     const definition = requested.selection.definition
-    validateToolSuccessValue(settled.result.value, limits,
-      value => compileDefinition(definition, schemaLimits(limits)).output(value))
+    validateToolSuccessValue(settled.result.value, limits, compiled(definition, limits).output)
   }
 }
 function invalid(): never { throw new ToolError('TOOL_STATE_INVALID', 'tool history is invalid') }
