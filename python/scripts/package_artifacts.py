@@ -57,11 +57,6 @@ if operation == "metadata":
                                    for name in ("jsonschema", "build", "hatchling")}}))
 elif operation == "inspect":
     inspect(*map(Path, sys.argv[2:]))
-elif operation == "extract":
-    source, destination = map(Path, sys.argv[2:])
-    destination.mkdir()
-    with tarfile.open(source) as archive:
-        archive.extractall(destination, filter="data")
 elif operation == "bundle":
     bundle(*map(Path, sys.argv[2:]))
 else:

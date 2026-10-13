@@ -41,9 +41,8 @@ const consumerPython = join(venv, process.platform === 'win32' ? 'Scripts/python
 await run(consumerPython, ['-m', 'pip', 'install', '--no-index', '--find-links', cache,
   `atomic-agent-harness==${version}`, `build==${tools.packages.build}`, `hatchling==${tools.packages.hatchling}`], { cwd: consumer })
 await run(consumerPython, ['-m', 'pip', 'check'], { cwd: consumer })
-const unpacked = join(consumer, 'sdist')
-await run(consumerPython, [artifactScript, 'extract', sdist, unpacked], { cwd: consumer })
-await run(consumerPython, ['-m', 'build', '--no-isolation', '--wheel', '--outdir', join(consumer, 'rebuilt'), join(unpacked, `atomic_agent_harness-${version}`)], { cwd: consumer })
+await run(consumerPython, ['-m', 'pip', 'wheel', '--no-index', '--no-deps', '--no-build-isolation',
+  '--wheel-dir', join(consumer, 'rebuilt'), sdist], { cwd: consumer })
 await run(consumerPython, ['-c', `import atomic_harness,json,sys,importlib.metadata as m; from atomic_harness.types import SCHEMA_SHA256; assert m.version("atomic-agent-harness")==${JSON.stringify(version)}; assert len(atomic_harness.CONTROL_METHODS)==29; assert "dist" not in atomic_harness.__file__; print(json.dumps({"module":atomic_harness.__file__,"version":m.version("atomic-agent-harness"),"schemaSha256":SCHEMA_SHA256}))`], { cwd: consumer })
 const positive = join(consumer, 'typecheck_positive.py'); await copyFile(resolve('python/tests/typecheck_positive.py'), positive)
 await run(python, ['-m', 'mypy', '--strict', '--python-executable', consumerPython, positive], { cwd: consumer })
