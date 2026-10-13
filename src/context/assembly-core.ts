@@ -66,19 +66,32 @@ export function buildContextFromSources(prepared: PreparedContextSources, captur
     if ('kind' in initialMeasure) return initialMeasure
     const initialFailure = requestBudgetFailure(initialMeasure, profile, required)
     if (initialFailure !== undefined) return initialFailure
-    const historical: SelectedGroup[] = []
-    let stopped = false
-    for (let index = candidates.length - 1; index >= 0; index--) {
+    const measureHistory = (count: number) => measureContextRequest(renderContextRequest(profile, selection, captured,
+      [...orderedHistory(pinned, candidates.slice(candidates.length - count).map(unit => group(unit, 'history', selection.history.representation))), ...requiredGroups]), profile)
+    let accepted = 0
+    let rejected = Math.min(1, candidates.length)
+    while (accepted < rejected) {
+      const measure = measureHistory(rejected)
+      if ('kind' in measure || requestBudgetFailure(measure, profile, []) !== undefined) break
+      accepted = rejected
+      rejected = Math.min(rejected * 2, candidates.length)
+    }
+    while (accepted + 1 < rejected) {
+      const count = Math.floor((accepted + rejected) / 2)
+      const measure = measureHistory(count)
+      if ('kind' in measure || requestBudgetFailure(measure, profile, []) !== undefined) rejected = count
+      else accepted = count
+    }
+    if (accepted < candidates.length) {
+      // The smallest rejected suffix determines the reported resource failure.
+      const measure = measureHistory(accepted + 1)
+      if ('kind' in measure) return measure
+    }
+    const historical = candidates.slice(candidates.length - accepted).map(unit => group(unit, 'history', selection.history.representation))
+    for (let index = candidates.length - accepted - 1; index >= 0; index--) {
       const unit = candidates[index]
       if (unit === undefined) invalidSource('history-index')
-      if (stopped) { omitted.push({ reference: unit.reference, reason: 'outside-suffix' }); continue }
-      const candidate = group(unit, 'history', selection.history.representation)
-      const nextGroups = [...orderedHistory(pinned, [...historical, candidate]), ...requiredGroups]
-      const measure = measureContextRequest(renderContextRequest(profile, selection, captured, nextGroups), profile)
-      if ('kind' in measure) return measure
-      if (requestBudgetFailure(measure, profile, [unit.reference]) !== undefined) {
-        omitted.push({ reference: unit.reference, reason: 'history-budget' }); stopped = true
-      } else historical.push(candidate)
+      omitted.push({ reference: unit.reference, reason: index === candidates.length - accepted - 1 ? 'history-budget' : 'outside-suffix' })
     }
     groups = [...orderedHistory(pinned, historical), ...requiredGroups]
     const memoryBase = measureContextRequest(renderContextRequest(profile, selection, captured, groups), profile)
