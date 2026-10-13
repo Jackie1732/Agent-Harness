@@ -22,6 +22,8 @@ import { isSessionEndedRecord } from '../session/history.js'
 import { inboxAcceptedEvent, inboxAbandonedEvent, inboxProcessedEvent } from '../communication/session-events.js'
 import { projectCommunicationFacts } from '../communication/projection.js'
 import { projectModelSession } from '../model/projection.js'
+import type { ModelInvocationSnapshot } from '../model/projection.js'
+import type { ModelInvocationId } from '../model/ids.js'
 import { projectToolSession } from '../tool/projection.js'
 import type { JsonValue } from '../foundation/json.js'
 import type { CommittedSessionEvent, SessionSnapshot } from '../session/types.js'
@@ -66,7 +68,7 @@ function applyInput(state: AgentProjectionState, event: CommittedSessionEvent): 
   state.inputs.set(inputKey(reference), { reference, input: p.input, ...(submission === undefined ? {} : { submission }), message: null, acceptedAt: event.stored.recordedAt,
     sequence: event.stored.sequence, lane: 'user', status: 'queued', claimedBy: null, reservedBy: null, everMatched: false, reason: null })
 }
-function applyAgentEvent(state: AgentProjectionState, event: CommittedSessionEvent): void {
+function applyAgentEvent(state: AgentProjectionState, event: CommittedSessionEvent, models: ReadonlyMap<ModelInvocationId, ModelInvocationSnapshot>): void {
   if (event.stored.ignorable === true) invalidAgent('unsupported-agent-event')
   const decoded = <T,>(decode: (value: JsonValue) => T) => ({ ...event, payload: decode(event.payload) })
   if (['agent/turn-started', 'agent/turn-settled', 'agent/step-decided', 'agent/action-settled', 'agent/wait-settled'].includes(event.stored.type)
@@ -98,7 +100,7 @@ function applyAgentEvent(state: AgentProjectionState, event: CommittedSessionEve
     case 'agent/turn-started': applyTurnStarted(state, decoded(events.agentExecutionEvents(requireSpec(state).payload.protocolVersion).turnStarted.decode)); break
     case 'agent/turn-settled': applyTurnSettled(state, decoded(events.agentTurnSettledEvent.decode)); break
     case 'agent/step-opened': applyStepOpened(state, decoded(events.agentStepOpenedEvent.decode)); break
-    case 'agent/step-decided': applyStepDecided(state, decoded(events.agentExecutionEvents(requireSpec(state).payload.protocolVersion).stepDecided.decode)); break
+    case 'agent/step-decided': applyStepDecided(state, decoded(events.agentExecutionEvents(requireSpec(state).payload.protocolVersion).stepDecided.decode), models); break
     case 'agent/action-settled': applyActionSettled(state, decoded(events.agentExecutionEvents(requireSpec(state).payload.protocolVersion).actionSettled.decode)); break
     case 'agent/wait-settled': applyWaitSettled(state, decoded(events.agentExecutionEvents(requireSpec(state).payload.protocolVersion).waitSettled.decode)); break
     case 'agent/control-requested':
@@ -153,7 +155,9 @@ function applyCommunicationInput(state: AgentProjectionState, event: CommittedSe
 
 /** Replay local ownership only; ancestor history never becomes a queue or budget. */
 export function foldAgentSession(snapshot: SessionSnapshot): AgentProjectionState {
-  projectCommunicationFacts(snapshot); projectModelSession(snapshot); projectToolSession(snapshot)
+  projectCommunicationFacts(snapshot)
+  const models = new Map(projectModelSession(snapshot).invocations.map(invocation => [invocation.invocationId, invocation]))
+  projectToolSession(snapshot)
   const state = initialAgentState()
   const local = snapshot.history.find(segment => segment.header.sessionId === snapshot.header.sessionId)
   if (local === undefined) invalidAgent('missing-local-segment')
@@ -166,7 +170,7 @@ export function foldAgentSession(snapshot: SessionSnapshot): AgentProjectionStat
       if (event.stored.type === 'agent/run-started' && projectWorkRecoveries(state.sources.values()).some(item => item.settled === null && item.supersededBy === null)) invalidAgent('work-recovery-open')
       const definition = events.agentSessionEventDefinitions.find(item => item.type === event.stored.type && item.payloadVersion === event.stored.payloadVersion)
       if (definition === undefined || !equal(definition.decode(event.payload), event.payload) || !equal(event.payload, event.stored.payload)) invalidAgent('noncanonical-agent-event')
-      applyAgentEvent(state, event)
+      applyAgentEvent(state, event, models)
     }
     else if ([workRecoveryRequestedEvent.type, workRecoverySettledEvent.type].includes(event.stored.type)) applyWorkRecoveryEvent(state, event)
     else if (event.stored.type === workAssignmentAcceptedEvent.type) applyWorkAssignmentAccepted(state, event)

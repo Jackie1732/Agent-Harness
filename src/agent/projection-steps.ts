@@ -1,4 +1,6 @@
 import { modelPreparedEvent, modelSettledEvent } from '../model/session-events.js'
+import type { ModelInvocationSnapshot } from '../model/projection.js'
+import type { ModelInvocationId } from '../model/ids.js'
 import { toolRequestedEvent, toolSettledEvent } from '../tool/session-events.js'
 import type { CommittedSessionEvent } from '../session/types.js'
 import type { AgentActionIntent, AgentEventPayloads } from './event-contract.js'
@@ -29,7 +31,8 @@ export function applyStepOpened(state: AgentProjectionState, event: CommittedSes
   state.steps.set(event.stored.eventId, { opened: event, decided: null })
 }
 
-export function applyStepDecided(state: AgentProjectionState, event: CommittedSessionEvent<AgentEventPayloads['step-decided']>): void {
+export function applyStepDecided(state: AgentProjectionState, event: CommittedSessionEvent<AgentEventPayloads['step-decided']>,
+  models: ReadonlyMap<ModelInvocationId, ModelInvocationSnapshot>): void {
   const p = event.payload
   const step = requireEntry(state.steps, p.step, 'missing-step')
   if (step.decided !== null) invalidAgent('duplicate-step-decision')
@@ -40,12 +43,16 @@ export function applyStepDecided(state: AgentProjectionState, event: CommittedSe
   if (p.model === null) {
     if (!['not-issued', 'cancelled'].includes(p.classification) || p.actions.length !== 0 || p.admitted) invalidAgent('unissued-decision')
   } else {
-    const cp2 = source(state, p.model.settled, modelSettledEvent)
-    if (cp2.payload.invocationId !== p.model.invocationId || cp2.stored.sequence <= step.opened.stored.sequence) invalidAgent('model-source')
-    const cp0raw = [...state.sources.values()].find(entry => entry.stored.type === modelPreparedEvent.type
-      && record(entry.payload).invocationId === p.model!.invocationId)
-    if (cp0raw === undefined) invalidAgent('missing-model-prepared')
-    const cp0 = source(state, cp0raw.stored.eventId, modelPreparedEvent)
+    const settled = requireEntry(state.sources, p.model.settled, 'missing-or-future-source')
+    if (settled.stored.type !== modelSettledEvent.type || settled.stored.payloadVersion !== modelSettledEvent.payloadVersion
+      || settled.stored.ignorable === true) invalidAgent('source-kind')
+    const invocation = models.get(p.model.invocationId)
+    if (invocation?.state !== 'settled' || invocation.settled.stored.eventId !== settled.stored.eventId
+      || invocation.settled.stored.sequence <= step.opened.stored.sequence) invalidAgent('model-source')
+    const cp2 = invocation.settled, cp0 = invocation.prepared
+    const prepared = requireEntry(state.sources, cp0.stored.eventId, 'missing-or-future-source')
+    if (prepared.stored.type !== modelPreparedEvent.type || prepared.stored.payloadVersion !== modelPreparedEvent.payloadVersion
+      || prepared.stored.ignorable === true) invalidAgent('source-kind')
     const assembly = requireEntry(state.sources, p.model.assembly, 'missing-assembly')
     if (assembly.stored.type !== 'context/assembly-committed' || assembly.stored.payloadVersion !== (spec.protocolVersion + 1)
       || assembly.stored.sequence + 1 !== cp0.stored.sequence || assembly.stored.sequence <= step.opened.stored.sequence
