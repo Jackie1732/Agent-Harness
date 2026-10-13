@@ -178,10 +178,15 @@ export class MemorySessionBackend implements SessionBackend {
     })
   }
 
+  /** Retire owned storage; separately retained immutable prefixes remain usable. */
   async dispose(): Promise<void> {
     if (!this.#active) return
     this.#active = false
-    for (const record of this.#sessions.values()) record.writerToken = undefined
+    for (const record of this.#sessions.values()) {
+      record.writerToken = undefined
+      record.events.length = 0
+    }
+    this.#sessions.clear()
   }
 
   #assertActive(): void {
