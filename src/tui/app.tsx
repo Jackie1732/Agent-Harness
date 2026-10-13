@@ -49,10 +49,13 @@ export function TuiApp(props: TuiAppProps) {
   const { session, owner, signal } = props, profile = session.profile, { columns, rows } = useWindowSize()
   const [page, setPage] = useState<Page>('overview')
   const [selection, setSelection] = useState<{ readonly agentKey: string | null; readonly root: Params<'root.get'> | null }>({ agentKey: null, root: null })
+  const currentSelection = useRef(selection)
+  const select = useCallback((next: typeof selection) => { currentSelection.current = next; setSelection(next) }, [])
   const { agentKey: selectedAgent, root: selectedRoot } = selection
   const [configuredAgents, setConfiguredAgents] = useState<readonly string[]>([]), [workflows, setWorkflows] = useState<readonly string[]>([])
   const [workflowAddresses, setWorkflowAddresses] = useState<Readonly<Record<string, string>>>({})
   const [selectedMethod, setSelectedMethod] = useState(0), [modal, setModal] = useState<Modal | null>(null)
+  const currentMethod = useRef(0)
   const [lastResult, setLastResult] = useState<unknown>(null), [configurationEditing, setConfigurationEditing] = useState(false)
   const [resultExpanded, setResultExpanded] = useState(false)
   const [requestError, setRequestError] = useState<{ readonly request: Modal; readonly message: string } | null>(null)
@@ -68,7 +71,6 @@ export function TuiApp(props: TuiAppProps) {
   const agent = useOperatorObservation(session, owner, signal, 'agent.get', selectedAgent === null ? null : { agentKey: selectedAgent }, onFailure)
   const rootObservation = useOperatorObservation(session, owner, signal, 'root.get', selectedRoot, onFailure)
   const host = status.last?.result as HostStatusResult | undefined, observedMember = agent.last?.result as AgentObservation | undefined
-  const member = observedMember?.agentKey === selectedAgent ? observedMember : undefined
   const observedRoot = rootObservation.last?.result as RootObservation | undefined
   const root = observedRoot?.agentKey === selectedAgent && observedRoot.rootId === selectedRoot?.rootId ? observedRoot : null
   const agents = configuredAgents.length > 0 ? configuredAgents : host?.report.members.map(item => item.agentKey) ?? []
@@ -89,8 +91,8 @@ export function TuiApp(props: TuiAppProps) {
   }, [profile])
   useEffect(() => {
     const first = agents[0]
-    if (selectedAgent === null && first !== undefined) setSelection(current => current.agentKey === null ? { agentKey: first, root: null } : current)
-  }, [agents, selectedAgent])
+    if (currentSelection.current.agentKey === null && first !== undefined) select({ agentKey: first, root: null })
+  }, [agents, select])
   const reportResult = (result: unknown) => { if (!signal.aborted) setLastResult(result) }
   const execute = (method: ControlMethod, params: Params<ControlMethod>, acknowledgeIntent?: string) => {
     setModal(null); setPending(current => [...current, method])
@@ -107,25 +109,37 @@ export function TuiApp(props: TuiAppProps) {
       }
       if (method === 'root.get' && result.status === 'ok') {
         const read = result.result as RootObservation
-        setSelection(current => current.agentKey === read.agentKey ? { ...current, root: { agentKey: read.agentKey, rootId: read.rootId } } : current)
+        const current = currentSelection.current
+        if (current.agentKey === read.agentKey) select({ ...current, root: { agentKey: read.agentKey, rootId: read.rootId } })
       }
     }).catch(cause => { if (method !== 'session.events' || currentEvent()) reportResult(configFailure(cause)) }).finally(() => setPending(current => { const index = current.indexOf(method); return current.filter((_item, position) => position !== index) }))
   }
-  const known = (): JsonObject => ({ ...(selectedAgent === null ? {} : { agentKey: selectedAgent, parentAgentKey: selectedAgent }),
-    ...(host === undefined ? {} : { expectedInstanceId: host.instanceId }), ...(root === null ? {} : { rootId: root.rootId, parentRoot: root.rootId }),
-    ...(workflows[0] ===undefined ? {} : { workflowKey: workflows[0] }), requestKey: randomUUID(), submissionKey: randomUUID(),
-    timeoutMs: profile.observation.maxWaitMs, maxEvents: profile.observation.maxPageEvents })
+  const selectedRootObservation = () => {
+    const current = currentSelection.current
+    return observedRoot?.agentKey === current.agentKey && observedRoot.rootId === current.root?.rootId ? observedRoot : null
+  }
+  const known = (): JsonObject => {
+    const agentKey = currentSelection.current.agentKey, root = selectedRootObservation()
+    return { ...(agentKey === null ? {} : { agentKey, parentAgentKey: agentKey }),
+      ...(host === undefined ? {} : { expectedInstanceId: host.instanceId }), ...(root === null ? {} : { rootId: root.rootId, parentRoot: root.rootId }),
+      ...(workflows[0] ===undefined ? {} : { workflowKey: workflows[0] }), requestKey: randomUUID(), submissionKey: randomUUID(),
+      timeoutMs: profile.observation.maxWaitMs, maxEvents: profile.observation.maxPageEvents }
+  }
   const openRequest = (method: ControlMethod, follow = false) => setModal({ kind: 'request', method, value: requestDraft(method, known()), ...(follow ? { follow: true } : {}) })
   const confirmRun = (run: (acknowledgeIntent?: string) => void) => {
     const unknown = [...session.intents()].reverse().find(intent => intent.method === 'host.run' && (intent.outcome === null || intent.outcome.acceptance === 'unknown'))
     if (unknown === undefined) run()
     else setModal({ kind: 'confirm', title: '明确发起新的有限批次；旧 run 仍为 unknown', detail: { intentId: unknown.id, scope: unknown.scope }, run: () => run(unknown.id) })
   }
-  const selectRoot = () => setModal({ kind: 'picker', title: '选择当前报告的精确 Root', items: (member?.report.roots ?? []).map(item => ({ label: `${item.id} · ${item.source.kind} · ${item.outcome ?? '未结算'}`,
-    value: () => execute('root.get', { agentKey: selectedAgent!, rootId: item.id }) })) })
+  const selectRoot = () => {
+    const agentKey = currentSelection.current.agentKey, member = observedMember?.agentKey === agentKey ? observedMember : undefined
+    setModal({ kind: 'picker', title: '选择当前报告的精确 Root', items: (member?.report.roots ?? []).map(item => ({ label: `${item.id} · ${item.source.kind} · ${item.outcome ?? '未结算'}`,
+      value: () => execute('root.get', { agentKey: agentKey!, rootId: item.id }) })) })
+  }
   const answer = () => {
-    if (selectedAgent === null || root === null || root.agentKey !== selectedAgent) { selectRoot(); return }
-    const agentKey = selectedAgent, rootId = root.rootId
+    const agentKey = currentSelection.current.agentKey, root = selectedRootObservation()
+    if (agentKey === null || root === null) { selectRoot(); return }
+    const rootId = root.rootId
     const loading: Modal = { kind: 'picker', title: '正在核验精确 Root 的当前 user wait', items: [] }
     setModal(loading)
     void session.execute('root.get', { agentKey, rootId }).then(result => {
@@ -174,10 +188,9 @@ export function TuiApp(props: TuiAppProps) {
     })().catch(cause => { if (current()) { const failure = configFailure(cause); setEventFailure(failure); reportResult(failure); setFollowing(false) } })
   }
   const changeAgent = (direction: number) => {
-    setSelection(current => {
-      const index = Math.max(0, agents.indexOf(current.agentKey ?? '')), next = agents[Math.max(0, Math.min(agents.length - 1, index + direction))]
-      return next === undefined || next === current.agentKey ? current : { agentKey: next, root: null }
-    })
+    const current = currentSelection.current
+    const index = Math.max(0, agents.indexOf(current.agentKey ?? '')), next = agents[Math.max(0, Math.min(agents.length - 1, index + direction))]
+    if (next !== undefined && next !== current.agentKey) select({ agentKey: next, root: null })
   }
   useInput((input, key) => {
     if (key.ctrl && input === 'c') { props.onClose(undefined, 130); return }
@@ -201,14 +214,16 @@ export function TuiApp(props: TuiAppProps) {
     if (input === 'b') { confirmRun(acknowledge => execute('host.run', { expectedInstanceId: host?.instanceId ?? '' }, acknowledge)); return }
     if (input === 's') { openRequest('host.shutdown'); return }
     if (page === 'collaboration') {
-      if (key.upArrow) setSelectedMethod(current => Math.max(0, current - 1))
-      else if (key.downArrow) setSelectedMethod(current => Math.min(collaborationMethods.length - 1, current + 1))
-      else if (key.return) openRequest(collaborationMethods[selectedMethod]!)
+      if (key.upArrow || key.downArrow) {
+        const next = key.upArrow ? Math.max(0, currentMethod.current - 1) : Math.min(collaborationMethods.length - 1, currentMethod.current + 1)
+        currentMethod.current = next; setSelectedMethod(next)
+      } else if (key.return) openRequest(collaborationMethods[currentMethod.current]!)
       return
     }
+    const agentKey = currentSelection.current.agentKey, root = selectedRootObservation(), member = observedMember?.agentKey === agentKey ? observedMember : undefined
     if (key.upArrow) changeAgent(-1)
     else if (key.downArrow) changeAgent(1)
-    else if (input === 'n' && selectedAgent !== null) setModal({ kind: 'task', input: { agentKey: selectedAgent } })
+    else if (input === 'n' && agentKey !== null) setModal({ kind: 'task', input: { agentKey } })
     else if (input === 'a') answer()
     else if (input === 'r') selectRoot()
     else if (input === 'x' && root !== null) {
@@ -220,7 +235,7 @@ export function TuiApp(props: TuiAppProps) {
     }
     else if (input === 'w') openRequest('root.wait')
     else if (input === 'g') openRequest('input.get')
-    else if (input === 'p' && selectedAgent !== null) execute(member?.paused ? 'agent.resume' : 'agent.pause', { agentKey: selectedAgent, expectedInstanceId: host?.instanceId ?? '' })
+    else if (input === 'p' && agentKey !== null) execute(member?.paused ? 'agent.resume' : 'agent.pause', { agentKey, expectedInstanceId: host?.instanceId ?? '' })
     else if (input === 'e') setModal({ kind: 'picker', title: '明确事件观察方式', items: [{ label: '单页；固定 cut 可继续翻页', value: () => openRequest('session.events') },
       { label: '跟随；Esc 停止观察', value: () => openRequest('session.events', true) }] })
   })

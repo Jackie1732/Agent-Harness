@@ -15,14 +15,17 @@ export interface PickerItem<T> { readonly label: string; readonly value: T }
  */
 export function Picker<T>(props: { readonly title: string; readonly items: readonly PickerItem<T>[]; readonly onSelect: (value: T) => void; readonly onCancel: () => void; readonly compact?: boolean }) {
   const [selected, setSelected] = useState(0), { columns } = useWindowSize(), viewport = useRef<DOMElement | null>(null), metrics = useBoxMetrics(viewport)
+  const currentSelected = useRef(0)
   const last = Math.max(0, props.items.length - 1), position = Math.min(selected, last)
   const count = Math.max(1, Math.floor(metrics.clientHeight)), first = Math.max(0, position - count + 1)
   const selectedLabel = plainText(props.items[position]?.label ?? ''), detail = !props.compact && (selectedLabel.includes('\n') || stringWidth(selectedLabel) > columns)
-  useEffect(() => { setSelected(current => Math.min(current, last)) }, [last])
+  const select = (next: number) => { currentSelected.current = next; setSelected(next) }
+  useEffect(() => { const next = Math.min(currentSelected.current, last); currentSelected.current = next; setSelected(next) }, [last])
   useInput((input, key) => {
+    const position = Math.min(currentSelected.current, last)
     if (key.escape) props.onCancel()
-    else if (key.upArrow) setSelected(current => Math.max(0, Math.min(current, last) - 1))
-    else if (key.downArrow) setSelected(current => Math.min(last, Math.min(current, last) + 1))
+    else if (key.upArrow) select(Math.max(0, position - 1))
+    else if (key.downArrow) select(Math.min(last, position + 1))
     else if (key.return && props.items[position] !== undefined) props.onSelect(props.items[position]!.value)
     else if (key.ctrl && input === 'c') return
   })

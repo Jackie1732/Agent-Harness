@@ -1,5 +1,5 @@
 /** Structured edits record the same typed operations used by the configuration CLI. */
-import { useRef, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { Box, Text, useBoxMetrics, useInput } from 'ink'
 import type { DOMElement } from 'ink'
 import type { JsonObject, JsonValue } from '../foundation/json.js'
@@ -64,6 +64,8 @@ export interface TreeEditorProps {
 export function TreeEditor(props: TreeEditorProps) {
   const [candidate, setCandidate] = useState(props.initial), [operations, setOperations] = useState<readonly ConfigOperation[]>([])
   const [expanded, setExpanded] = useState<ReadonlySet<string>>(new Set([''])), [selected, setSelected] = useState(0)
+  const currentSelected = useRef(0)
+  const currentExpanded = useRef(expanded)
   const [edit, setEdit] = useState<FieldEdit | null>(null), [preview, setPreview] = useState(false), [error, setError] = useState<string | null>(null)
   const viewport = useRef<DOMElement | null>(null), metrics = useBoxMetrics(viewport), rows = treeRows(candidate, expanded), row = rows[Math.min(selected, rows.length - 1)]!
   const pageRows = Math.max(1, Math.floor(metrics.clientHeight)), first = Math.max(0, Math.min(selected, rows.length - 1) - pageRows + 1)
@@ -72,28 +74,34 @@ export function TreeEditor(props: TreeEditorProps) {
       setCandidate(applyConfigTreeOperations(candidate, [operation])); setOperations([...operations, operation]); setEdit(null); setError(null)
     } catch { setError('结构操作无效；检查指针、已有键和数组索引') }
   }
-  const toggle = () => setExpanded(current => {
-    const next = new Set(current); if (next.has(row.pointer)) next.delete(row.pointer); else next.add(row.pointer); return next
-  })
+  const select = (next: number) => { currentSelected.current = next; setSelected(next) }
+  useEffect(() => { const next = Math.min(currentSelected.current, rows.length - 1); currentSelected.current = next; setSelected(next) }, [rows.length])
+  const toggle = (row: TreeRow) => {
+    const next = new Set(currentExpanded.current)
+    if (next.has(row.pointer)) next.delete(row.pointer); else next.add(row.pointer)
+    currentExpanded.current = next; setExpanded(next)
+  }
   useInput((input, key) => {
+    const rows = treeRows(candidate, currentExpanded.current)
+    const position = Math.min(currentSelected.current, rows.length - 1), row = rows[position]!
     if (key.escape) { if (preview) setPreview(false); else props.onCancel(); return }
     if (preview) {
       if (key.return) props.onSubmit(candidate, operations)
       return
     }
     if (key.ctrl && input === 's') { setPreview(true); return }
-    if (key.upArrow) setSelected(current => Math.max(0, current - 1))
-    else if (key.downArrow) setSelected(current => Math.min(rows.length - 1, current + 1))
-    else if (key.pageUp) setSelected(current => Math.max(0, current - pageRows))
-    else if (key.pageDown) setSelected(current => Math.min(rows.length - 1, current + pageRows))
+    if (key.upArrow) select(Math.max(0, position - 1))
+    else if (key.downArrow) select(Math.min(rows.length - 1, position + 1))
+    else if (key.pageUp) select(Math.max(0, position - pageRows))
+    else if (key.pageDown) select(Math.min(rows.length - 1, position + pageRows))
     else if (key.leftArrow) {
-      if (expanded.has(row.pointer) && isContainer(row.value)) toggle()
-      else setSelected(Math.max(0, rows.findIndex(item => item.pointer === row.pointer.slice(0, row.pointer.lastIndexOf('/')))))
-    } else if (key.rightArrow && isContainer(row.value)) toggle()
+      if (currentExpanded.current.has(row.pointer) && isContainer(row.value)) toggle(row)
+      else select(Math.max(0, rows.findIndex(item => item.pointer === row.pointer.slice(0, row.pointer.lastIndexOf('/')))))
+    } else if (key.rightArrow && isContainer(row.value)) toggle(row)
     else if (key.return) {
       const schema = schemaAt(props.schema, row.pointer, candidate)
       if (Array.isArray(schema?.enum)) setEdit({ kind: 'choices', row, choices: schema.enum })
-      else if (isContainer(row.value)) toggle()
+      else if (isContainer(row.value)) toggle(row)
       else if (typeof row.value === 'boolean') append({ op: 'set', pointer: row.pointer, value: !row.value })
       else if (row.value === null) setEdit({ kind: 'type', row })
       else setEdit({ kind: 'scalar', row })
@@ -121,7 +129,9 @@ export function TreeEditor(props: TreeEditorProps) {
     onCancel={() => setEdit(null)} onSelect={(type: ValueType) => {
       const pointer = edit.insertion ?? edit.row.pointer
       append({ op: edit.insertion === undefined ? 'set' : 'insert', pointer, value: emptyValue(type) })
-      if (type === 'object' || type === 'array') setExpanded(current => new Set([...current, pointer]))
+      if (type === 'object' || type === 'array') {
+        const next = new Set([...currentExpanded.current, pointer]); currentExpanded.current = next; setExpanded(next)
+      }
     }} />
   if (edit?.kind === 'choices') return <Picker title="选择 schema 值或分支" items={edit.choices.map(value => ({ label: displayValue(value, 512, props.secrets), value }))}
     onCancel={() => setEdit(null)} onSelect={value => append({ op: 'set', pointer: edit.row.pointer, value })} />
