@@ -47,14 +47,16 @@ export interface TuiAppProps {
  */
 export function TuiApp(props: TuiAppProps) {
   const { session, owner, signal } = props, profile = session.profile, { columns, rows } = useWindowSize()
-  const [page, setPage] = useState<Page>('overview'), [selectedAgent, setSelectedAgent] = useState<string | null>(null)
+  const [page, setPage] = useState<Page>('overview')
+  const [selection, setSelection] = useState<{ readonly agentKey: string | null; readonly root: Params<'root.get'> | null }>({ agentKey: null, root: null })
+  const { agentKey: selectedAgent, root: selectedRoot } = selection
   const [configuredAgents, setConfiguredAgents] = useState<readonly string[]>([]), [workflows, setWorkflows] = useState<readonly string[]>([])
   const [workflowAddresses, setWorkflowAddresses] = useState<Readonly<Record<string, string>>>({})
   const [selectedMethod, setSelectedMethod] = useState(0), [modal, setModal] = useState<Modal | null>(null)
   const [lastResult, setLastResult] = useState<unknown>(null), [configurationEditing, setConfigurationEditing] = useState(false)
   const [resultExpanded, setResultExpanded] = useState(false)
   const [requestError, setRequestError] = useState<{ readonly request: Modal; readonly message: string } | null>(null)
-  const [selectedRoot, setSelectedRoot] = useState<Params<'root.get'> | null>(null), [pending, setPending] = useState<readonly string[]>([])
+  const [pending, setPending] = useState<readonly string[]>([])
   const [events, setEvents] = useState(EMPTY_EVENT_BUFFER), [following, setFollowing] = useState(false)
   const [eventLast, setEventLast] = useState<OperatorResult | null>(null), [eventSummary, setEventSummary] = useState<OperatorFollowSummary | null>(null)
   const [eventFailure, setEventFailure] = useState<unknown>(null)
@@ -85,7 +87,10 @@ export function TuiApp(props: TuiAppProps) {
     }).catch(cause => { if (active) setLastResult(configFailure(cause)) })
     return () => { active = false }
   }, [profile])
-  useEffect(() => { if (selectedAgent === null && agents[0] !== undefined) setSelectedAgent(agents[0]) }, [agents, selectedAgent])
+  useEffect(() => {
+    const first = agents[0]
+    if (selectedAgent === null && first !== undefined) setSelection(current => current.agentKey === null ? { agentKey: first, root: null } : current)
+  }, [agents, selectedAgent])
   const reportResult = (result: unknown) => { if (!signal.aborted) setLastResult(result) }
   const execute = (method: ControlMethod, params: Params<ControlMethod>, acknowledgeIntent?: string) => {
     setModal(null); setPending(current => [...current, method])
@@ -101,7 +106,8 @@ export function TuiApp(props: TuiAppProps) {
         else setEventFailure(result.error ?? result)
       }
       if (method === 'root.get' && result.status === 'ok') {
-        const read = result.result as RootObservation; setSelectedRoot({ agentKey: read.agentKey, rootId: read.rootId })
+        const read = result.result as RootObservation
+        setSelection(current => current.agentKey === read.agentKey ? { ...current, root: { agentKey: read.agentKey, rootId: read.rootId } } : current)
       }
     }).catch(cause => { if (method !== 'session.events' || currentEvent()) reportResult(configFailure(cause)) }).finally(() => setPending(current => { const index = current.indexOf(method); return current.filter((_item, position) => position !== index) }))
   }
@@ -134,7 +140,7 @@ export function TuiApp(props: TuiAppProps) {
       setModal(current => current === loading ? choice : current)
     }).catch(cause => { reportResult(configFailure(cause)); setModal(current => current === loading ? null : current) })
   }
-  const stopEvents = (): Promise<void> => {
+  const stopEvents = useCallback((): Promise<void> => {
     eventGeneration.current++; eventAbort.current?.abort(); setFollowing(false); setEventRetired(true)
     if (eventStopping.current !== null) return eventStopping.current
     const previous = eventLease.current
@@ -144,7 +150,11 @@ export function TuiApp(props: TuiAppProps) {
       if (eventStopping.current === stopping) eventStopping.current = null
     })
     eventStopping.current = stopping; return stopping
-  }
+  }, [])
+  useEffect(() => {
+    if (selectedAgent === null) return
+    void stopEvents().catch(onFailure)
+  }, [selectedAgent, stopEvents, onFailure])
   const startEvents = (params: Params<'session.events'>) => {
     setModal(null); setPage('events')
     const stopped = stopEvents(), generation = eventGeneration.current, current = () => !signal.aborted && eventGeneration.current === generation
@@ -164,8 +174,10 @@ export function TuiApp(props: TuiAppProps) {
     })().catch(cause => { if (current()) { const failure = configFailure(cause); setEventFailure(failure); reportResult(failure); setFollowing(false) } })
   }
   const changeAgent = (direction: number) => {
-    const index = Math.max(0, agents.indexOf(selectedAgent ?? '')), next = agents[Math.max(0, Math.min(agents.length - 1, index + direction))]
-    if (next !== undefined && next !== selectedAgent) { void stopEvents().catch(onFailure); setSelectedAgent(next); setSelectedRoot(null) }
+    setSelection(current => {
+      const index = Math.max(0, agents.indexOf(current.agentKey ?? '')), next = agents[Math.max(0, Math.min(agents.length - 1, index + direction))]
+      return next === undefined || next === current.agentKey ? current : { agentKey: next, root: null }
+    })
   }
   useInput((input, key) => {
     if (key.ctrl && input === 'c') { props.onClose(undefined, 130); return }
