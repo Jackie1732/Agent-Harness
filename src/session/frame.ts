@@ -114,6 +114,8 @@ function isPhysicalFramePrefix(bytes: Uint8Array, maxRecordBytes: number): boole
 export class FrameScanner {
   readonly #maxRecordBytes: number
   #buffer = Buffer.alloc(0)
+  /** Pending bytes exclude unused buffer capacity. */
+  #length = 0
   #offset = 0
 
   constructor(maxRecordBytes: number) {
@@ -128,12 +130,22 @@ export class FrameScanner {
     if (frameLimit < 0 || !Number.isSafeInteger(frameLimit) && frameLimit !== Number.POSITIVE_INFINITY) {
       throw new RangeError('frameLimit must be a non-negative safe integer')
     }
-    if (chunk.byteLength > 0) this.#buffer = Buffer.concat([this.#buffer, chunk])
+    if (chunk.byteLength > 0) {
+      const length = this.#length + chunk.byteLength
+      if (length > this.#buffer.byteLength) {
+        const buffer = Buffer.allocUnsafe(Math.max(length, this.#buffer.byteLength * 2))
+        this.#buffer.copy(buffer, 0, 0, this.#length)
+        this.#buffer = buffer
+      }
+      this.#buffer.set(chunk, this.#length)
+      this.#length = length
+    }
     const frames: DecodedFrame[] = []
-    while (this.#buffer.byteLength > 0 && frames.length < frameLimit) {
-      const firstTab = findByte(this.#buffer, TAB)
+    while (this.#length > 0 && frames.length < frameLimit) {
+      const buffer = this.#buffer.subarray(0, this.#length)
+      const firstTab = findByte(buffer, TAB)
       if (firstTab < 0) {
-        if (this.#buffer.byteLength > MAX_LENGTH_DIGITS) {
+        if (buffer.byteLength > MAX_LENGTH_DIGITS) {
           throw invalid('frame length prefix is too long', this.#offset)
         }
         break
@@ -141,10 +153,10 @@ export class FrameScanner {
       if (firstTab === 0 || firstTab > MAX_LENGTH_DIGITS) {
         throw invalid('frame length prefix is invalid', this.#offset)
       }
-      const length = parseLength(this.#buffer.subarray(0, firstTab), this.#offset, this.#maxRecordBytes)
-      const secondTab = findByte(this.#buffer, TAB, firstTab + 1)
+      const length = parseLength(buffer.subarray(0, firstTab), this.#offset, this.#maxRecordBytes)
+      const secondTab = findByte(buffer, TAB, firstTab + 1)
       if (secondTab < 0) {
-        if (this.#buffer.byteLength - firstTab - 1 > CHECKSUM_LENGTH) {
+        if (buffer.byteLength - firstTab - 1 > CHECKSUM_LENGTH) {
           throw invalid('frame checksum prefix is too long', this.#offset + firstTab + 1)
         }
         break
@@ -153,15 +165,15 @@ export class FrameScanner {
         throw invalid('frame checksum has the wrong length', this.#offset + firstTab + 1)
       }
       const expected = validateChecksumText(
-        this.#buffer.subarray(firstTab + 1, secondTab),
+        buffer.subarray(firstTab + 1, secondTab),
         this.#offset + firstTab + 1,
       )
       const frameLength = secondTab + 1 + length + 1
-      if (this.#buffer.byteLength < frameLength) break
-      if (this.#buffer[frameLength - 1] !== LF) {
+      if (buffer.byteLength < frameLength) break
+      if (buffer[frameLength - 1] !== LF) {
         throw invalid('frame is not terminated by LF', this.#offset + frameLength - 1)
       }
-      const payload = this.#buffer.subarray(secondTab + 1, frameLength - 1)
+      const payload = buffer.subarray(secondTab + 1, frameLength - 1)
       if (hash(payload) !== expected) {
         throw invalid('frame payload checksum does not match', this.#offset + secondTab + 1)
       }
@@ -172,20 +184,21 @@ export class FrameScanner {
         endOffset: this.#offset,
         payload: Uint8Array.from(payload),
       }))
-      this.#buffer = this.#buffer.subarray(frameLength)
+      this.#length -= frameLength
+      this.#buffer = this.#length === 0 ? Buffer.alloc(0) : this.#buffer.subarray(frameLength)
     }
     return frames
   }
 
   /** Finish the stream, accepting only a syntactically valid interrupted-frame prefix. */
   finish(allowIncompleteTail: boolean): FrameScanEnd {
-    if (this.#buffer.byteLength === 0) return Object.freeze({ byteLength: this.#offset })
-    if (!allowIncompleteTail || !isPhysicalFramePrefix(this.#buffer, this.#maxRecordBytes)) {
+    if (this.#length === 0) return Object.freeze({ byteLength: this.#offset })
+    if (!allowIncompleteTail || !isPhysicalFramePrefix(this.#buffer.subarray(0, this.#length), this.#maxRecordBytes)) {
       throw invalid('Session frame stream ends with an invalid suffix', this.#offset)
     }
     return Object.freeze({
       byteLength: this.#offset,
-      incompleteTail: Object.freeze({ byteOffset: this.#offset, byteLength: this.#buffer.byteLength }),
+      incompleteTail: Object.freeze({ byteOffset: this.#offset, byteLength: this.#length }),
     })
   }
 }
