@@ -4,6 +4,7 @@ import type { JsonObject, JsonValue } from '../foundation/json.js'
 import { snapshotJson } from '../foundation/json.js'
 import { canonicalJsonBytes } from '../foundation/canonical-json.js'
 import { decodeHostConfig, planHostConfig, resolveHostConfig } from '../host/config.js'
+import { preflightHostInitialization } from '../host/initialization.js'
 import type { HostIdentitySource } from '../host/config.js'
 import { exportHostConfig } from '../host/config-export.js'
 import { HostError } from '../host/errors.js'
@@ -102,10 +103,11 @@ export async function applyConfigOperations(profilePath: string, kind: ConfigKin
   const document = await readEditableConfigDocument(profilePath, kind), profile = (await readOperatorProfile(profilePath)).profile
   return saveCandidate(document, applyConfigTreeOperations(document.value, operations), profile, options.expectedRevision)
 }
-/** Allocate only missing Host identities and save the exact planned file. */
+/** Allocate only missing Host identities and preflight initialization before saving the exact planned file. */
 export async function planOperatorHost(profilePath: string, options: { readonly expectedRevision: string; readonly identities?: HostIdentitySource }): Promise<ConfigMutationResult> {
   const document = await readConfigDocument(profilePath, 'host'), profile = (await readOperatorProfile(profilePath)).profile
   const planned = planHostConfig(decodeHostConfig(document.value, dirname(document.path)), options.identities)
+  preflightHostInitialization(resolveHostConfig(planned))
   return saveCandidate(document, planned as unknown as JsonValue, profile, options.expectedRevision)
 }
 /** Repair roster values in the same unpublished candidate that changes its members. */
@@ -119,12 +121,13 @@ export async function rebindOperatorWorkflows(profilePath: string, operations: r
   const document: ConfigDocument = { kind: 'host', ...file, check: await checkConfigCandidate('host', previous as unknown as JsonValue, dirname(path), profile) }
   return saveCandidate(document, planned as unknown as JsonValue, profile, options.expectedRevision)
 }
-/** Create an independent local Host recipe without changing the profile or copying durable data. */
+/** Preflight an independent local Host recipe without changing the profile or copying durable data. */
 export async function cloneOperatorHost(profilePath: string, options: ConfigWriteOptions & { readonly newStorage: string; readonly output: string; readonly hostKey: string; readonly identities?: HostIdentitySource }): Promise<ConfigMutationResult> {
   const document = await readConfigDocument(profilePath, 'host'), profile = (await readOperatorProfile(profilePath)).profile
   assertConfigDestination(profile, 'host', resolve(options.output), false)
   const output = resolve(options.output), candidate = cloneHostCandidate(decodeHostConfig(document.value, dirname(document.path)), resolve(options.newStorage), options.hostKey, dirname(output), options.identities)
   const check = await checkConfigCandidate('host', candidate as unknown as JsonValue, dirname(output), profile)
+  preflightHostInitialization(resolveHostConfig(candidate))
   const revision = await publishConfigFile(output, candidate as unknown as JsonValue, options, configLimits('host'))
   return { document: { kind: 'host', path: output, revision, value: candidate as unknown as JsonValue, check }, diff: await classifyDifference(document, check.normalized),
     steps: [{ kind: 'host', path: output, revision }], failure: null }

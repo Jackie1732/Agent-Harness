@@ -41,7 +41,7 @@ export async function checkOfflineHostBindings(spec: ResolvedHostSpec): Promise<
       await discoverHostDelegations(spec, repository, inventory)
       if (spec.schemaVersion === 3) discoverHostWorkflows(spec, inventory)
       for (const member of spec.members) if (member.kind === 'local') validateHostMemberSnapshot(await repository.read(parseSessionId(member.sessionId)), spec.hostKey, member,
-        { bindingVersion: spec.schemaVersion === 3 ? 2 : 1 })
+        { allowEnded: !member.enabled, bindingVersion: spec.schemaVersion === 3 ? 2 : 1 })
     })
     return { status: 'compatible', reason: null }
   } catch (cause) {
@@ -60,7 +60,7 @@ export async function configReadiness(profilePath: string, kind: ConfigKind, cre
       return result
     } catch (cause) { evidence.push({ subject, status: 'missing', reason: configFailure(cause).message }); return null }
   }
-  const credential = (subject: string, name: string) => evidence.push({ subject, status: credentials[name] ? 'available' : 'missing', reason: credentials[name] ? null : 'credential-missing' })
+  const credential = (subject: string, value: string | undefined) => evidence.push({ subject, status: value ? 'available' : 'missing', reason: value ? null : 'credential-missing' })
   const tls = async (paths: { readonly ca?: string; readonly cert: string; readonly key: string }, subject: string) => {
     const cert = await file(`${subject}.cert`, paths.cert), key = await file(`${subject}.key`, paths.key), ca = paths.ca === undefined ? undefined : await file(`${subject}.ca`, paths.ca)
     if (cert === null || key === null || ca === null) return
@@ -70,9 +70,9 @@ export async function configReadiness(profilePath: string, kind: ConfigKind, cre
   const value = document.check.normalized
   if (kind === 'host') {
     const host = resolveHostConfig(decodeHostConfig(value, dirname(document.path)))
-    const models = [...host.members.flatMap(member => member.kind === 'local' ? [member.model] : []),
+    const models = [...host.members.flatMap(member => member.kind === 'local' && member.enabled ? [member.model] : []),
       ...(host.schemaVersion !== 1 && host.subagents.kind === 'enabled' ? host.subagents.templates.map(template => template.model) : [])]
-    for (const model of models) if (model.kind !== 'scripted-fixed') credential(`model.${model.providerId}`, model.credentialRef)
+    for (const model of models) if (model.kind !== 'scripted-fixed') credential(`model.${model.providerId}`, credentials[model.credentialRef]?.trim())
     if (host.https.kind !== 'disabled') {
       await tls({ ca: host.https.caFile, cert: host.https.serverCertFile, key: host.https.serverKeyFile }, 'host.server-tls')
       await tls({ ca: host.https.caFile, cert: host.https.clientCertFile, key: host.https.clientKeyFile }, 'host.client-tls')
@@ -92,11 +92,11 @@ export async function configReadiness(profilePath: string, kind: ConfigKind, cre
     await tls({ ca: api.tls.caFile, cert: api.tls.serverCertFile, key: api.tls.serverKeyFile }, 'api.tls')
   } else if (kind === 'ui') {
     const ui = resolveUiConfig(decodeUiConfig(value), document.path)
-    credential('ui.password', ui.passwordEnv)
+    credential('ui.password', credentials[ui.passwordEnv])
     await tls({ ca: ui.remote.caFile, cert: ui.remote.certFile, key: ui.remote.keyFile }, 'ui.tls')
   } else if (kind === 'automation') {
     const automation = resolveAutomationConfig(decodeAutomationConfig(value), document.path)
-    credential('automation.webhook-token', automation.webhook.bearerTokenEnv)
+    credential('automation.webhook-token', credentials[automation.webhook.bearerTokenEnv])
     await tls({ ca: automation.client.tls.caFile, cert: automation.client.tls.certFile, key: automation.client.tls.keyFile }, 'automation.client-tls')
     await tls({ cert: automation.webhook.tls.certFile, key: automation.webhook.tls.keyFile }, 'automation.webhook-tls')
   } else {
@@ -105,10 +105,7 @@ export async function configReadiness(profilePath: string, kind: ConfigKind, cre
     if (definition.runPolicy.mode === 'live') for (const variant of definition.variants) {
       const models = [...variant.recipe.members.flatMap(member => member.kind === 'local' ? [member.model] : []),
         ...(variant.recipe.schemaVersion !== 1 && variant.recipe.subagents.kind === 'enabled' ? variant.recipe.subagents.templates.map(template => template.model) : [])]
-      for (const model of models) if (model.kind !== 'scripted-fixed') {
-        const available = Boolean(credentials[model.credentialRef]?.trim())
-        evidence.push({ subject: `experiment.${variant.variantKey}.model.${model.providerId}`, status: available ? 'available' : 'missing', reason: available ? null : 'credential-missing' })
-      }
+      for (const model of models) if (model.kind !== 'scripted-fixed') credential(`experiment.${variant.variantKey}.model.${model.providerId}`, credentials[model.credentialRef]?.trim())
     }
   }
   return { kind, status: evidence.some(item => item.status === 'missing' || item.status === 'incompatible') ? 'not-ready'
