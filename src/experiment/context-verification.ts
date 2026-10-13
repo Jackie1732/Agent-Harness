@@ -1,5 +1,5 @@
 import { projectAgentSession } from '../agent/projection.js'
-import { projectContextSession, readAssembly, rebuildAssembly } from '../context/projection.js'
+import { projectContextSession, rebuildAssembly } from '../context/projection.js'
 import { equalJson } from '../context/validation.js'
 import { modelPreparedEvent } from '../model/session-events.js'
 import type { SessionEventId } from '../session/ids.js'
@@ -40,24 +40,23 @@ export function verifyExperimentContexts(snapshots: readonly SessionSnapshot[]):
         const eventId = assembly.committed.stored.eventId
         addRef(snapshot, eventId)
         try {
-          const read = readAssembly(snapshot, eventId)
           const rebuilt = rebuildAssembly(snapshot, eventId)
           if (rebuilt.kind === 'unsupported') {
             reasons.push(`context-renderer-unsupported:${rebuilt.version}:${eventId}`)
             continue
           }
-          if (experimentJsonDigest(rebuilt.request) !== read.committed.payload.requestDigest) {
+          if (experimentJsonDigest(rebuilt.request) !== assembly.committed.payload.requestDigest) {
             reasons.push(`context-request-digest-mismatch:${eventId}`)
             continue
           }
-          if (read.adoption.kind !== 'adopted') continue
-          const preparedId = read.adoption.preparedEventId
+          if (rebuilt.adoption.kind !== 'adopted') continue
+          const preparedId = rebuilt.adoption.preparedEventId
           addRef(snapshot, preparedId)
           const prepared = events.find(event => event.stored.eventId === preparedId)!
           const payload = modelPreparedEvent.decode(prepared.stored.payload)
-          if (payload.invocationId !== read.adoption.invocationId
+          if (payload.invocationId !== rebuilt.adoption.invocationId
             || !equalJson(payload.submission.request, rebuilt.request)
-            || !equalJson(payload.submission.binding, read.committed.payload.selection.target.provider)) {
+            || !equalJson(payload.submission.binding, rebuilt.assembly.selection.target.provider)) {
             reasons.push(`context-model-source-mismatch:${eventId}`)
           }
         } catch (cause) {
