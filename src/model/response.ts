@@ -17,6 +17,7 @@ export class ModelResponseAccumulator {
   readonly #request: ModelRequest
   readonly #advertised: ReadonlySet<string>
   #result: NormalizedModelResult = emptyModelResult()
+  #resultBytes = jsonBytes(this.#result)
   #messageStarted = false
   #frameCount = 0
 
@@ -120,7 +121,11 @@ export class ModelResponseAccumulator {
     else if (frame.kind === 'arguments-delta' && block.kind === 'tool-call') next = { ...block, argumentsText: block.argumentsText + delta }
     else if (frame.kind === 'continuation-delta' && block.kind === 'continuation') next = { ...block, capsule: { ...block.capsule, text: block.capsule.text + delta } }
     else this.#invalid('delta kind does not match its open block')
-    this.#replace(index, next)
+    const previous = block.kind === 'text' ? block.text : block.kind === 'tool-call' ? block.argumentsText : block.capsule.text
+    const tail = previous.charCodeAt(previous.length - 1), head = delta.charCodeAt(0)
+    // Joined surrogate halves replace two six-byte JSON escapes with four UTF-8 bytes.
+    const joinedPair = tail >= 0xd800 && tail <= 0xdbff && head >= 0xdc00 && head <= 0xdfff
+    this.#replace(index, next, jsonBytes(delta) - 2 - (joinedPair ? 8 : 0))
   }
 
   #endBlock(frame: JsonObject): void {
@@ -167,15 +172,17 @@ export class ModelResponseAccumulator {
     return block
   }
 
-  #replace(index: number, next: ModelOutputBlock): void {
+  #replace(index: number, next: ModelOutputBlock, growth?: number): void {
     const blocks = [...this.#result.blocks]
     blocks[index] = next
-    this.#admit({ ...this.#result, blocks })
+    this.#admit({ ...this.#result, blocks }, growth)
   }
 
-  #admit(candidate: NormalizedModelResult): void {
-    if (jsonBytes(candidate) > this.#limits.maxNormalizedResultBytes) this.#limit('normalized result bytes')
+  #admit(candidate: NormalizedModelResult, growth?: number): void {
+    const bytes = growth === undefined ? jsonBytes(candidate) : this.#resultBytes + growth
+    if (bytes > this.#limits.maxNormalizedResultBytes) this.#limit('normalized result bytes')
     this.#result = candidate
+    this.#resultBytes = bytes
   }
 
   #invalid(message: string): never { throw new ModelError('MODEL_PROTOCOL_INVALID', message) }
